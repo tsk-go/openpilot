@@ -40,11 +40,12 @@ class Controls(ControlsExt, ModelStateBase):
     cloudlog.info("controlsd got CarParams")
 
     # Initialize sunnypilot controlsd extension and base model state
-    ControlsExt.__init__(self, self.CP, self.params)
+    ControlsExt.__init__(self, self.CP, self.CP_SP, self.params)
     ModelStateBase.__init__(self)
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
+    # MODIFIED: Removed 'radarState' from the SubMaster list for vision-only system
     self.sm = messaging.SubMaster(['liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'carState', 'carOutput',
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
@@ -141,9 +142,11 @@ class Controls(ControlsExt, ModelStateBase):
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 
     actuators.curvature = self.desired_curvature
+    # MODIFIED: The call to self.LaC.update now passes 2 new arguments (model_v2, long_plan)
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
-                                                       self.calibrated_pose, curvature_limited)  # TODO what if not available
+                                                       self.calibrated_pose, curvature_limited,
+                                                       model_v2, long_plan)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
     # Ensure no NaNs/Infs
