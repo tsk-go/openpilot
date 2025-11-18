@@ -13,7 +13,13 @@ class LatControlAngle(LatControl):
     self.sat_check_min_speed = 5.
     self.use_steer_limited_by_safety = CP.brand == "tesla"
 
-  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited):
+  # MODIFIED: Added model_v2 and long_plan to the signature (Vision-Only)
+  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, model_v2, long_plan):
+    # NEW: Pass new arguments to desire_helper.update
+    self.desire_helper.update(CS, active, model_v2.laneChangeProb,
+                              model_v2.meta.leftLaneEdgeDetected, model_v2.meta.rightLaneEdgeDetected,
+                              model_v2, long_plan)
+
     angle_log = log.ControlsState.LateralAngleState.new_message()
 
     if not active:
