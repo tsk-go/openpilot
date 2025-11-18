@@ -4,6 +4,8 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeController, AutoLaneChangeMode
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTurnController
 from openpilot.sunnypilot.navd.navigation_desires.navigation_desires import NavigationDesires
+# NEW IMPORT: Intelligent Auto Lane Change
+from openpilot.openpilot.sunnypilot.selfdrive.controls.lib.intelligent_auto_lane_change import IntelligentAutoLaneChange
 
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
@@ -53,12 +55,15 @@ class DesireHelper:
     self.lane_turn_controller = LaneTurnController(self)
     self.lane_turn_direction = TurnDirection.none
     self.navigation_desires = NavigationDesires()
+    # NEW: Initialize Intelligent Auto Lane Change Controller
+    self.intelligent_alc = IntelligentAutoLaneChange(self)
 
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob, left_edge_detected, right_edge_detected):
+  # MODIFIED: Added model_v2 and long_plan to the signature (Vision-Only)
+  def update(self, carstate, lateral_active, lane_change_prob, left_edge_detected, right_edge_detected, model_v2, long_plan):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
@@ -69,6 +74,21 @@ class DesireHelper:
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
                                                left_blinker=carstate.leftBlinker, right_blinker=carstate.rightBlinker, v_ego=v_ego)
     self.lane_turn_direction = self.lane_turn_controller.get_turn_direction()
+
+    # ========== INTELLIGENT AUTO LANE CHANGE INTEGRATION ==========
+    self.intelligent_alc.update(carstate, model_v2, long_plan, lateral_active)
+
+    if self.intelligent_alc.should_trigger_lane_change() and self.lane_change_state == LaneChangeState.off:
+        auto_direction = self.intelligent_alc.get_lane_change_direction()
+        
+        if auto_direction != LaneChangeDirection.none:
+            self.lane_change_state = LaneChangeState.preLaneChange
+            self.lane_change_ll_prob = 1.0
+            self.lane_change_direction = auto_direction
+            self.intelligent_alc.mark_lane_change_started()
+            # Satisfy the manual lane change timer to allow immediate execution
+            self.alc.lane_change_wait_timer = self.alc.lane_change_delay + 1.0
+    # ============================================================
 
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX or self.alc.lane_change_set_timer == AutoLaneChangeMode.OFF:
       self.lane_change_state = LaneChangeState.off
@@ -95,11 +115,16 @@ class DesireHelper:
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
+        # MODIFIED: Check for intelligent auto lane change trigger as well
+        is_auto_triggered = self.intelligent_alc.state == IntelligentALCState.REQUESTING
+
         if not one_blinker or below_lane_change_speed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
-        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
+        elif (torque_applied or self.alc.auto_lane_change_allowed or is_auto_triggered) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
+          if is_auto_triggered:
+            self.intelligent_alc.mark_lane_change_started()
 
       # LaneChangeState.laneChangeStarting
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
@@ -116,6 +141,10 @@ class DesireHelper:
         self.lane_change_ll_prob = min(self.lane_change_ll_prob + DT_MDL, 1.0)
 
         if self.lane_change_ll_prob > 0.99:
+          # NEW: Mark intelligent ALC as complete if it was the one executing
+          if self.intelligent_alc.state == IntelligentALCState.EXECUTING:
+            self.intelligent_alc.mark_lane_change_complete()
+            
           self.lane_change_direction = LaneChangeDirection.none
           if one_blinker:
             self.lane_change_state = LaneChangeState.preLaneChange
