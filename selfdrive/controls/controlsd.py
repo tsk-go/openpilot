@@ -106,8 +106,9 @@ def controls_thread(sm=None, pm=None, can_sock=None):
     CC.longActive = LoC.active and not CS.brakePressed and not CS.gasPressed
 
     # Steer
-    CC.actuators.steer, CC.actuators.steeringAngleDeg, lac_log = LaC.update(CC.latActive, CS, VM, sm["liveParameters"], 
-                                                                              sm["liveTorqueParameters"], desired_curvature, 
+    # ADDED: model_v2 and long_plan to the LaC.update call (Vision-Only)
+    CC.actuators.steer, CC.actuators.steeringAngleDeg, lac_log = LaC.update(CC.latActive, CS, VM, sm["liveParameters"],
+                                                                              sm["liveTorqueParameters"], desired_curvature,
                                                                               model_v2, long_plan)
 
     # Gas and brake
@@ -135,6 +136,10 @@ def controls_thread(sm=None, pm=None, can_sock=None):
 
 
 def main(sm=None, pm=None, can_sock=None):
+  # ADDED: 'modelV2' and 'longitudinalPlan' to the SubMaster list
+  sm = messaging.SubMaster(['carState', 'controlsState', 'driverMonitoringState', 'events', 'liveParameters',
+                            'liveTorqueParameters', 'modelV2', 'longitudinalPlan', 'roadLimitSpeed', 'standstill'])
+  pm = messaging.PubMaster(['carControl', 'controlsState'])
   controls_thread(sm, pm, can_sock)
 
 
