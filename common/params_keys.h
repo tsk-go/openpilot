@@ -219,10 +219,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SunnylinkEnabled", {PERSISTENT, BOOL, "1"}},
     {"SunnylinkTempFault", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0"}},
 
-    // Backup Manager params
-    {"BackupManager_CreateBackup", {PERSISTENT, BOOL}},
-    {"BackupManager_RestoreVersion", {PERSISTENT, STRING}},
-
     // sunnypilot car specific params
     {"HyundaiLongitudinalTuning", {PERSISTENT | BACKUP, INT, "0"}},
     {"SubaruStopAndGo", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -279,4 +275,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
+    
+    // --- NEW PARAMETER FOR INTELLIGENT AUTO LANE CHANGE ---
+    {"IntelligentAutoLaneChangeEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // -----------------------------------------------------
 };
