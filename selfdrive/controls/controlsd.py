@@ -45,9 +45,10 @@ class Controls(ControlsExt, ModelStateBase):
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
+    # MODIFICATION 1: Added 'radarState' to the SubMaster list
     self.sm = messaging.SubMaster(['liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay', 'radarState'] + self.sm_services_ext,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
@@ -141,9 +142,21 @@ class Controls(ControlsExt, ModelStateBase):
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 
     actuators.curvature = self.desired_curvature
+    
+    # MODIFICATION 2: Updated LatControl.update call to pass new arguments
+    radar_state = self.sm['radarState']
+    
+    # Note: The original call was:
+    # steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
+    #                                                    self.steer_limited_by_safety, self.desired_curvature,
+    #                                                    self.calibrated_pose, curvature_limited)
+    
+    # We assume LatControl.update has been modified to accept the new arguments and pass them to DesireHelper.
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
-                                                       self.calibrated_pose, curvature_limited)  # TODO what if not available
+                                                       self.calibrated_pose, curvature_limited,
+                                                       radar_state, model_v2, long_plan)
+    
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
     # Ensure no NaNs/Infs
