@@ -5,7 +5,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLan
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTurnController
 from openpilot.sunnypilot.navd.navigation_desires.navigation_desires import NavigationDesires
 # NEW IMPORT: Intelligent Auto Lane Change
-from openpilot.openpilot.sunnypilot.selfdrive.controls.lib.intelligent_auto_lane_change import IntelligentAutoLaneChange
+from openpilot.sunnypilot.selfdrive.controls.lib.intelligent_auto_lane_change import IntelligentAutoLaneChange
 
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
