@@ -177,6 +177,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
 
+    // NEW PARAMETER FOR INTELLIGENT AUTO LANE CHANGE
+    {"IntelligentAutoLaneChangeEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+
     // toyota specific params
     {"ToyotaAutoHold", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ToyotaEnhancedBsm", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -275,8 +278,4 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
-    
-    // --- NEW PARAMETER FOR INTELLIGENT AUTO LANE CHANGE ---
-    {"IntelligentAutoLaneChangeEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
-    // -----------------------------------------------------
 };
