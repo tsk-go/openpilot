@@ -13,16 +13,13 @@ class LatControlPID(LatControl):
                              k_f=CP.lateralTuning.pid.kf, pos_limit=self.steer_max, neg_limit=-self.steer_max)
     self.get_steer_feedforward = CI.get_steer_feedforward_function()
 
-  # MODIFIED: Added model_v2 and long_plan to the signature (Vision-Only)
-  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, model_v2, long_plan):
+  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, model_v2, long_plan): # MODIFIED SIGNATURE
+    # Update desire helper # ADDED
+    self.desire_helper.update(CS, active, model_v2.laneChangeProb, model_v2, long_plan)
+
     pid_log = log.ControlsState.LateralPIDState.new_message()
     pid_log.steeringAngleDeg = float(CS.steeringAngleDeg)
     pid_log.steeringRateDeg = float(CS.steeringRateDeg)
-
-    # NEW: Pass new arguments to desire_helper.update
-    self.desire_helper.update(CS, active, model_v2.laneChangeProb,
-                              model_v2.meta.leftLaneEdgeDetected, model_v2.meta.rightLaneEdgeDetected,
-                              model_v2, long_plan)
 
     angle_steers_des_no_offset = math.degrees(VM.get_steer_from_curvature(-desired_curvature, CS.vEgo, params.roll))
     angle_steers_des = angle_steers_des_no_offset + params.angleOffsetDeg
