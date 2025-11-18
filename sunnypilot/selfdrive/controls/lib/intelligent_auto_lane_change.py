@@ -30,125 +30,92 @@ class IntelligentAutoLaneChange:
     self.read_params()
 
   def read_params(self):
-    # This is the parameter we added to params_keys.h
     self.enabled = self.params.get_bool("IntelligentAutoLaneChangeEnabled")
 
-  def should_trigger_lane_change(self):
-    return self.state == IntelligentALCState.REQUESTING
-
-  def get_lane_change_direction(self):
-    return self.direction
-
-  def mark_lane_change_started(self):
-    self.state = IntelligentALCState.EXECUTING
-    self.timer = 0.0
-
-  def mark_lane_change_complete(self):
-    self.state = IntelligentALCState.COOLDOWN
-    self.timer = 0.0
-    self.direction = log.LaneChangeDirection.none
-
-  def _check_safety(self, CS, model_v2, target_direction):
-    # 1. Speed Check
-    if CS.vEgo < self.min_speed or CS.vEgo > 80.0 * CV.MPH_TO_MS:
-      return False
-
-    # 2. Blind Spot Check (using carstate)
-    if target_direction == log.LaneChangeDirection.left and CS.leftBlindspot:
-      return False
-    if target_direction == log.LaneChangeDirection.right and CS.rightBlindspot:
-      return False
-
-    # 3. Lane Line Confidence (Vision Model)
-    # Check if the target lane line is reasonably visible
-    if target_direction == log.LaneChangeDirection.left:
-      # Left lane line is index 0 (or 1 depending on fork, using 0 for left boundary)
-      target_line_prob = model_v2.laneLineProbs[0]
-    else:
-      # Right lane line is index 3 (or 2 for right boundary)
-      target_line_prob = model_v2.laneLineProbs[3]
-      
-    if target_line_prob < 0.5:
-      return False
-      
-    # 4. Target Lane Clearance (Simplified: relies on BSM)
-    # For a full implementation, this would check the model's path for objects in the target lane.
-    # We rely on the BSM check (2) for immediate safety.
-
-    return True
-
-  def _check_trigger_conditions(self, CS, model_v2):
-    # 1. Feature Enabled
+  def update(self, CS, model_v2, long_plan, lateral_active):
     if not self.enabled:
+      self.state = IntelligentALCState.IDLE
       return log.LaneChangeDirection.none
 
-    # 2. Cruise Control Active
-    if not CS.cruiseState.enabled:
+    # 1. Check Pre-conditions
+    v_ego = CS.vEgo
+    if v_ego < self.min_speed:
+      self.state = IntelligentALCState.IDLE
       return log.LaneChangeDirection.none
 
-    # 3. Lead Vehicle Check (VISION-ONLY)
-    # Use modelV2.leadOne for vision-based lead
+    # Get Lead Info (Vision-Only)
     lead = model_v2.leadOne
     if not lead.status:
+      self.state = IntelligentALCState.IDLE
       return log.LaneChangeDirection.none
 
-    # 4. Speed Difference Check (Set speed > Current speed + delta)
-    # CS.vCruise is in KPH, CS.vEgo is in m/s. Convert vCruise to m/s.
-    if CS.vCruise * CV.KPH_TO_MS < CS.vEgo + self.speed_delta:
+    # Check if we are following a slower car
+    v_cruise = CS.cruiseState.speed
+    v_lead = lead.vLead
+    d_lead = lead.dRel
+
+    is_slower_lead = (v_cruise > v_lead + self.speed_delta)
+    is_too_close = (d_lead < self.min_lead_distance)
+    is_too_far = (d_lead > self.max_lead_distance)
+
+    if not is_slower_lead or is_too_close or is_too_far:
+      self.state = IntelligentALCState.IDLE
       return log.LaneChangeDirection.none
 
-    # 5. Lead Distance Check
-    if not (self.min_lead_distance < lead.dRel < self.max_lead_distance):
+    # 2. State Machine
+    if self.state == IntelligentALCState.IDLE:
+      # Start evaluation if all pre-conditions are met
+      self.state = IntelligentALCState.EVALUATING
+      self.timer = 0.0
+      self.direction = log.LaneChangeDirection.none
+
+    elif self.state == IntelligentALCState.EVALUATING:
+      self.timer += DT_MDL
+      if self.timer >= self.evaluation_time:
+        # Evaluation complete, check for safe lane
+        self.direction = self._get_safe_lane_direction(CS, model_v2)
+        if self.direction != log.LaneChangeDirection.none:
+          self.state = IntelligentALCState.REQUESTING
+        else:
+          self.state = IntelligentALCState.IDLE # Failed to find safe lane
+
+    elif self.state == IntelligentALCState.REQUESTING:
+      # Requesting a lane change. The DH will pick this up.
+      self.state = IntelligentALCState.EXECUTING
+      self.DH.alc.lane_change_wait_timer = self.DH.alc.lane_change_delay + 1.0 # Force immediate start
+      return self.direction
+
+    elif self.state == IntelligentALCState.EXECUTING:
+      # Wait for the DH to complete the lane change
+      if self.DH.lane_change_state == log.LaneChangeState.off:
+        self.state = IntelligentALCState.COOLDOWN
+        self.timer = 0.0
+        self.direction = log.LaneChangeDirection.none
       return log.LaneChangeDirection.none
 
-    # 6. Check Target Lane Availability (Prefer Left for passing)
-    
-    # Check Left Lane
-    if self._check_safety(CS, model_v2, log.LaneChangeDirection.left):
-      return log.LaneChangeDirection.left
-      
-    # Check Right Lane (if left is not available)
-    if self._check_safety(CS, model_v2, log.LaneChangeDirection.right):
-      return log.LaneChangeDirection.right
+    elif self.state == IntelligentALCState.COOLDOWN:
+      self.timer += DT_MDL
+      if self.timer >= self.cooldown_time:
+        self.state = IntelligentALCState.IDLE
+      return log.LaneChangeDirection.none
 
     return log.LaneChangeDirection.none
 
-  def update(self, CS, model_v2, long_plan, lateral_active):
-    self.read_params()
-    self.timer += DT_MDL
+  def _get_safe_lane_direction(self, CS, model_v2):
+    # Simplified safety check: prefers left lane (passing lane)
+    # Check if left lane is available and safe (no car in blind spot)
 
-    if not lateral_active:
-      self.state = IntelligentALCState.IDLE
-      self.timer = 0.0
-      return
+    # Check for left lane
+    if model_v2.meta.leftLaneEdgeDetected:
+      # Check if left blind spot is clear (assuming carState has BSM info)
+      if not CS.leftBlindspot:
+        # Check if the lane is clear ahead (vision model can predict this)
+        # For simplicity, we assume if BSM is clear, the lane is safe to enter
+        return log.LaneChangeDirection.left
 
-    if self.state == IntelligentALCState.IDLE:
-      self.direction = self._check_trigger_conditions(CS, model_v2)
-      if self.direction != log.LaneChangeDirection.none:
-        self.state = IntelligentALCState.EVALUATING
-        self.timer = 0.0
+    # Check for right lane (less preferred)
+    if model_v2.meta.rightLaneEdgeDetected:
+      if not CS.rightBlindspot:
+        return log.LaneChangeDirection.right
 
-    elif self.state == IntelligentALCState.EVALUATING:
-      # Re-check safety continuously
-      if self._check_safety(CS, model_v2, self.direction):
-        if self.timer > self.evaluation_time:
-          self.state = IntelligentALCState.REQUESTING
-          self.timer = 0.0
-      else:
-        # Safety check failed, return to IDLE
-        self.state = IntelligentALCState.IDLE
-        self.direction = log.LaneChangeDirection.none
-        self.timer = 0.0
-
-    elif self.state == IntelligentALCState.REQUESTING:
-      pass
-
-    elif self.state == IntelligentALCState.EXECUTING:
-      # If the maneuver takes too long, abort and go to cooldown
-      if self.timer > 10.0:
-        self.mark_lane_change_complete()
-
-    elif self.state == IntelligentALCState.COOLDOWN:
-      if self.timer > self.cooldown_time:
-        self.state = IntelligentALCState.IDLE
-        self.timer = 0.0
+    return log.LaneChangeDirection.none
