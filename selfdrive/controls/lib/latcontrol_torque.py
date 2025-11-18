@@ -9,6 +9,7 @@ from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 
+
 # At higher speeds (25+mph) we can assume:
 # Lateral acceleration achieved by a specific car correlates to
 # torque applied to the steering rack. It does not correlate to
@@ -47,7 +48,13 @@ class LatControlTorque(LatControl):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
-  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited):
+  # MODIFIED: Added model_v2 and long_plan to the signature (Vision-Only)
+  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, model_v2, long_plan):
+    # NEW: Pass new arguments to desire_helper.update
+    self.desire_helper.update(CS, active, model_v2.laneChangeProb,
+                              model_v2.meta.leftLaneEdgeDetected, model_v2.meta.rightLaneEdgeDetected,
+                              model_v2, long_plan)
+
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
