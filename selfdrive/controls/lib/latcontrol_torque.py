@@ -47,12 +47,21 @@ class LatControlTorque(LatControl):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
-  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited):
+  # MODIFIED: Added radar_state, model_v2, long_plan to the signature
+  def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, radar_state, model_v2, long_plan):
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
+    
+    # --- MODIFIED: CALL DESIRE HELPER WITH NEW ARGUMENTS ---
+    # The desire_helper is updated here, and now receives the new arguments
+    self.desire_helper.update(CS, active, model_v2.laneChangeProb,
+                              model_v2.meta.leftLaneEdgeDetected, model_v2.meta.rightLaneEdgeDetected,
+                              radar_state, model_v2, long_plan)
+    # ------------------------------------------------------
+
     if not active:
       output_torque = 0.0
       pid_log.active = False
