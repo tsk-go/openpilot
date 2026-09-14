@@ -4,10 +4,12 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from typing import cast
+
 import numpy as np
 
 from opendbc.car import structs
-from openpilot.cereal import log
+from openpilot.cereal import log, messaging
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 SIENNA_LAT_ACCEL_FACTOR = 1.69
@@ -31,7 +33,7 @@ class FakeParams:
     self.values[key] = bool(val)
 
 
-class FakeSubMaster:
+class _FakeSubMaster:
   def __init__(self, msgs: dict):
     self.msgs = msgs
     self.updated = dict.fromkeys(msgs, True)
@@ -90,7 +92,7 @@ def make_controls_state(saturated: bool = False, actual_lat_accel: float = 0., c
 
 def make_sm(v_ego: float, *, md=None, saturated: bool = False, actual_lat_accel: float = 0., lat_active: bool = True,
             steering_pressed: bool = False, roll: float = 0., ltp_use_params: bool = False, ltp_factor: float = 0.,
-            ltp_friction: float = 0.) -> FakeSubMaster:
+            ltp_friction: float = 0.) -> messaging.SubMaster:
   CS = structs.CarState()
   CS.vEgo = v_ego
   CS.steeringPressed = steering_pressed
@@ -103,11 +105,11 @@ def make_sm(v_ego: float, *, md=None, saturated: bool = False, actual_lat_accel:
   ltp.useParams = ltp_use_params
   ltp.latAccelFactorFiltered = ltp_factor
   ltp.frictionCoefficientFiltered = ltp_friction
-  return FakeSubMaster({
+  return cast(messaging.SubMaster, _FakeSubMaster({
     'carState': CS,
     'carControl': CC,
     'controlsState': make_controls_state(saturated, actual_lat_accel),
     'vehicleParameters': vp,
     'lateralTorqueParameters': ltp,
     'modelV2': md if md is not None else make_model(v_ego),
-  })
+  }))
