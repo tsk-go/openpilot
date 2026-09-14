@@ -6,8 +6,10 @@ See the LICENSE.md file in the root directory for more details.
 """
 import math
 import unittest
+from typing import cast
 
 from openpilot.cereal import custom
+from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control import (
   USABLE_FRACTION, A_ENGAGE, A_RELEASE, A_MAX, MIN_V, RESPONSE_LAG_T, T_MIN,
@@ -26,7 +28,7 @@ SETTLE = 40  # frames for the a_req filter to settle
 
 
 def make_controller(enabled: bool = True) -> TorqueLimitCurveControl:
-  return TorqueLimitCurveControl(make_cp(), FakeParams({"TorqueLimitCurveControl": enabled}))
+  return TorqueLimitCurveControl(make_cp(), cast(Params, FakeParams({"TorqueLimitCurveControl": enabled})))
 
 
 def run(ctrl: TorqueLimitCurveControl, sm, v_ego: float, n: int = SETTLE, long_enabled: bool = True, long_override: bool = False):
@@ -178,7 +180,7 @@ class TestTorqueLimitCurveControl(unittest.TestCase):
     self.assertLess(ctrl2.lat_accel_limit, ctrl.lat_accel_limit)
     self.assertGreater(ctrl2.a_required, a_with_prior)
 
-  def test_adverse_roll_tightens_limit_but_favourable_roll_does_not_relax(self):
+  def test_adverse_roll_tightens_limit_but_favorable_roll_does_not_relax(self):
     v = 25.
     kappa = curve_for(v, 1.2 * SIENNA_USABLE)  # left turn (positive yaw rate)
     d = 30.
@@ -189,9 +191,9 @@ class TestTorqueLimitCurveControl(unittest.TestCase):
     run(adverse, make_sm(v, md=make_model(v, curve_kappa=kappa, curve_start_m=d), roll=-0.05), v)
     self.assertGreater(adverse.a_required, base.a_required)
 
-    favourable = make_controller()
-    run(favourable, make_sm(v, md=make_model(v, curve_kappa=kappa, curve_start_m=d), roll=0.05), v)
-    self.assertAlmostEqual(favourable.a_required, base.a_required, places=6)
+    favorable = make_controller()
+    run(favorable, make_sm(v, md=make_model(v, curve_kappa=kappa, curve_start_m=d), roll=0.05), v)
+    self.assertAlmostEqual(favorable.a_required, base.a_required, places=6)
 
   def test_release_hysteresis(self):
     self.assertLess(A_RELEASE, A_ENGAGE)

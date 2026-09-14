@@ -1,3 +1,8 @@
+tsk-go fork changes
+========================
+* controls: add Torque Limit Curve Control (TLCC), a physics-only curve speed controller that slows only when
+  steering can't deliver what the path ahead requires, independent of Smart Cruise Control
+
 sunnypilot Version 2026.002.000 (2026-06-28)
 ========================
 * What's Changed (sunnypilot/sunnypilot)
