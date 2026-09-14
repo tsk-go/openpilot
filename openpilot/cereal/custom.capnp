@@ -204,6 +204,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  torqueLimitCurveControl @8 :TorqueLimitCurveControl;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -300,6 +301,31 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     sccVision @1;
     sccMap @2;
     speedLimitAssist @3;
+    torqueLimitCurve @4;
+  }
+
+  struct TorqueLimitCurveControl {
+    state @0 :TorqueLimitCurveControlState;
+    enabled @1 :Bool;
+    active @2 :Bool;
+    vTarget @3 :Float32;
+    aTarget @4 :Float32;
+    latAccelLimit @5 :Float32;      # learned lateral accel ceiling of the car
+    latAccelUsable @6 :Float32;     # ceiling minus controller headroom; what we plan against
+    latAccelRequired @7 :Float32;   # max lateral accel the path ahead needs at current speed
+    vCurve @8 :Float32;             # speed the limiting point allows
+    distToCurve @9 :Float32;        # distance to the limiting point
+    aRequired @10 :Float32;         # decel needed to reach vCurve at the limiting point
+    saturationSamples @11 :UInt32;  # how much saturation evidence the learner has
+    priorLatAccelLimit @12 :Float32; # ceiling implied by live torque params (before learning)
+
+    enum TorqueLimitCurveControlState {
+      disabled @0;
+      enabled @1;    # armed, path ahead is within the car's limit
+      braking @2;    # slowing to reach the limiting point at a speed the steering can handle
+      limited @3;    # even max braking won't make it; steering limit will be exceeded
+      overriding @4; # driver overriding longitudinal
+    }
   }
 
   struct E2eAlerts {

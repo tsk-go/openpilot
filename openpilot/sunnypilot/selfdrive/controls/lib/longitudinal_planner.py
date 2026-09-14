@@ -14,6 +14,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAle
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
+from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control.controller import TorqueLimitCurveControl
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 
@@ -29,6 +30,7 @@ class LongitudinalPlannerSP:
     self.scc = SmartCruiseControl()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
+    self.tlcc = TorqueLimitCurveControl(CP)
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
     self.source = LongitudinalPlanSource.cruise
     self.e2e_alerts_helper = E2EAlertsHelper()
@@ -54,6 +56,9 @@ class LongitudinalPlannerSP:
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
 
+    # Torque Limit Curve Control (independent of SCC)
+    self.tlcc.update(sm, long_enabled, long_override, v_ego, a_ego)
+
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)
 
@@ -67,6 +72,7 @@ class LongitudinalPlannerSP:
       LongitudinalPlanSource.sccVision: (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       LongitudinalPlanSource.sccMap: (self.scc.map.output_v_target, self.scc.map.output_a_target),
       LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
+      LongitudinalPlanSource.torqueLimitCurve: (self.tlcc.output_v_target, self.tlcc.output_a_target),
     }
 
     self.source = min(targets, key=lambda k: targets[k][0])
@@ -132,6 +138,22 @@ class LongitudinalPlannerSP:
     assist.active = self.sla.is_active
     assist.vTarget = float(self.sla.output_v_target)
     assist.aTarget = float(self.sla.output_a_target)
+
+    # Torque Limit Curve Control
+    tlcc = longitudinalPlanSP.torqueLimitCurveControl
+    tlcc.state = self.tlcc.state
+    tlcc.enabled = self.tlcc.is_enabled
+    tlcc.active = self.tlcc.is_active
+    tlcc.vTarget = float(self.tlcc.output_v_target)
+    tlcc.aTarget = float(self.tlcc.output_a_target)
+    tlcc.latAccelLimit = float(self.tlcc.lat_accel_limit)
+    tlcc.latAccelUsable = float(self.tlcc.lat_accel_usable)
+    tlcc.latAccelRequired = float(self.tlcc.lat_accel_required)
+    tlcc.vCurve = float(self.tlcc.v_curve)
+    tlcc.distToCurve = float(self.tlcc.dist_to_curve)
+    tlcc.aRequired = float(self.tlcc.a_required)
+    tlcc.saturationSamples = int(self.tlcc.learner.sat_samples)
+    tlcc.priorLatAccelLimit = float(self.tlcc.learner.prior)
 
     # E2E Alerts
     e2eAlerts = longitudinalPlanSP.e2eAlerts

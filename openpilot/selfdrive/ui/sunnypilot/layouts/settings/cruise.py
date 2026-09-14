@@ -57,6 +57,13 @@ class CruiseLayout(Widget):
       description=tr("Use map data to estimate the appropriate speed to drive through turns ahead."),
       param="SmartCruiseControlMap")
 
+    self.tlcc_toggle = toggle_item_sp(
+      title=tr("Torque Limit Curve Control (Alpha)"),
+      description=tr("Slow down before a turn only when the steering system cannot deliver the lateral acceleration the road ahead requires. " +
+                     "The limit is learned from your car's own steering saturation events; no comfort tuning is applied. " +
+                     "Independent of Smart Cruise Control."),
+      param="TorqueLimitCurveControl")
+
     self.custom_acc_toggle = toggle_item_sp(
       title=tr("Custom ACC Speed Increments"),
       description="",
@@ -92,6 +99,7 @@ class CruiseLayout(Widget):
       self.dec_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
+      self.tlcc_toggle,
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,

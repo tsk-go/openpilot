@@ -1049,6 +1049,46 @@
                   ]
                 }
               ]
+            },
+            {
+              "key": "TorqueLimitCurveControl",
+              "widget": "toggle",
+              "title": "Torque Limit (Alpha)",
+              "description": "Slow down before a turn only when the steering system cannot deliver the lateral acceleration the road ahead requires. The limit is learned from your car's own steering saturation events. Independent of Smart Cruise Control.",
+              "visibility": [
+                {
+                  "type": "any",
+                  "conditions": [
+                    {
+                      "type": "capability",
+                      "field": "has_longitudinal_control",
+                      "equals": true
+                    },
+                    {
+                      "type": "capability",
+                      "field": "has_icbm",
+                      "equals": true
+                    }
+                  ]
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "any",
+                  "conditions": [
+                    {
+                      "type": "capability",
+                      "field": "has_longitudinal_control",
+                      "equals": true
+                    },
+                    {
+                      "type": "capability",
+                      "field": "has_icbm",
+                      "equals": true
+                    }
+                  ]
+                }
+              ]
             }
           ]
         }

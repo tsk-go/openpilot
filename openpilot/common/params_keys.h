@@ -280,6 +280,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "3"}},
     {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
 
+    // Torque Limit Curve Control
+    {"TorqueLimitCurveControl", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"TorqueLimitCurveControlCache", {PERSISTENT, JSON}},
+
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
