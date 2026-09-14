@@ -41,9 +41,10 @@ A_MAX = 1.2  # m/s^2
 # not shortly after it.
 RESPONSE_LAG_T = 0.5  # s
 
-# Minimum distance used in the required-deceleration division. Prevents blow-up
-# when the limiting point is (nearly) under the car.
-D_MIN = 5.0  # m
+# Floor on the planning distance, expressed as travel time. When the limiting point is
+# (nearly) under the car, the excess speed is bled off over this long instead of
+# "instantly" - a 1 mph excess mid-curve is a gentle lift, not a brake stab.
+T_MIN = 1.5  # s
 
 # Only trust the *current* road roll for points within this horizon. Roll is only
 # ever used to make the limit more conservative, never to relax it.

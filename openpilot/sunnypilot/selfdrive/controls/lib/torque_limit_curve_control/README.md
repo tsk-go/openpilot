@@ -47,7 +47,9 @@ a_req_i = (v_ego² − v_req_i²) / (2 · d_i)              constant decel neede
 ```
 
 `a_lat_usable = 0.9 × ceiling` (the PID needs headroom to actually track the path).
-`d_i` is reduced by `v_ego × 0.5 s` to compensate the planner's jerk-limited response.
+`d_i` is reduced by `v_ego × 0.5 s` to compensate the planner's jerk-limited response,
+and floored at `v_ego × 1.5 s`: when the limiting point is already under the car, the
+excess speed is bled off over 1.5 s rather than treated as an emergency.
 Current road roll is applied only within 3 s and only when it *hurts* (bank against
 the turn); it is never used to relax the limit.
 

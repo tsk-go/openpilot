@@ -16,7 +16,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control import (
-  MIN_V, USABLE_FRACTION, A_ENGAGE, A_RELEASE, A_MAX, D_MIN, ROLL_HORIZON_T, KAPPA_MIN, RESPONSE_LAG_T,
+  MIN_V, USABLE_FRACTION, A_ENGAGE, A_RELEASE, A_MAX, T_MIN, ROLL_HORIZON_T, KAPPA_MIN, RESPONSE_LAG_T,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control.lat_limit_learner import LateralLimitLearner
 
@@ -129,7 +129,7 @@ class TorqueLimitCurveControl:
       self.dist_to_curve = float(x[int(np.argmin(v_req))])
       return
 
-    d = np.maximum(x - v_ego * RESPONSE_LAG_T, D_MIN)
+    d = np.maximum(x - v_ego * RESPONSE_LAG_T, v_ego * T_MIN)
     a_req = np.zeros(n)
     a_req[too_fast] = (v_ego ** 2 - v_req[too_fast] ** 2) / (2. * d[too_fast])
 

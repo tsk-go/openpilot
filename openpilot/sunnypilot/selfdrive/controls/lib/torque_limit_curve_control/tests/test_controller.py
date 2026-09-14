@@ -10,7 +10,7 @@ import unittest
 from openpilot.cereal import custom
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control import (
-  USABLE_FRACTION, A_ENGAGE, A_RELEASE, A_MAX, MIN_V, RESPONSE_LAG_T,
+  USABLE_FRACTION, A_ENGAGE, A_RELEASE, A_MAX, MIN_V, RESPONSE_LAG_T, T_MIN,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control.controller import TorqueLimitCurveControl
 from openpilot.sunnypilot.selfdrive.controls.lib.torque_limit_curve_control.tests.helpers import (
@@ -103,11 +103,25 @@ class TestTorqueLimitCurveControl(unittest.TestCase):
 
   def test_never_targets_below_curve_speed(self):
     v = 20.
-    kappa = curve_for(v, 1.05 * SIENNA_USABLE)  # barely too fast, and the curve is right here
+    kappa = curve_for(v, 1.4 * SIENNA_USABLE)  # clearly too fast, and the curve is right here
     ctrl = make_controller()
     run(ctrl, make_sm(v, md=make_model(v, curve_kappa=kappa, curve_start_m=0.)), v)
     self.assertTrue(ctrl.is_active)
-    self.assertAlmostEqual(ctrl.output_v_target, ctrl.v_curve, places=5)
+    self.assertGreaterEqual(ctrl.output_v_target, ctrl.v_curve)
+    self.assertLess(ctrl.output_v_target, v)
+
+  def test_small_excess_in_curve_is_not_an_emergency(self):
+    # 5% over the usable limit with the limiting point under the car: bleeding ~0.5 m/s
+    # over T_MIN is well below A_ENGAGE, so nothing happens (no brake stab mid-curve)
+    v = 20.
+    kappa = curve_for(v, 1.05 * SIENNA_USABLE)
+    ctrl = make_controller()
+    run(ctrl, make_sm(v, md=make_model(v, curve_kappa=kappa, curve_start_m=0.)), v)
+    self.assertFalse(ctrl.is_active)
+    self.assertLess(ctrl.a_required, A_ENGAGE)
+    self.assertGreater(ctrl.a_required, 0.)
+    # in-curve required decel is (v - v_req) spread over T_MIN, to first order
+    self.assertAlmostEqual(ctrl.a_required, (v ** 2 - ctrl.v_curve ** 2) / (2 * v * T_MIN), places=6)
 
   def test_releases_once_slow_enough(self):
     v = 25.
