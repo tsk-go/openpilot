@@ -19,7 +19,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7   # Node 24 (v4 ran on the deprecated Node 20)
         with:
           ref: StarPilot-Dom
           fetch-depth: 0
