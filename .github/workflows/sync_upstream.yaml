@@ -1,0 +1,33 @@
+name: Sync upstream (firestar Dom)
+
+# Actions tab -> "Sync upstream (firestar Dom)" -> "Run workflow".
+# Merges firestar5683/StarPilot Dom into StarPilot-Dom and keeps all of our changes (see .github/sync_upstream.sh).
+on:
+  workflow_dispatch:
+  # To also sync by itself every day, remove the # from the next two lines:
+  # schedule:
+  #   - cron: "17 8 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: StarPilot-Dom
+          fetch-depth: 0
+          filter: blob:none   # history only; file contents are downloaded as needed (the full repo is ~2.4 GB)
+          # SYNC_TOKEN (optional): a token that may also update workflow files, for when firestar changes one
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+      - name: Merge firestar5683/StarPilot Dom into StarPilot-Dom
+        run: |
+          git config user.name "Chaim"
+          git config user.email "chaim@zomicks.com"
+          bash .github/sync_upstream.sh
