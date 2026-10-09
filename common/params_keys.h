@@ -389,6 +389,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ForceStopDistanceOffset", {PERSISTENT, INT, "0", "0", 2, SETTINGS_SIMPLE}},
     {"ForceStandstill", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"FordLKASButtonControlMigrated", {PERSISTENT, BOOL, "0", "0"}},
+    {"SonataHybridLKASButtonControlMigrated", {PERSISTENT, BOOL, "0", "0"}},
     {"ForceTorqueController", {PERSISTENT, BOOL, "0", "0", 3}},
     // These Ford curvature tuning concepts descend from BluePilot bp-7.0. StarPilot's key names and
     // settings integration are local; see /CREDITS.md and /THIRD_PARTY_NOTICES.md for provenance.

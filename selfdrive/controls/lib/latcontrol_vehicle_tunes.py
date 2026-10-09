@@ -1274,6 +1274,10 @@ HONDA_CRV_5G_PID_CENTER_KP_ANGLE_BP = [6.0, 18.0]
 RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN = 0.14
 RAV4_TSS2_CENTER_FRICTION_LAT = 0.30
 RAV4_TSS2_CENTER_FRICTION_LAT_WIDTH = 0.08
+RAV4_TSS2_CLEANUP_FRICTION_SPEED_BP = [0.0, 2.5, 5.0, 10.0, 15.0, 25.0]
+RAV4_TSS2_CLEANUP_FRICTION_SPEED_V = [0.0, 0.0, 0.04, 0.065, 0.05, 0.025]
+RAV4_TSS2_CLEANUP_FRICTION_LAT_BP = [0.30, 0.85]
+RAV4_TSS2_CLEANUP_FRICTION_JERK_BP = [0.25, 0.75]
 RAV4_TSS2_CENTER_SPEED = 13.0
 RAV4_TSS2_CENTER_SPEED_WIDTH = 3.0
 RAV4_TSS2_CENTER_OUTPUT_TAPER_MAX = 0.12
@@ -1950,12 +1954,15 @@ def _rav4_tss2_center_envelope(desired_lateral_accel: float, v_ego: float) -> fl
 
 def get_rav4_tss2_friction_threshold(v_ego: float, desired_lateral_accel: float = 0.0,
                                      desired_lateral_jerk: float = 0.0) -> float:
-  del desired_lateral_jerk
   gain = _flm_vehicle_knob("toyota_rav4_tss2.center_friction_threshold_gain",
                            RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN)
-  return get_standard_friction_threshold(v_ego) * (
+  threshold = get_standard_friction_threshold(v_ego) * (
     1.0 + gain * _rav4_tss2_center_envelope(desired_lateral_accel, v_ego)
   )
+  curve_weight = float(np.interp(abs(desired_lateral_accel), RAV4_TSS2_CLEANUP_FRICTION_LAT_BP, [1.0, 0.0]))
+  calm_weight = float(np.interp(abs(desired_lateral_jerk), RAV4_TSS2_CLEANUP_FRICTION_JERK_BP, [1.0, 0.0]))
+  increment = float(np.interp(max(v_ego, 0.0), RAV4_TSS2_CLEANUP_FRICTION_SPEED_BP, RAV4_TSS2_CLEANUP_FRICTION_SPEED_V))
+  return threshold + increment * curve_weight * calm_weight
 
 
 def get_rav4_tss2_center_output_scale(desired_lateral_accel: float, v_ego: float) -> float:

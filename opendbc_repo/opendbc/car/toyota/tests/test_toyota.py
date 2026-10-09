@@ -85,10 +85,47 @@ class TestToyotaInterfaces:
       SimpleNamespace(force_torque_controller=True, nnff=False, nnff_lite=False),
     )
 
-    assert default_params.lateralTuning.which() == "pid"
+    assert default_params.lateralTuning.which() == "torque"
     assert forced_params.lateralTuning.which() == "torque"
+    assert default_params.lateralTuning.to_dict() == forced_params.lateralTuning.to_dict()
     assert forced_params.lateralTuning.torque.latAccelFactor == pytest.approx(1.7)
     assert forced_params.lateralTuning.torque.friction == pytest.approx(0.14)
+
+  @pytest.mark.parametrize("candidate", list(CAR))
+  def test_toyota_default_controller_preserves_native_angle_path(self, candidate):
+    fingerprint = {bus: {} for bus in range(8)}
+    default_params = CarInterface.get_params(
+      candidate, fingerprint, [], False, False, False,
+      SimpleNamespace(force_torque_controller=False, nnff=False, nnff_lite=False),
+    )
+    forced_params = CarInterface.get_params(
+      candidate, fingerprint, [], False, False, False,
+      SimpleNamespace(force_torque_controller=True, nnff=False, nnff_lite=False),
+    )
+
+    if candidate in ANGLE_CONTROL_CAR:
+      assert default_params.steerControlType == CarParams.SteerControlType.angle
+      assert default_params.lateralTuning.which() == "pid"
+      assert default_params.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.LTA.value
+    else:
+      assert default_params.steerControlType == CarParams.SteerControlType.torque
+      assert default_params.lateralTuning.which() == "torque"
+      assert not default_params.safetyConfigs[0].safetyParam & ToyotaSafetyFlags.LTA.value
+
+    assert default_params.to_dict() == forced_params.to_dict()
+
+  @pytest.mark.parametrize("candidate", [CAR.TOYOTA_RAV4_TSS2, CAR.TOYOTA_RAV4_TSS2_2022, CAR.TOYOTA_RAV4_PRIME])
+  @pytest.mark.parametrize("eps_version", [b'\x028965B0R01400', b'8965B42181\x00\x00\x00\x00\x00\x00', b'8965B0R01200'])
+  def test_rav4_rack_variants_default_to_torque(self, candidate, eps_version):
+    params = CarInterface.get_params(
+      candidate, {bus: {} for bus in range(8)}, [CarParams.CarFw(ecu=Ecu.eps, fwVersion=eps_version)],
+      False, False, False,
+      SimpleNamespace(force_torque_controller=False, nnff=False, nnff_lite=False),
+    )
+
+    assert params.lateralTuning.which() == "torque"
+    assert params.steerActuatorDelay == pytest.approx(0.12)
+    assert params.steerControlType == CarParams.SteerControlType.torque
 
   def test_prius_force_torque_controller_preserves_vehicle_tune(self):
     fingerprint = {bus: {} for bus in range(8)}
@@ -813,7 +850,6 @@ class TestToyotaCarController:
     controller.accel = 0.0
     controller.brake_hold_active = False
     controller._brake_hold_counter = 0
-    controller._auto_hold_rearm_blocked = False
     return controller
 
   @staticmethod
@@ -1260,6 +1296,7 @@ class TestToyotaAutoHoldCruise:
   @staticmethod
   def _make_car(*, candidate=CAR.TOYOTA_RAV4_TSS2, hybrid=False, enabled=True, capability=True):
     cp = CarInterface.get_non_essential_params(candidate)
+    cp.openpilotLongitudinalControl = True
     cp.flags &= ~(ToyotaFlags.AUTO_BRAKE_HOLD.value | ToyotaFlags.HYBRID.value)
     if capability:
       cp.flags |= ToyotaFlags.AUTO_BRAKE_HOLD.value
@@ -1299,64 +1336,38 @@ class TestToyotaAutoHoldCruise:
       car.parser.update([(now_nanos, messages)])
     return car.parser.vl["ACC_CONTROL"]
 
+  @pytest.mark.parametrize("candidate,hybrid", [
+    (CAR.TOYOTA_RAV4, False),
+    (CAR.TOYOTA_RAV4H, True),
+    (CAR.TOYOTA_RAV4_TSS2, False),
+    (CAR.TOYOTA_RAV4_TSS2, True),
+    (CAR.TOYOTA_CAMRY_TSS2, False),
+  ])
   @pytest.mark.parametrize("sng_hack", [False, True])
-  def test_cruise_stop_blocks_planner_resume_until_gas(self, sng_hack):
-    car = self._make_car()
-    command = self._tick(car)
-    assert car.controller.brake_hold_active
-    assert command["ACCEL_CMD"] == -1.0
+  def test_auto_hold_does_not_change_cruise_stop_and_go(self, candidate, hybrid, sng_hack):
+    car = self._make_car(candidate=candidate, hybrid=hybrid)
+    baseline = self._make_car(candidate=candidate, hybrid=hybrid, enabled=False)
+    car.toggles.sng_hack = baseline.toggles.sng_hack = sng_hack
 
-    # Reproduce the report: no brake-pedal input, then the planner changes
-    # from stopping to starting and asks to resume while still stationary.
-    car.cc.actuators.accel = 1.5
-    car.cc.actuators.longControlState = structs.CarControl.Actuators.LongControlState.starting
-    car.cc.cruiseControl.resume = True
-    car.toggles.sng_hack = sng_hack
-    for _ in range(10):
+    for _ in range(50):
       command = self._tick(car)
-      assert car.controller.brake_hold_active
-      assert command["ACCEL_CMD"] == -1.0
-      assert command["PERMIT_BRAKING"] == 1
-      assert command["RELEASE_STANDSTILL"] == 0
-
-    car.cs.out.gasPressed = True
-    car.cc.longActive = False
-    car.cc.actuators.accel = 0.0
-    command = self._tick(car)
-    assert not car.controller.brake_hold_active
-    assert command["ACCEL_CMD"] == 0.0
-    assert command["RELEASE_STANDSTILL"] == 1
-
-  def test_gas_tap_does_not_rehold_until_the_next_stop(self):
-    car = self._make_car()
-    self._tick(car)
-    assert car.controller.brake_hold_active
-
-    car.cs.out.gasPressed = True
-    car.cc.longActive = False
-    car.cc.actuators.accel = 0.0
-    self._tick(car)
-
-    car.cs.out.gasPressed = False
-    car.cc.longActive = True
-    car.cc.actuators.accel = -0.7
-    for _ in range(10):
-      command = self._tick(car)
+      expected = self._tick(baseline)
       assert not car.controller.brake_hold_active
-      assert command["RELEASE_STANDSTILL"] == 1
+      assert dict(command) == dict(expected)
+      assert car.parser.vl["PRE_COLLISION_2"]["PBRTRGR"] == 0
 
-    car.cs.out.standstill = False
-    car.cs.out.vEgo = car.cs.out.vEgoRaw = 1.0
-    car.cs.out.cruiseState.standstill = False
-    self._tick(car)
-
-    car.cs.out.standstill = True
-    car.cs.out.vEgo = car.cs.out.vEgoRaw = 0.0
-    car.cs.out.cruiseState.standstill = True
-    command = self._tick(car)
-    assert car.controller.brake_hold_active
-    assert command["ACCEL_CMD"] == -1.0
-    assert command["RELEASE_STANDSTILL"] == 0
+    for vehicle in (car, baseline):
+      vehicle.cc.actuators.accel = 1.5
+      vehicle.cc.actuators.longControlState = structs.CarControl.Actuators.LongControlState.starting
+      vehicle.cc.cruiseControl.resume = True
+    for _ in range(30):
+      command = self._tick(car)
+      expected = self._tick(baseline)
+      assert not car.controller.brake_hold_active
+      assert dict(command) == dict(expected)
+      assert not car.cs.out.gasPressed
+    assert command["ACCEL_CMD"] > 0
+    assert command["RELEASE_STANDSTILL"] == 1
 
   def test_manual_stop_still_holds_with_only_aol_active(self):
     car = self._make_car()
@@ -1384,38 +1395,51 @@ class TestToyotaAutoHoldCruise:
     assert command["ACCEL_CMD"] == 0.0
     assert command["RELEASE_STANDSTILL"] == 1
 
-  @pytest.mark.parametrize("long_state", ["off", "pid", "starting"])
-  def test_stationary_cruise_does_not_latch_without_a_stopping_request(self, long_state):
+    car.cs.out.gasPressed = False
+    for _ in range(50):
+      self._tick(car)
+      assert not car.controller.brake_hold_active
+
+    car.cs.out.brakePressed = True
+    for _ in range(35):
+      command = self._tick(car)
+    assert car.controller.brake_hold_active
+    assert command["ACCEL_CMD"] == -1.0
+
+  @pytest.mark.parametrize("long_state", ["off", "pid", "starting", "stopping"])
+  @pytest.mark.parametrize("brake_pressed", [False, True])
+  def test_engaged_cruise_never_activates_auto_hold(self, long_state, brake_pressed):
     car = self._make_car()
     car.cc.actuators.longControlState = getattr(structs.CarControl.Actuators.LongControlState, long_state)
-    car.cc.actuators.accel = 1.5
-    self._tick(car)
-    assert not car.controller.brake_hold_active
+    car.cs.out.brakePressed = brake_pressed
+    for _ in range(50):
+      self._tick(car)
+      assert not car.controller.brake_hold_active
 
   @pytest.mark.parametrize("enabled,capability,candidate", [
     (False, True, CAR.TOYOTA_RAV4_TSS2),
     (True, False, CAR.TOYOTA_RAV4_TSS2),
-    (True, True, CAR.TOYOTA_CAMRY_TSS2),
   ])
-  def test_cruise_hold_requires_toggle_capability_and_acc_hold_path(self, enabled, capability, candidate):
+  def test_manual_hold_requires_toggle_and_capability(self, enabled, capability, candidate):
     car = self._make_car(candidate=candidate, enabled=enabled, capability=capability)
-    self._tick(car)
-    assert not car.controller.brake_hold_active
-
-    car.cc.actuators.accel = 1.5
-    car.cc.actuators.longControlState = structs.CarControl.Actuators.LongControlState.starting
-    car.cc.cruiseControl.resume = True
-    # Allow the ordinary acceleration rate limiter to ramp through zero.
-    for _ in range(20):
+    car.cc.longActive = False
+    car.cc.actuators.accel = 0.0
+    car.cs.out.cruiseState.enabled = False
+    car.cs.out.brakePressed = True
+    for _ in range(50):
       command = self._tick(car)
       assert not car.controller.brake_hold_active
-    assert command["ACCEL_CMD"] > 0
-    assert command["RELEASE_STANDSTILL"] == 1
+    assert command["ACCEL_CMD"] == 0.0
 
-  @pytest.mark.parametrize("release", ["toggle", "cancel", "main", "park", "reverse", "moving", "long_inactive"])
-  def test_cruise_hold_releases_when_conditions_change(self, release):
+  @pytest.mark.parametrize("release", ["toggle", "cancel", "main", "park", "reverse", "moving", "cruise"])
+  def test_manual_hold_releases_when_conditions_change(self, release):
     car = self._make_car()
-    self._tick(car)
+    car.cc.longActive = False
+    car.cc.actuators.accel = 0.0
+    car.cs.out.cruiseState.enabled = False
+    car.cs.out.brakePressed = True
+    for _ in range(35):
+      self._tick(car)
     assert car.controller.brake_hold_active
 
     if release == "toggle":
@@ -1429,10 +1453,22 @@ class TestToyotaAutoHoldCruise:
     elif release == "moving":
       car.cs.out.standstill = False
     else:
-      car.cc.longActive = False
+      car.cs.out.cruiseState.enabled = True
+      car.cc.longActive = True
 
     self._tick(car)
     assert not car.controller.brake_hold_active
+
+    if release == "cruise":
+      car.cs.out.brakePressed = False
+      car.cc.actuators.accel = 1.5
+      car.cc.actuators.longControlState = structs.CarControl.Actuators.LongControlState.starting
+      car.cc.cruiseControl.resume = True
+      for _ in range(20):
+        command = self._tick(car)
+        assert not car.controller.brake_hold_active
+      assert command["ACCEL_CMD"] > 0
+      assert command["RELEASE_STANDSTILL"] == 1
 
 
 class TestToyotaAutoHoldAeb:

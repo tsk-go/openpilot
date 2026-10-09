@@ -262,6 +262,13 @@ class TestLatControl:
   def _build_pid_controller(car_name):
     CarInterface = interfaces[car_name]
     CP = CarInterface.get_non_essential_params(car_name)
+    if car_name == TOYOTA.TOYOTA_RAV4_TSS2:
+      CP.lateralTuning.init('pid')
+      CP.lateralTuning.pid.kpBP = [0.0]
+      CP.lateralTuning.pid.kpV = [0.6]
+      CP.lateralTuning.pid.kiBP = [0.0]
+      CP.lateralTuning.pid.kiV = [0.1]
+      CP.lateralTuning.pid.kf = 0.00007818594
     CP.dashcamOnly = True
     CI = CarInterface(CP, custom.StarPilotCarParams.new_message())
     controller = LatControlPID(CP.as_reader(), CI, DT_CTRL)
@@ -2366,6 +2373,68 @@ class TestLatControl:
 
     assert lac_log.active
     assert abs(tuned_output) < abs(base_output)
+
+  @pytest.mark.parametrize('speed,increment', [(0.0, 0.0), (2.5, 0.0), (5.0, 0.04), (10.0, 0.065),
+                                             (15.0, 0.05), (25.0, 0.025), (30.0, 0.025)])
+  def test_rav4_tss2_friction_cleanup_speed_curve(self, speed, increment):
+    baseline = get_standard_friction_threshold(speed) * (
+      1.0 + latcontrol_vehicle_tunes.RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN *
+      latcontrol_vehicle_tunes._rav4_tss2_center_envelope(0.0, speed)
+    )
+
+    assert get_rav4_tss2_friction_threshold(speed) == pytest.approx(baseline + increment)
+
+  @pytest.mark.parametrize('accel,jerk', [(0.0, 0.0), (0.5, 0.4), (0.85, 0.0), (0.0, 0.75), (1.5, 1.0)])
+  def test_rav4_tss2_friction_cleanup_is_symmetric(self, accel, jerk):
+    threshold = get_rav4_tss2_friction_threshold(10.0, accel, jerk)
+
+    assert get_rav4_tss2_friction_threshold(10.0, -accel, jerk) == pytest.approx(threshold)
+    assert get_rav4_tss2_friction_threshold(10.0, accel, -jerk) == pytest.approx(threshold)
+    assert get_rav4_tss2_friction_threshold(10.0, -accel, -jerk) == pytest.approx(threshold)
+
+  @pytest.mark.parametrize('speed,accel,jerk', [(2.5, 0.1, 0.0), (10.0, 0.85, 0.0), (10.0, 0.1, 0.75),
+                                             (25.0, -1.2, -0.2), (25.0, -0.1, -1.0)])
+  def test_rav4_tss2_friction_cleanup_preserves_turn_authority(self, speed, accel, jerk):
+    baseline = get_standard_friction_threshold(speed) * (
+      1.0 + latcontrol_vehicle_tunes.RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN *
+      latcontrol_vehicle_tunes._rav4_tss2_center_envelope(accel, speed)
+    )
+
+    assert get_rav4_tss2_friction_threshold(speed, accel, jerk) == pytest.approx(baseline)
+
+  def test_rav4_tss2_friction_cleanup_softens_ramp_not_full_friction(self):
+    controller, _, _, _, _ = self._build_torque_controller(TOYOTA.TOYOTA_RAV4_TSS2)
+    speed = 10.0
+    baseline = get_standard_friction_threshold(speed) * (
+      1.0 + latcontrol_vehicle_tunes.RAV4_TSS2_CENTER_FRICTION_THRESHOLD_GAIN *
+      latcontrol_vehicle_tunes._rav4_tss2_center_envelope(0.0, speed)
+    )
+    threshold = get_rav4_tss2_friction_threshold(speed)
+
+    assert get_friction(0.1, 0.0, threshold, controller.torque_params) < get_friction(0.1, 0.0, baseline, controller.torque_params)
+    for error in (-1.0, 1.0):
+      assert get_friction(error, 0.0, threshold, controller.torque_params) == pytest.approx(
+        get_friction(error, 0.0, baseline, controller.torque_params)
+      )
+
+  @pytest.mark.parametrize('car_name', [TOYOTA.TOYOTA_RAV4_TSS2, TOYOTA.TOYOTA_RAV4_TSS2_2022,
+                                       TOYOTA.TOYOTA_RAV4_PRIME, TOYOTA.TOYOTA_CAMRY])
+  def test_rav4_tss2_friction_cleanup_update_scope(self, monkeypatch, car_name):
+    controller, VM, CS, params, toggles = self._build_torque_controller(car_name)
+    CS.vEgo = 10.0
+    calls = []
+
+    def friction_threshold(*args):
+      calls.append(args)
+      return 0.4
+
+    monkeypatch.setattr(latcontrol_torque, 'get_rav4_tss2_friction_threshold', friction_threshold)
+    _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0, False, 0.2, None, None, toggles)
+
+    assert lac_log.active
+    assert len(calls) == (1 if car_name == TOYOTA.TOYOTA_RAV4_TSS2 else 0)
+    if calls:
+      assert controller.starpilot_lateral_state.frictionThreshold == pytest.approx(0.4)
 
   def test_rav4_tss2_pid_output_update_path(self, monkeypatch):
     controller, VM, CS, params, starpilot_toggles = self._build_pid_controller(TOYOTA.TOYOTA_RAV4_TSS2)

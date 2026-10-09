@@ -34,6 +34,9 @@ MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL - ACCELERATION_DUE_TO_GRAVITY * 0.06
 STEER_DT = CarControllerParams.STEER_STEP * DT_CTRL
 CURVATURE_LOOKAHEAD_MIN = 0.20
 CURVATURE_LOOKAHEAD_MAX = 0.40
+MACH_E_HIGH_SPEED_LOOKAHEAD_EXTRA = 0.40
+MACH_E_HIGH_SPEED_LOOKAHEAD_START_SPEED = 16.0
+MACH_E_HIGH_SPEED_LOOKAHEAD_FULL_SPEED = 23.0
 MACH_E_TURN_IN_LOOKAHEAD_EXTRA = 0.80
 MACH_E_LOW_SPEED_TURN_IN_LOOKAHEAD_EXTRA = 1.60
 MACH_E_LOW_SPEED_TURN_IN_START_SPEED = 2.0
@@ -45,6 +48,8 @@ MACH_E_TURN_IN_FULL_CURVATURE = 0.008
 MACH_E_TURN_IN_LAG_CURVATURE = 0.006
 MACH_E_TURN_IN_PREVIEW_HOLD_SECONDS = 0.10
 MACH_E_TURN_IN_PREVIEW_HOLD_MIN_LAG = 0.0005
+MACH_E_TURN_IN_RATE_MIN_SPEED = 3.0
+MACH_E_TURN_IN_RATE_MIN_DEFICIT = 0.002
 MACH_E_UNWIND_LOOKAHEAD_EXTRA = 0.80
 MACH_E_UNWIND_FULL_LAG_CURVATURE = 0.0005
 MACH_E_UNWIND_PREVIEW_LAG_CURVATURE = 0.002
@@ -228,6 +233,13 @@ class FordLateralController:
     direction = int(getattr(self.model.meta.laneChangeDirection, "raw", self.model.meta.laneChangeDirection))
     return state in (1, 2, 3), direction
 
+  def _high_speed_lookahead_extra(self, v_ego: float, steering_pressed: bool, lane_change: bool) -> float:
+    if (self.CP.carFingerprint != CAR.FORD_MUSTANG_MACH_E_MK1 or not self.CP.flags & FordFlags.CANFD or
+        steering_pressed or lane_change):
+      return 0.0
+    return MACH_E_HIGH_SPEED_LOOKAHEAD_EXTRA * float(np.interp(
+      v_ego, [MACH_E_HIGH_SPEED_LOOKAHEAD_START_SPEED, MACH_E_HIGH_SPEED_LOOKAHEAD_FULL_SPEED], [0.0, 1.0]))
+
   @staticmethod
   def _current_curvature(CS) -> float:
     return -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
@@ -399,6 +411,20 @@ class FordLateralController:
     ))
     plateau_weight = allow_plateau if abs(desired) == abs(self.desired_curvature_last) else 1.0
     return curvature_weight * lag_weight * plateau_weight
+
+  def _turn_in_curvature_rate(self, desired: float, current: float, curvature_rate: float,
+                              v_ego: float, lookahead: float, steering_pressed: bool, lane_change: bool) -> float:
+    if (self.CP.carFingerprint != CAR.FORD_MUSTANG_MACH_E_MK1 or not self.CP.flags & FordFlags.CANFD or
+        not MACH_E_TURN_IN_RATE_MIN_SPEED <= v_ego < MACH_E_LOW_SPEED_TURN_IN_FADE_SPEED or
+        steering_pressed or lane_change or desired * self.desired_curvature_last <= 0.0 or
+        abs(desired) < abs(self.desired_curvature_last) or desired * curvature_rate >= 0.0 or
+        np.sign(desired) * (desired - current) <= MACH_E_TURN_IN_RATE_MIN_DEFICIT):
+      return curvature_rate
+    preview = self._predicted_curvature(v_ego, lookahead + MACH_E_TURN_IN_LOOKAHEAD_EXTRA)
+    if (desired * preview > 0.0 and abs(preview) >= abs(desired) and
+        np.sign(desired) * (preview - current) > MACH_E_TURN_IN_RATE_MIN_DEFICIT):
+      return 0.0
+    return curvature_rate
 
   @staticmethod
   def _turn_in_lookahead_extra(v_ego: float) -> float:
@@ -595,6 +621,7 @@ class FordLateralController:
 
     v_ego = float(CS.out.vEgoRaw)
     lookahead = self._curvature_lookahead()
+    lookahead += self._high_speed_lookahead_extra(v_ego, bool(CS.out.steeringPressed), self._lane_change()[0])
     predicted = self._predicted_curvature(v_ego, lookahead)
     allow_opposite_preview = False
     if self.CP.carFingerprint in FORD_CONSERVATIVE_PREVIEW_CARS:
@@ -650,7 +677,6 @@ class FordLateralController:
     if not allow_opposite_preview and not CS.out.steeringPressed and not self._lane_change()[0]:
       command_predicted = self._unwind_preview(desired, predicted, current, v_ego)
     requested, precision = self._blend_and_scale(desired, command_predicted, v_ego, current, allow_opposite_preview)
-    self.desired_curvature_last = desired
 
     if v_ego > 9.0:
       error_limit = self._curvature_error_limit(
@@ -676,6 +702,14 @@ class FordLateralController:
       curvature_rate *= float(np.interp(v_ego, [0.0, 14.5, 15.5], [1.0, 1.0, 0.0]))
       if self._lane_change()[0]:
         curvature_rate = 0.0
+
+    if (self.CP.carFingerprint == CAR.FORD_MUSTANG_MACH_E_MK1 and self.CP.flags & FordFlags.CANFD and
+        command_predicted != predicted and command_predicted * curvature_rate > 0.0):
+      curvature_rate = 0.0
+
+    curvature_rate = self._turn_in_curvature_rate(
+      desired, current, curvature_rate, v_ego, lookahead, bool(CS.out.steeringPressed), self._lane_change()[0])
+    self.desired_curvature_last = desired
 
     self.curvature_last = float(np.clip(applied, -0.02, 0.02))
     min_curvature_rate = -0.001024
