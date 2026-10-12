@@ -283,13 +283,13 @@ class P:
     self.latitude, self.longitude = lat, lon
 
 
-def disagreeing_hybrid(tmp_path, monkeypatch, sess):
+def disagreeing_hybrid(tmp_path, monkeypatch, sess, snap=None):
   monkeypatch.setattr(waze_bridge, "STATE_PATH", str(tmp_path / "w.json"))
   monkeypatch.setattr(waze_bridge, "OFF_FLAG", str(tmp_path / "off"))
   params = FakeParams({"MapboxPublicKey": "pk.x"})
   feed = waze_bridge.WazeFeed()
   feed._params, feed._params_mem = params, FakeParams()
-  feed.ingest(real_split_screen())                      # Waze: Ocean Pkwy in 0.3 mi
+  feed.ingest(snap or real_split_screen())              # Waze: Ocean Pkwy in 0.3 mi
   hy = waze_bridge.WazeHybrid(params, FakeParams(), session=sess)
   hy.WAZE_WINS_S = 0.0
   hy.update()
@@ -330,6 +330,34 @@ def test_waze_wins_rejects_far_street_and_parked(tmp_path, monkeypatch):
   hy.maybe_waze_wins(P(40.63, -73.97), 0.0, 10.0)
   wait_via(hy)
   assert hy.take_via() is None and "too far" in hy.reroute_status
+
+
+def test_waze_wins_uses_tablet_street_point(tmp_path, monkeypatch):
+  # the tablet found Ocean Pkwy on its offline map where it crosses the road ahead: no Mapbox lookup
+  near = waze_bridge.project(40.63, -73.97, 0.0, 0.3 * 1609.344)
+  sess = StreetSess(41.5, -73.0)                          # Mapbox's single point for the name: far away
+  snap = dict(real_split_screen(), streetPoint={"name": "Ocean Pkwy", "lat": near[0] + 0.0002, "lon": near[1], "t": 1})
+  hy = disagreeing_hybrid(tmp_path, monkeypatch, sess, snap)
+  hy.maybe_waze_wins(P(40.63, -73.97), 0.0, 10.0)
+  assert not sess.calls and not hy._via_inflight
+  assert hy.take_via() == (near[0] + 0.0002, near[1])
+  assert "tablet map" in hy.reroute_status
+  hy.maybe_waze_wins(P(40.63, -73.97), 0.0, 10.0)         # handed out once, not again within 60 s
+  assert hy.take_via() is None
+
+
+def test_tablet_street_point_checked(tmp_path, monkeypatch):
+  # a tablet point far from Waze's turn (or for another street) is not used: Mapbox lookup as before
+  near = waze_bridge.project(40.63, -73.97, 0.0, 0.3 * 1609.344)
+  sess = StreetSess(near[0] + 0.0009, near[1])
+  snap = dict(real_split_screen(), streetPoint={"name": "Ocean Pkwy", "lat": 41.5, "lon": -73.0})
+  hy = disagreeing_hybrid(tmp_path, monkeypatch, sess, snap)
+  hy.maybe_waze_wins(P(40.63, -73.97), 0.0, 10.0)
+  wait_via(hy)
+  assert len(sess.calls) == 1 and hy.take_via() is not None
+  for bad in ({"name": "", "lat": 40.6, "lon": -73.9}, {"name": "X", "lat": "nan"}, {"name": "X", "lat": 0, "lon": 0}, "x"):
+    assert waze_bridge._street_point(bad) is None
+  assert waze_bridge._street_point({"name": " Ocean Pkwy ", "lat": 40.6, "lon": -73.9}) == {"name": "Ocean Pkwy", "lat": 40.6, "lon": -73.9}
 
 
 def test_route_engine_via_url():

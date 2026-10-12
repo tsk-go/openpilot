@@ -169,6 +169,9 @@ class WazeFeed:
       parsed["destination"], parsed["destinationLabel"] = self.route_dest, self.route_label
       parsed["via"].append("destination:remembered")
     state = {"receivedAt": now, "receivedMono": mono, "tabletT": snap.get("t"), "app": snap.get("app", ""), "parsed": parsed}
+    sp = _street_point(snap.get("streetPoint"))
+    if sp is not None:
+      state["streetPoint"] = sp          # where the tablet's offline map has Waze's next street (for "Waze wins")
     _atomic_write(STATE_PATH, json.dumps(state))
     cmp = waze_parser.compare(parsed, nav_state if isinstance(nav_state, dict) else None)
     if isinstance(nav_state, dict) and nav_state.get("wazeReroute"):
@@ -341,6 +344,19 @@ def load_state(max_age: float = FRESH_S) -> dict[str, Any] | None:
   return st
 
 
+def _street_point(sp) -> dict[str, Any] | None:
+  """The tablet's {"name", "lat", "lon"}: the point of the street Waze turns onto, found on the tablet's offline map."""
+  if not isinstance(sp, dict) or not str(sp.get("name") or "").strip():
+    return None
+  try:
+    lat, lon = float(sp["lat"]), float(sp["lon"])
+  except (KeyError, TypeError, ValueError):
+    return None
+  if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+    return None
+  return {"name": str(sp["name"]).strip()[:120], "lat": lat, "lon": lon}
+
+
 # ------------------------------------------------------------------ navigationd side
 def project(lat: float, lon: float, bearing_deg: float, dist_m: float) -> tuple[float, float]:
   """Point dist_m ahead of (lat, lon) along bearing_deg (flat-earth, fine for a few km)."""
@@ -392,6 +408,7 @@ class WazeHybrid:
     self._tried: dict[str, float] = {}      # Waze street -> monotonic time of the last reroute attempt
     self._via_inflight = False
     self._pending_via: tuple[float, float] | None = None
+    self._street_point: dict[str, Any] | None = None
     self.reroute_status = ""
 
   def _warn(self, msg: str) -> None:
@@ -407,6 +424,7 @@ class WazeHybrid:
     st = load_state() if self.enabled else None
     self._fresh = st is not None
     self._waze = (st or {}).get("parsed") or {}
+    self._street_point = _street_point((st or {}).get("streetPoint"))
 
   def take_via(self) -> tuple[float, float] | None:
     """A via point (lat, lon) navigationd should reroute through now, if Waze won a disagreement."""
@@ -424,18 +442,26 @@ class WazeHybrid:
       return
     if now - self._disagree_since < self.WAZE_WINS_S or now - self._tried.get(street, -1e9) < self.RETRY_SAME_STREET_S:
       return
+    lat0, lon0 = float(position.latitude), float(position.longitude)
+    near = project(lat0, lon0, float(bearing), float(dist))   # roughly where Waze's turn is
+    limit = max(800.0, 0.5 * float(dist))
+    # the tablet already found Waze's street on its offline map, where it meets the road ahead: use that point
+    sp = self._street_point
+    if sp is not None and waze_parser.street_match(sp["name"], street) and meters(sp["lat"], sp["lon"], near[0], near[1]) <= limit:
+      self._tried[street] = now
+      self._pending_via = (sp["lat"], sp["lon"])
+      self.reroute_status = f"rerouting via {waze_parser.road_names(sp['name'])[0][:40]} (Waze's road, tablet map)"
+      self._warn(f"{self.reroute_status} at {sp['lat']:.5f},{sp['lon']:.5f}")
+      return
     keys = _mapbox_keys(self.params)
     if not keys:
       return
     self._tried[street] = now
     self._via_inflight = True
-    lat0, lon0 = float(position.latitude), float(position.longitude)
-    near = project(lat0, lon0, float(bearing), float(dist))   # roughly where Waze's turn is
     self.reroute_status = f"following Waze: looking up {street}"
 
     def worker():
       try:
-        limit = max(800.0, 0.5 * float(dist))
         found_far = False
         # a Waze signpost names several roads ("to Kennedy Airport / Belt Pkwy W / I-678 ..."): try each road
         for name in waze_parser.road_names(street)[:3]:
