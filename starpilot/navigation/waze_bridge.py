@@ -65,6 +65,7 @@ def _json_param(p, key: str) -> Any:
 
 
 END_CLEAR_S = 15.0
+TABLET_GRACE_S = 90.0  # a destination StarView just set: Waze is still calculating / waiting for "Go" - don't clear it
 GEOCODE_RETRY_S = 60.0   # address not found
 NET_RETRY_S = 15.0       # network error
 
@@ -138,6 +139,10 @@ class WazeFeed:
     self._retry_s = GEOCODE_RETRY_S
     self._not_nav_since: float | None = None
     self.last_handoff = ""
+    # StarView's own search (2.30): the destination came from the tablet with exact coordinates - nothing to read off
+    # Waze's screen, nothing to look up
+    self._tablet_route = False
+    self._tablet_set_at = float("-inf")  # monotonic
 
   def _p(self):
     if self._params is None:
@@ -185,12 +190,12 @@ class WazeFeed:
       if dest and dest != self.route_dest:
         self.route_dest, self.route_label = dest, str(parsed.get("destinationLabel") or "")
       dest = dest or self.route_dest          # the sheet is closed again: keep trying with what was read
-      if dest and dest != self._handled_dest and not self._geocode_inflight and \
+      if dest and dest != self._handled_dest and not self._tablet_route and not self._geocode_inflight and \
          not (dest == self._geocode_failed_for and time.monotonic() - self._geocode_failed_at < self._retry_s):
         self._start_geocode(dest, params, mem)
       return
     self._not_nav_since = self._not_nav_since or now
-    if now - self._not_nav_since < END_CLEAR_S:
+    if now - self._not_nav_since < END_CLEAR_S or now - self._tablet_set_at < TABLET_GRACE_S:
       return
     from openpilot.starpilot.navigation.destination_store import parse_destination_json, same_destination
     current = parse_destination_json(params.get("NavDestination", encoding="utf-8"))
@@ -201,6 +206,7 @@ class WazeFeed:
       _warn(self.last_handoff)
     if self.route_dest or self._handled_dest:
       self.route_dest = self.route_label = self._handled_dest = ""
+      self._tablet_route = False
       self.last_handoff = ""
       try:
         os.unlink(OUR_DEST_PATH)
@@ -253,6 +259,27 @@ class WazeFeed:
         self._geocode_inflight = False
 
     threading.Thread(target=worker, daemon=True).start()
+
+  def set_tablet_destination(self, name: str, address: str, lat: float, lon: float) -> dict[str, Any]:
+    """StarView's destination search (2.30): the place picked on the tablet, which also starts Waze on it. Set as
+    NavDestination with its exact coordinates; the Waze reader doesn't have to open Waze's trip panel and nothing is
+    geocoded. Cleared again like one read from Waze when Waze's route ends."""
+    from openpilot.starpilot.navigation.destination_store import set_navigation_destination
+    name, address = (name or "").strip(), (address or "").strip()
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0) or not (name or address):
+      return {"ok": False, "error": "bad destination"}
+    params, _ = self._p()
+    label = name if not address or address == name else (f"{name}: {address}" if name else address)
+    dest = set_navigation_destination(params, {"place_name": label, "latitude": lat, "longitude": lon})
+    if not dest:
+      return {"ok": False, "error": "bad destination"}
+    _atomic_write(OUR_DEST_PATH, json.dumps(dest))
+    self.route_dest, self.route_label = (address or name), (name if address and name != address else "")
+    self._handled_dest = self.route_dest
+    self._tablet_route, self._tablet_set_at, self._not_nav_since = True, time.monotonic(), None
+    self.last_handoff = f"destination from StarView: {label}"
+    _warn(f"{self.last_handoff} ({lat:.5f},{lon:.5f})")
+    return {"ok": True, "destination": dest}
 
   def status(self) -> dict[str, Any]:
     with self._lock:

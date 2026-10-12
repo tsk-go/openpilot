@@ -1107,6 +1107,18 @@ class Hub:
           return {"ok": True, "CEStatus": new}
         self.params.put_bool("ExperimentalMode", not cur)
         return {"ok": True, "ExperimentalMode": not cur}
+      if act == "nav_set":  # StarView 2.30: destination picked in the tablet's search (it opens Waze on it as well)
+        try:
+          lat, lon = float(req.get("latitude")), float(req.get("longitude"))
+        except (TypeError, ValueError):
+          return {"ok": False, "error": "latitude / longitude missing"}
+        return _waze_feed().set_tablet_destination(str(req.get("name") or ""), str(req.get("address") or ""), lat, lon)
+      if act == "nav_list":  # StarView 2.30: StarPilot's favourites and recent destinations for the tablet's search
+        from openpilot.starpilot.navigation.destination_store import (load_favorite_destinations, load_recent_destinations,
+                                                                       ordered_favorite_destinations)
+        favs = ordered_favorite_destinations(load_favorite_destinations(self.params.get("FavoriteDestinations", encoding="utf-8")))
+        recent = load_recent_destinations(self.params.get("ApiCache_NavDestinations", encoding="utf-8"))
+        return {"ok": True, "favorites": favs, "recents": recent}
       if act == "nav_cancel":
         for p, k in ((self.params, "NavDestination"), (self.params_mem, "NavInstructionState"), (self.params_mem, "NavInstructionCollapsed")):
           try:

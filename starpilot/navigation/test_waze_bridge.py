@@ -389,3 +389,31 @@ def test_state_file_age_is_monotonic(tmp_path, monkeypatch):
   mono = time.monotonic() + waze_bridge.FRESH_S + 1
   monkeypatch.setattr(waze_bridge.time, "monotonic", lambda: mono)
   assert waze_bridge.load_state() is None
+
+
+def test_tablet_destination(tmp_path, monkeypatch):
+  """StarView 2.30: destination picked on the tablet - set at once with its coordinates, Waze's sheet never needed,
+  nothing geocoded; cleared when Waze's route ends (after the grace time)."""
+  params = FakeParams({"MapboxPublicKey": "pk.x"})
+  feed, _ = setup_feed(tmp_path, monkeypatch, params)
+  r = feed.set_tablet_destination("Work", "85 Inip Drive, Inwood, NY", 40.8676, -73.9212)
+  assert r["ok"]
+  dest = json.loads(params.d["NavDestination"])
+  assert dest["latitude"] == 40.8676 and dest["longitude"] == -73.9212 and dest["place_name"] == "Work: 85 Inip Drive, Inwood, NY"
+  r = feed.ingest(real_split_screen())
+  assert not r["needDestination"] and r["parsed"]["destination"] == "85 Inip Drive, Inwood, NY"
+  feed.ingest(real_split_screen(sheet=True))                             # the user opens the sheet anyway
+  wait(feed)
+  assert feed._session.calls == [] and json.loads(params.d["NavDestination"])["latitude"] == 40.8676
+  # Waze still calculating right after the tablet set it: not cleared within the grace time
+  monkeypatch.setattr(waze_bridge, "END_CLEAR_S", 0.0)
+  idle = {"v": 1, "present": True, "h": 1250, "nodes": [node("Where to?", b=(1100, 100, 1500, 150))]}
+  feed.ingest(idle)
+  feed.ingest(idle)
+  assert "NavDestination" in params.d
+  monkeypatch.setattr(waze_bridge, "TABLET_GRACE_S", 0.0)
+  feed.ingest(idle)
+  feed.ingest(idle)
+  assert "NavDestination" not in params.d and not feed._tablet_route
+  assert not feed.set_tablet_destination("", "", 40.0, -74.0)["ok"]
+  assert not feed.set_tablet_destination("X", "", 95.0, -74.0)["ok"]
