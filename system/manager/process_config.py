@@ -128,6 +128,11 @@ def run_navigationd(started: bool, params: Params, CP: car.CarParams, starpilot_
   return started and params.get("NavDestination") is not None
 
 
+def run_nav_mapsd(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  # the map frame is only an input of the navigation driving model, which runs on Chestnut
+  return run_navigationd(started, params, CP, starpilot_toggles) and params.get_bool("UsbGpuPresent")
+
+
 def run_mapd(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   if started:
     return True
@@ -249,6 +254,7 @@ procs += [
   PythonProcess("starpilot_process", "starpilot.starpilot_process", always_run),
   PythonProcess("mapd", "starpilot.navigation.mapd_wrapper", run_mapd, nice=19),
   PythonProcess("navigationd", "starpilot.navigation.navigationd", run_navigationd, nice=19),
+  PythonProcess("nav_mapsd", "starpilot.navigation.nav_model.mapsd", run_nav_mapsd, nice=10),
   PythonProcess("speed_limit_filler", "starpilot.system.speed_limit_filler", run_speed_limit_filler, nice=19),
   PythonProcess("speed_limit_vision", "starpilot.system.speed_limit_vision", run_speed_limit_vision, nice=19),
   PythonProcess("adj_spot_monitor_vision", "starpilot.system.adj_spot_monitor_vision", run_v_asm, nice=19),

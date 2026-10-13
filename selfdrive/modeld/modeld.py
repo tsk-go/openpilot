@@ -73,6 +73,7 @@ from openpilot.starpilot.common.model_lab import (
   model_lab_manifest_eligible,
 )
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
+from openpilot.starpilot.navigation.nav_model.helpers import starpilot_navigation_input
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles, MODELS_PATH, params_memory
 
 
@@ -1022,7 +1023,8 @@ def _runner_frame_args(model: ModelState, buf_main, buf_extra,
                        vec_desire: np.ndarray, traffic_convention: np.ndarray,
                        lat_action_t: float, long_action_t: float,
                        prev_action: log.ModelDataV2.Action, v_ego: float,
-                       lateral_control_params: np.ndarray) -> tuple[dict, dict, dict[str, np.ndarray]]:
+                       lateral_control_params: np.ndarray,
+                       nav_inputs: dict[str, np.ndarray] | None = None) -> tuple[dict, dict, dict[str, np.ndarray]]:
   bufs = {
     model.road_key: buf_main,
     model.wide_key: buf_extra,
@@ -1044,6 +1046,12 @@ def _runner_frame_args(model: ModelState, buf_main, buf_extra,
     ], dtype=np.float32)
   if "lateral_control_params" in model.numpy_inputs:
     inputs["lateral_control_params"] = lateral_control_params
+  # navigation models (comma's nav driving model): the map frame and the next maneuver; other models don't have
+  # these inputs and ignore them (ModelState._set_optional_input)
+  # (zeros when there is none: no route, or the map frame is stale - never the last one held)
+  for name in ("nav_map", "navigation"):
+    if name in model.numpy_inputs:
+      inputs[name] = (nav_inputs or {}).get(name, np.zeros(model.numpy_inputs[name].shape, dtype=np.float32))
   return bufs, transforms, inputs
 
 
@@ -1094,6 +1102,7 @@ def main(demo=False):
   vipc_client_main_stream = VisionStreamType.VISION_STREAM_WIDE_ROAD if main_wide_camera else VisionStreamType.VISION_STREAM_ROAD
   vipc_client_main = VisionIpcClient("camerad", vipc_client_main_stream, True)
   vipc_client_extra = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_WIDE_ROAD, False)
+  vipc_client_map = VisionIpcClient("mapsd", VisionStreamType.VISION_STREAM_MAP, True)
   cloudlog.warning(f"vision stream set up, main_wide_camera: {main_wide_camera}, use_extra_client: {use_extra_client}")
 
   while not vipc_client_main.connect(False):
@@ -1212,7 +1221,8 @@ def main(demo=False):
   if external_gpu_requested:
     publish_services.append("chestnutState")
   pm = PubMaster(publish_services)
-  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay", "starpilotPlan"])
+  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay", "starpilotPlan",
+                  "navInstruction"])
 
   publish_state = PublishState()
   chestnut_state = ChestnutState(pm, external_gpu_active) if external_gpu_requested else None
@@ -1245,6 +1255,7 @@ def main(demo=False):
   prev_action = log.ModelDataV2.Action()
 
   DH = DesireHelper()
+  nav_map, nav_map_time = None, 0.
 
   starpilot_toggles = get_starpilot_toggles(sm)
 
@@ -1294,6 +1305,19 @@ def main(demo=False):
     lat_smooth_seconds = get_car_lateral_smooth_seconds(CP.brand, v_ego, lat_smooth_maximum)
     lat_delay = sm["liveDelay"].lateralDelay + lat_smooth_seconds
     lateral_control_params = np.array([v_ego, lat_delay], dtype=np.float32)
+
+    # map and navigation inputs (navigation models only; as in comma's nav-model-integration): the map frame from
+    # mapsd while it is fresh, the next maneuver from navigationd moved on by the distance driven since
+    nav_inputs = {}
+    now = time.monotonic()
+    if vipc_client_map.is_connected() or vipc_client_map.connect(False):
+      if (buf_map := vipc_client_map.recv(0)) is not None:
+        nav_map = np.frombuffer(buf_map.data, dtype=np.uint8, count=buf_map.width * buf_map.height).reshape(buf_map.height, buf_map.width).copy()
+        nav_map_time = now
+    if nav_map is not None and now - nav_map_time < 0.5:
+      nav_inputs["nav_map"] = nav_map
+    if sm.valid["navInstruction"] and now - sm.recv_time["navInstruction"] < 2:
+      nav_inputs["navigation"] = starpilot_navigation_input(sm["navInstruction"].allManeuvers, v_ego * (now - sm.recv_time["navInstruction"]))
     if sm.frame % 60 == 0:
       camera_offset.set_target(params.get_float("CameraOffset", return_default=True))
 
@@ -1375,7 +1399,7 @@ def main(demo=False):
         lateral_bufs, lateral_transforms, lateral_inputs = _runner_frame_args(
           model, buf_main, buf_extra, model_transform_main, model_transform_extra,
           vec_desire, traffic_convention, lat_action_t, long_action_t,
-          prev_action, v_ego, lateral_control_params,
+          prev_action, v_ego, lateral_control_params, nav_inputs,
         )
         lateral_model_output = model.run(
           lateral_bufs,
@@ -1388,7 +1412,7 @@ def main(demo=False):
         longitudinal_bufs, longitudinal_transforms, longitudinal_inputs = _runner_frame_args(
           model_lab_longitudinal, buf_main, buf_extra, model_transform_main, model_transform_extra,
           vec_desire, traffic_convention, lat_action_t, long_action_t,
-          prev_action, v_ego, lateral_control_params,
+          prev_action, v_ego, lateral_control_params, nav_inputs,
         )
         longitudinal_model_output = model_lab_longitudinal.run(
           longitudinal_bufs,
@@ -1413,7 +1437,7 @@ def main(demo=False):
         bufs, transforms, inputs = _runner_frame_args(
           model, buf_main, buf_extra, model_transform_main, model_transform_extra,
           vec_desire, traffic_convention, lat_action_t, long_action_t,
-          prev_action, v_ego, lateral_control_params,
+          prev_action, v_ego, lateral_control_params, nav_inputs,
         )
         model_output = model.run(
           bufs,

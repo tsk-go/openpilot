@@ -20,6 +20,8 @@ ARRIVAL_CLEAR_SECONDS = 5.0
 LOCATION_STATE_STALE_SECONDS = 2.5
 
 
+ROUTE_RESEND_SECONDS = 5.0
+
 class Navigationd:
   def __init__(self, route_engine: MapboxRouteEngine | None = None):
     self.params = Params()
@@ -36,6 +38,7 @@ class Navigationd:
     self._route_fetch_inflight = False
     self._route_generation = 0
     self._published_route_generation = -1
+    self._published_route_at = 0.0
 
     self._last_position: Coordinate | None = None
     self._last_bearing: float | None = None
@@ -351,7 +354,8 @@ class Navigationd:
 
   def _publish_nav_route_if_needed(self) -> None:
     route, _, route_generation = self._snapshot_route()
-    if route_generation == self._published_route_generation:
+    # also every few seconds: nav_mapsd (the nav model's map frame) may start or restart after the route was sent
+    if route_generation == self._published_route_generation and monotonic() - self._published_route_at < ROUTE_RESEND_SECONDS:
       return
 
     msg = messaging.new_message("navRoute")
@@ -364,6 +368,7 @@ class Navigationd:
 
     self.pm.send("navRoute", msg)
     self._published_route_generation = route_generation
+    self._published_route_at = monotonic()
 
   def run(self) -> None:
     cloudlog.warning("navigationd init")
