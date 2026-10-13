@@ -1525,6 +1525,17 @@ async def term_reaper():
         s.close()
 
 
+def _tmux_mouse_on() -> bool:
+  """tmux's mouse on (the whole tmux server, until it restarts): the tablet's terminal asks for it when a swipe lands in
+  tmux, so the swipe scrolls tmux's history instead of doing nothing (comma's ~/.tmux.conf turns the mouse off)."""
+  if shutil.which("tmux") is None:
+    return False
+  try:
+    return subprocess.run(["tmux", "set", "-g", "mouse", "on"], capture_output=True, timeout=3).returncode == 0
+  except Exception:
+    return False
+
+
 async def ws_term(request):
   if not term_allowed(request):
     raise web.HTTPForbidden(text="terminal: USB link, or Wi-Fi with the key from a USB pairing")
@@ -1557,6 +1568,9 @@ async def ws_term(request):
             sess.resize(int(j["resize"][0]), int(j["resize"][1]))
           elif "input" in j:
             sess.write(str(j["input"]).encode())
+          elif j.get("tmux_mouse"):
+            ok = await asyncio.to_thread(_tmux_mouse_on)
+            await ws.send_str(json.dumps({"tmux_mouse": ok}))
           elif j.get("kill"):
             sess.close()
             break
