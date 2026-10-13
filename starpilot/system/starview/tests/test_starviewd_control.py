@@ -92,18 +92,20 @@ def test_reboot_allowed_offroad(reboots):
   assert len(reboots) == 1
 
 
-@pytest.mark.parametrize("engaged,moving", [(True, False), (False, True), (True, True)])
-def test_drive_state_refused_while_engaged_or_moving(monkeypatch, engaged, moving):
-  hub = make_hub(onroad=True, started=True, engaged=engaged)
+@pytest.mark.parametrize("moving", [False, True])
+def test_drive_state_refused_while_engaged(monkeypatch, moving):
+  hub = make_hub(onroad=True, started=True, engaged=True)
   monkeypatch.setattr(hub, "_moving", lambda: moving)
   ack = hub.control({"action": "drive_state", "mode": "offroad"})
   assert ack["ok"] is False
   assert "ForceOffroad" not in hub.params.values
 
 
-def test_drive_state_allowed_when_stopped_and_disengaged(monkeypatch):
+@pytest.mark.parametrize("moving", [False, True])
+def test_drive_state_allowed_when_disengaged_even_while_driving(monkeypatch, moving):
+  # as in StarPilot's own settings: going offroad only needs openpilot disengaged, not the car in Park
   hub = make_hub(onroad=True, started=True)
-  monkeypatch.setattr(hub, "_moving", lambda: False)
+  monkeypatch.setattr(hub, "_moving", lambda: moving)
   ack = hub.control({"action": "drive_state", "mode": "offroad"})
   assert ack["ok"] is True
   assert hub.params.values["ForceOffroad"] is True

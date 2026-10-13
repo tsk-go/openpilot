@@ -1132,11 +1132,10 @@ class Hub:
         return {"ok": True, "tablet_mode": self.tablet_mode}
       if act == "drive_state":  # "default" | "onroad" | "offroad"  (same as Galaxy / settings Force drive state)
         mode = req.get("mode", "default")
-        # switching onroad/offroad starts or stops openpilot: never while engaged or while the car is moving
+        # switching onroad/offroad starts or stops openpilot: never while engaged. As in StarPilot's own settings it is
+        # allowed while driving otherwise (going offroad on the move just stops openpilot; the car is driven by hand)
         if self.engaged:
           return {"ok": False, "error": "Disengage to change the drive state."}
-        if self._moving():
-          return {"ok": False, "error": "Stop the car to change the drive state."}
         self.params.put_bool("ForceOnroad", mode == "onroad")
         self.params.put_bool("ForceOffroad", mode == "offroad")
         return {"ok": True, "mode": mode}
