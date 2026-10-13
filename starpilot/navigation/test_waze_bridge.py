@@ -231,6 +231,7 @@ def test_feed_retries_after_network_error_with_sheet_closed(tmp_path, monkeypatc
   wait(feed)
   r = feed.ingest(real_split_screen())
   assert "no internet" in r["handoff"] and "pk." not in r["handoff"] and "NavDestination" not in params.d
+  wait(feed)  # with no retry delay that ingest already started another (failing) lookup: let it finish first
   feed._session.fail = False
   feed.ingest(real_split_screen())          # sheet closed: retries with the remembered address
   wait(feed)
