@@ -2116,11 +2116,18 @@ def _extract_longitudinal_controller_terms(controls_state):
   }
   return terms, "controlsState"
 
+_plots_sm = None
+
+
 def _plots_worker():
   global _plots_worker_thread
 
+  global _plots_sm
   try:
-    sm = messaging.SubMaster(["controlsState", "livePose"], poll="controlsState")
+    # one SubMaster for Galaxy's lifetime: a new one per plots session would use up reader slots (see _live_msg)
+    if _plots_sm is None:
+      _plots_sm = messaging.SubMaster(["controlsState", "livePose"], poll="controlsState")
+    sm = _plots_sm
   except Exception as exception:
     with _plots_lock:
       _plots_state["lastError"] = str(exception)
@@ -4339,6 +4346,32 @@ def _snapshot_bool_text(value):
     return "No"
   return "Unavailable"
 
+# msgq never gives a reader slot back: every new subscriber takes the next of a service's 15 slots, and the 16th
+# evicts ALL readers of that service (controlsd, selfdrived, plannerd...). carState already has ~15 readers, so a
+# SubMaster(["carState"]) per request knocked the driving stack off carState on every /api/params/all call (every
+# few seconds from an open settings page) -> "TAKE CONTROL" while driving. Galaxy now keeps ONE conflated reader
+# per service for its lifetime and never subscribes to carState.
+_LIVE_SOCKS = {}
+_LIVE_SOCKS_LOCK = threading.Lock()
+_LIVE_LAST = {}
+
+
+def _live_msg(service, max_age_s=1.0):
+  """Latest message of `service` (or None when it isn't being published), from one long-lived conflated reader."""
+  with _LIVE_SOCKS_LOCK:
+    sock = _LIVE_SOCKS.get(service)
+    if sock is None:
+      sock = messaging.sub_sock(service, conflate=True, timeout=0)
+      _LIVE_SOCKS[service] = sock
+    dat = sock.receive(non_blocking=True)
+    if dat is not None:
+      _LIVE_LAST[service] = messaging.log_from_bytes(dat)
+    msg = _LIVE_LAST.get(service)
+  if msg is None or (time.monotonic_ns() - msg.logMonoTime) / 1e9 > max_age_s:
+    return None
+  return msg
+
+
 def _build_vehicle_fault_status():
   unavailable_items = [
     {"label": "Cruise Fault", "value": "Unavailable", "severity": "neutral"},
@@ -4356,10 +4389,10 @@ def _build_vehicle_fault_status():
     unavailable_severity = "warn"
 
   try:
-    sm = messaging.SubMaster(["carState"], poll="carState")
-    sm.update(100)
-    has_live_car_state = sm.seen["carState"] and sm.alive["carState"] and sm.valid["carState"]
-    if not has_live_car_state:
+    # selfdrived's onroadEvents (sent every second and on change) carry the same faults carState does; reading
+    # carState here would evict the driving stack's readers (see _live_msg)
+    events_msg = _live_msg("onroadEvents", max_age_s=2.5)
+    if events_msg is None:
       return {
         "available": False,
         "summary": unavailable_summary,
@@ -4367,15 +4400,14 @@ def _build_vehicle_fault_status():
         "items": unavailable_items,
       }
 
-    car_state = sm["carState"]
-    cruise_state = getattr(car_state, "cruiseState", None)
-
-    cruise_faulted = bool(getattr(car_state, "accFaulted", False))
-    steer_fault_temporary = bool(getattr(car_state, "steerFaultTemporary", False))
-    steer_fault_permanent = bool(getattr(car_state, "steerFaultPermanent", False))
-    can_valid = bool(getattr(car_state, "canValid", False))
-    cruise_available = bool(getattr(cruise_state, "available", False)) if cruise_state is not None else None
-    cruise_enabled = bool(getattr(cruise_state, "enabled", False)) if cruise_state is not None else None
+    names = {str(e.name) for e in events_msg.onroadEvents}
+    cruise_faulted = "accFaulted" in names
+    steer_fault_temporary = bool(names & {"steerTempUnavailable", "steerTempUnavailableSilent"})
+    steer_fault_permanent = "steerUnavailable" in names
+    can_valid = "canError" not in names
+    ss_msg = _live_msg("selfdriveState", max_age_s=1.0)
+    cruise_available = None
+    cruise_enabled = bool(ss_msg.selfdriveState.enabled) if ss_msg is not None else None
 
     if steer_fault_permanent:
       lkas_fault_value = "Permanent"
@@ -4412,7 +4444,8 @@ def _build_vehicle_fault_status():
         {"label": "Cruise Fault", "value": "Faulted" if cruise_faulted else "Clear", "severity": "fault" if cruise_faulted else "ok"},
         {"label": "LKAS Fault", "value": lkas_fault_value, "severity": lkas_fault_severity},
         {"label": "CAN Valid", "value": "Yes" if can_valid else "No", "severity": "ok" if can_valid else "fault"},
-        {"label": "Cruise Available", "value": "Yes" if cruise_available else "No", "severity": "ok" if cruise_available else "neutral"},
+        {"label": "Cruise Available", "value": "Unavailable" if cruise_available is None else ("Yes" if cruise_available else "No"),
+         "severity": "ok" if cruise_available else "neutral"},
         {"label": "Cruise Engaged", "value": "Yes" if cruise_enabled else "No", "severity": "ok" if cruise_enabled else "neutral"},
       ],
     }
@@ -4449,15 +4482,10 @@ def _get_has_radar():
     return False
 
 def _get_vehicle_parked():
+  # starpilotCarState.isParked = carState.gearShifter == park (starpilot_card), read without touching carState
   try:
-    sm = messaging.SubMaster(["carState"], poll="carState")
-    sm.update(100)
-    if not sm.seen["carState"] or not sm.alive["carState"] or not sm.valid["carState"]:
-      return False
-
-    gear_shifter = getattr(getattr(car, "CarState", None), "GearShifter", None)
-    park_value = getattr(gear_shifter, "park", None)
-    return park_value is not None and getattr(sm["carState"], "gearShifter", None) == park_value
+    msg = _live_msg("starpilotCarState", max_age_s=1.0)
+    return msg is not None and bool(msg.starpilotCarState.isParked)
   except Exception:
     return False
 
