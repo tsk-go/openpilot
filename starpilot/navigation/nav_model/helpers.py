@@ -1,6 +1,7 @@
 """Model inputs for navigation (ported from commaai/openpilot nav-model-integration, Oct 2026)."""
+import re
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -45,6 +46,21 @@ def navigation_input(maneuvers: Any, traveled: float) -> np.ndarray:
   return navigation
 
 
+class _Maneuver(NamedTuple):
+  type: str
+  modifier: str
+  distance: float
+
+
+def mapbox_modifier(modifier: str) -> str:
+  """Mapbox's own modifier from StarPilot's: its route engine renames them for the UI ("slight left" -> "slightLeft",
+  no modifier -> "none"), and the Valhalla mapping above only knows Mapbox's words - "slightLeft" has no "left" in it,
+  so every slight / sharp maneuver went in as straight (or, on an off ramp, as a right exit)."""
+  if modifier in ('', 'none'):
+    return ''
+  return re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', modifier).lower()
+
+
 def starpilot_navigation_input(maneuvers: Any, traveled: float) -> np.ndarray:
   """The model's navigation input from StarPilot's navInstruction.allManeuvers.
 
@@ -52,4 +68,14 @@ def starpilot_navigation_input(maneuvers: Any, traveled: float) -> np.ndarray:
   the next steps at the distance to where each starts. comma's model wants only maneuvers ahead, so the current step
   is left out - otherwise the turn just made would be fed as the next one.
   """
-  return navigation_input(list(maneuvers)[1:], traveled)
+  ahead = [_Maneuver(str(m.type), mapbox_modifier(str(m.modifier)), float(m.distance)) for m in list(maneuvers)[1:]]
+  return navigation_input(ahead, traveled)
+
+
+def advance_maneuvers(maneuvers: list, driven: float) -> list:
+  """Maneuver distances as of now rather than as of the GPS position they were measured from, which navigationd reads
+  up to 2.5 s old (30-75 m at highway speed): the model takes them as the distance to the next maneuver. A maneuver
+  passed in the meantime is left at 0, so the model's own "driven since" correction drops it."""
+  if driven <= 0.0:
+    return maneuvers
+  return [dict(m, distance=max(0.0, float(m.get("distance") or 0.0) - driven)) if isinstance(m, dict) else m for m in maneuvers]

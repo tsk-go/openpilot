@@ -11,6 +11,7 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.starpilot.navigation.destination_store import parse_destination_json
+from openpilot.starpilot.navigation.nav_model.helpers import advance_maneuvers
 from openpilot.starpilot.navigation.route_engine import Coordinate, MapboxRouteEngine, NavigationRoute, RouteProgress
 from openpilot.starpilot.navigation.waze_bridge import WazeHybrid
 
@@ -42,6 +43,7 @@ class Navigationd:
 
     self._last_position: Coordinate | None = None
     self._last_bearing: float | None = None
+    self._fix_age = 0.0  # seconds: how old the GPS position was when read
     self._off_route_started_at: float | None = None
     self._bearing_misaligned_started_at: float | None = None
     self._arrival_started_at: float | None = None
@@ -155,6 +157,7 @@ class Navigationd:
       return False, 0.0
 
     self._last_position = Coordinate(latitude, longitude)
+    self._fix_age = min(max(monotonic() - updated_at, 0.0), LOCATION_STATE_STALE_SECONDS) if updated_at > 0.0 else 0.0
 
     bearing = float(gps_state.get("bearing", 0.0) or 0.0)
     self._last_bearing = bearing if isfinite(bearing) else None
@@ -397,6 +400,8 @@ class Navigationd:
           progress,
           use_vienna_sign=self.params.get_bool("UseVienna"),
         )
+        if payload.get("allManeuvers"):
+          payload = {**payload, "allManeuvers": advance_maneuvers(payload["allManeuvers"], v_ego * self._fix_age)}
 
       self._publish_nav_instruction(route, progress, location_valid, payload)
       self._publish_nav_state(route, progress, location_valid, payload)

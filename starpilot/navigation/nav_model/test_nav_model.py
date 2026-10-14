@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 import requests
 
-from openpilot.starpilot.navigation.nav_model.helpers import navigation_input, starpilot_navigation_input, valhalla_type
+from openpilot.starpilot.navigation.nav_model.helpers import (advance_maneuvers, mapbox_modifier, navigation_input, starpilot_navigation_input,
+                                                              valhalla_type)
 from openpilot.starpilot.navigation.nav_model.pmtiles import PMTiles, decode_directory, tile_id
 from openpilot.starpilot.navigation.nav_model.renderer import (MAJOR, MEDIUM, MINOR, SIZE, STREET, TRACK, MapRenderer, draw_segments,
                                                                 mercator, project, stroke_widths)
@@ -337,3 +338,26 @@ def test_starpilot_maneuvers_leave_out_the_current_step():
   passed = [M(type='turn', modifier='left', distance=5.0), M(type='arrive', modifier='', distance=50.0)]
   assert float(starpilot_navigation_input(passed, 0.0).sum()) == 0.0
   assert valhalla_type('merge', 'left') is None
+
+
+def test_starpilot_modifiers_reach_the_model_as_mapbox_words():
+  M = SimpleNamespace
+  # StarPilot's route engine renames Mapbox modifiers ("slight left" -> "slightLeft"); highway exits and forks are
+  # nearly all "slight", and used to go in as straight or as the wrong side
+  cases = [('turn', 'slightRight', 'slight right'), ('turn', 'sharpLeft', 'sharp left'), ('fork', 'slightLeft', 'slight left'),
+           ('on ramp', 'slightRight', 'slight right'), ('off ramp', 'slightLeft', 'slight left'), ('turn', 'uturn', 'uturn'),
+           ('turn', 'none', ''), ('turn', 'straight', 'straight')]
+  for kind, starpilot, mapbox in cases:
+    assert mapbox_modifier(starpilot) == mapbox
+    nav = starpilot_navigation_input([M(type='turn', modifier='right', distance=50.0), M(type=kind, modifier=starpilot, distance=400.0)], 0.0)
+    assert int(np.argmax(nav[:-1])) == valhalla_type(kind, mapbox), (kind, starpilot)
+  assert valhalla_type('off ramp', 'slight left') == 21 and valhalla_type('turn', 'slight right') == 9
+
+
+def test_maneuvers_advanced_by_the_fix_age():
+  maneuvers = [{'distance': 30.0, 'type': 'turn', 'modifier': 'right'}, {'distance': 500.0, 'type': 'off ramp', 'modifier': 'slightRight'},
+               {'distance': 20.0, 'type': 'turn', 'modifier': 'left'}]
+  moved = advance_maneuvers(maneuvers, 60.0)
+  assert [m['distance'] for m in moved] == [0.0, 440.0, 0.0]
+  assert maneuvers[1]['distance'] == 500.0  # the route's own list is left alone
+  assert advance_maneuvers(maneuvers, 0.0) is maneuvers

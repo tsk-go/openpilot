@@ -310,7 +310,9 @@ class NavigationRoute:
 
     all_maneuvers: list[dict[str, Any]] = []
     start_index = max(current_step_index, 0)
-    end_index = min(start_index + 3, len(self.steps))
+    # the current step and the next ones: the navigation model takes the first ahead that isn't a merge, so a couple of
+    # merges in a row must not leave it with nothing (comma's navd lists every step ahead)
+    end_index = min(start_index + 8, len(self.steps))
     for index in range(start_index, end_index):
       step = self.steps[index]
       maneuver_distance = distance_to_end_of_step if index == start_index else max(0.0, step.cumulative_distance - closest_cumulative)
