@@ -64,14 +64,34 @@ def test_builtin_model_load_failure_is_not_hidden(monkeypatch):
     modeld._load_model_state(1928, 1208, modeld.BUILTIN_MODEL_KEY, False, FakeParams())
 
 
-def test_big_model_load_retried_once_per_ignition():
+def test_big_model_load_retried_once_per_ignition(tmp_path, monkeypatch):
+  from openpilot.selfdrive.modeld import chestnut_retry
+  monkeypatch.setattr(chestnut_retry, "RETRY_FLAG", tmp_path / "chestnut_retry")
   params = FakeParams()
   # nothing compiled for the Chestnut: nothing to retry
   assert modeld._retry_big_model_once(params, artifact_ready=False) is False
-  assert params.values == {}
+  assert params.values == {} and not chestnut_retry.retried()
   # the first failure asks for an onroad cycle; the reload after it is the last try until the next ignition
   assert modeld._retry_big_model_once(params, artifact_ready=True) is True
-  assert params.values == {"ChestnutRetry": True, "OnroadCycleRequested": True}
+  assert params.values == {"OnroadCycleRequested": True} and chestnut_retry.retried()
   params.values["OnroadCycleRequested"] = False  # hardwared consumes the request
   assert modeld._retry_big_model_once(params, artifact_ready=True) is False
   assert params.values["OnroadCycleRequested"] is False
+  chestnut_retry.clear()  # the manager, at the next ignition on
+  assert modeld._retry_big_model_once(params, artifact_ready=True) is True
+
+
+def test_big_model_retry_never_raises(tmp_path, monkeypatch):
+  """On the device params_pyx.so is prebuilt: a failing put must not crash modeld, and an unwritable marker means
+  no retry at all (never a cycle loop)."""
+  from openpilot.selfdrive.modeld import chestnut_retry
+
+  class FailingParams(FakeParams):
+    def put_bool(self, key, value):
+      raise KeyError(key)
+  monkeypatch.setattr(chestnut_retry, "RETRY_FLAG", tmp_path / "chestnut_retry")
+  assert modeld._retry_big_model_once(FailingParams(), artifact_ready=True) is False
+  monkeypatch.setattr(chestnut_retry, "RETRY_FLAG", tmp_path / "missing_dir" / "chestnut_retry")
+  params = FakeParams()
+  assert modeld._retry_big_model_once(params, artifact_ready=True) is False
+  assert params.values == {}

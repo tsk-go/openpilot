@@ -30,6 +30,7 @@ from openpilot.common.params import Params, ParamKeyFlag, ParamKeyType
 from openpilot.common.text_window import TextWindow
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.manager.helpers import unblock_stdout, write_onroad_params, save_bootlog
+from openpilot.selfdrive.modeld import chestnut_retry
 from openpilot.system.manager.process import ensure_running
 from openpilot.system.manager.process_config import managed_processes
 from openpilot.system.athena.registration import register, UNREGISTERED_DONGLE_ID
@@ -1004,6 +1005,7 @@ def manager_init() -> None:
   params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
   params.clear_all(ParamKeyFlag.CLEAR_ON_OFFROAD_TRANSITION)
   params.clear_all(ParamKeyFlag.CLEAR_ON_IGNITION_ON)
+  chestnut_retry.clear()
   if build_metadata.release_channel:
     params.clear_all(ParamKeyFlag.DEVELOPMENT_ONLY)
   last_timing = _log_boot_timing("manager_init", "clear_params", manager_init_start, last_timing)
@@ -1197,6 +1199,7 @@ def manager_thread() -> None:
     ignition = any(ps.ignitionLine or ps.ignitionCan for ps in sm['pandaStates'] if ps.pandaType != log.PandaState.PandaType.unknown)
     if ignition and not ignition_prev:
       params.clear_all(ParamKeyFlag.CLEAR_ON_IGNITION_ON)
+      chestnut_retry.clear()  # the big model may be retried once again on this drive
 
     # update onroad params, which drives pandad's safety setter thread
     if started != started_prev:

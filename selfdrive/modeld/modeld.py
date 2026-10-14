@@ -52,6 +52,7 @@ from openpilot.selfdrive.modeld.compile_modeld import (
   stateful_host_shapes,
   stateful_image_shapes,
 )
+from openpilot.selfdrive.modeld import chestnut_retry
 from openpilot.selfdrive.modeld.helpers import get_tg_input_devices, load_oob, tinygrad_dev_config, usbgpu_present
 from openpilot.selfdrive.modeld.usbgpu_link import wait_usbgpu_link
 from openpilot.system.hardware.usb import CHESTNUT_USB_IDS
@@ -1060,12 +1061,15 @@ def _retry_big_model_once(params, artifact_ready: bool) -> bool:
 
   From comma's big-retry branch (Oct 13 2026): starting the engine can cut the Chestnut's power while it loads, and
   the drive then ran on the small model throughout (seen Oct 5: "PCIe link not up" at the start). The cycle restarts
-  modeld a few seconds later; ChestnutRetry (cleared with the ignition) makes sure it is tried only once. Nothing to
-  retry without a compiled big model."""
-  if not artifact_ready or params.get_bool("ChestnutRetry"):
+  modeld a few seconds later; the chestnut_retry marker (removed when the ignition turns on) makes sure it is tried
+  only once. Nothing to retry without a compiled big model. Never raises: modeld goes on with the small model."""
+  if not artifact_ready or chestnut_retry.retried() or not chestnut_retry.mark():
     return False
-  params.put_bool("ChestnutRetry", True)
-  params.put_bool("OnroadCycleRequested", True)
+  try:
+    params.put_bool("OnroadCycleRequested", True)
+  except Exception:
+    cloudlog.exception("big model retry: could not request an onroad cycle")
+    return False
   return True
 
 
