@@ -1055,6 +1055,20 @@ def _runner_frame_args(model: ModelState, buf_main, buf_extra,
   return bufs, transforms, inputs
 
 
+def _retry_big_model_once(params, artifact_ready: bool) -> bool:
+  """After the big (Chestnut) model failed to load: ask for one onroad cycle to load it again, once per ignition.
+
+  From comma's big-retry branch (Oct 13 2026): starting the engine can cut the Chestnut's power while it loads, and
+  the drive then ran on the small model throughout (seen Oct 5: "PCIe link not up" at the start). The cycle restarts
+  modeld a few seconds later; ChestnutRetry (cleared with the ignition) makes sure it is tried only once. Nothing to
+  retry without a compiled big model."""
+  if not artifact_ready or params.get_bool("ChestnutRetry"):
+    return False
+  params.put_bool("ChestnutRetry", True)
+  params.put_bool("OnroadCycleRequested", True)
+  return True
+
+
 def main(demo=False):
   cloudlog.warning("modeld init")
 
@@ -1190,6 +1204,8 @@ def main(demo=False):
     if big_model is not None:
       params.put("ModelVersion", model.policy_generation)
       params.put("DrivingModelVersion", model.policy_generation)
+    elif _retry_big_model_once(params, external_artifact_ready):
+      cloudlog.error("big model load failed, cycling onroad to retry once")
   else:
     model = _load_model_state(
       vipc_client_main.width,

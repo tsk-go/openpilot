@@ -10,6 +10,12 @@ class FakeParams:
   def put(self, key, value):
     self.values[key] = value
 
+  def get_bool(self, key):
+    return bool(self.values.get(key, False))
+
+  def put_bool(self, key, value):
+    self.values[key] = bool(value)
+
 
 @pytest.mark.parametrize(("model_output", "dropped_frames", "external_gpu_active", "expected"), [
   (object(), 0, False, True),
@@ -56,3 +62,16 @@ def test_builtin_model_load_failure_is_not_hidden(monkeypatch):
 
   with pytest.raises(TypeError, match="bad builtin"):
     modeld._load_model_state(1928, 1208, modeld.BUILTIN_MODEL_KEY, False, FakeParams())
+
+
+def test_big_model_load_retried_once_per_ignition():
+  params = FakeParams()
+  # nothing compiled for the Chestnut: nothing to retry
+  assert modeld._retry_big_model_once(params, artifact_ready=False) is False
+  assert params.values == {}
+  # the first failure asks for an onroad cycle; the reload after it is the last try until the next ignition
+  assert modeld._retry_big_model_once(params, artifact_ready=True) is True
+  assert params.values == {"ChestnutRetry": True, "OnroadCycleRequested": True}
+  params.values["OnroadCycleRequested"] = False  # hardwared consumes the request
+  assert modeld._retry_big_model_once(params, artifact_ready=True) is False
+  assert params.values["OnroadCycleRequested"] is False
