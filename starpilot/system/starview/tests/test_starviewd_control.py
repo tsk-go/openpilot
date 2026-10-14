@@ -1,4 +1,5 @@
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,7 +40,9 @@ def make_hub(onroad=False, started=False, engaged=False):
   hub.started = started
   hub.engaged = engaged
   hub.ops = FakeOps()
-  hub._car_state_sock = None
+  hub.aol_active = False
+  hub._aol_t = float("-inf")
+  hub._aol_sock = None
   hub._snap_lock = threading.Lock()
   hub._snap = None
   hub._snap_t = 0.0
@@ -92,29 +95,66 @@ def test_reboot_allowed_offroad(reboots):
   assert len(reboots) == 1
 
 
-@pytest.mark.parametrize("moving", [False, True])
-def test_drive_state_refused_while_engaged(monkeypatch, moving):
+def test_drive_state_refused_while_engaged(monkeypatch):
   hub = make_hub(onroad=True, started=True, engaged=True)
-  monkeypatch.setattr(hub, "_moving", lambda: moving)
+  monkeypatch.setattr(hub, "_aol_steering", lambda: False)
   ack = hub.control({"action": "drive_state", "mode": "offroad"})
   assert ack["ok"] is False
   assert "ForceOffroad" not in hub.params.values
 
 
-@pytest.mark.parametrize("moving", [False, True])
-def test_drive_state_allowed_when_disengaged_even_while_driving(monkeypatch, moving):
-  # as in StarPilot's own settings: going offroad only needs openpilot disengaged, not the car in Park
+def test_drive_state_refused_while_always_on_lateral_steers(monkeypatch):
+  # AOL steers with openpilot disengaged: going offroad would drop the steering mid-drive
   hub = make_hub(onroad=True, started=True)
-  monkeypatch.setattr(hub, "_moving", lambda: moving)
+  monkeypatch.setattr(hub, "_aol_steering", lambda: True)
+  ack = hub.control({"action": "drive_state", "mode": "offroad"})
+  assert ack["ok"] is False and "Always On Lateral" in ack["error"]
+  assert "ForceOffroad" not in hub.params.values
+
+
+def test_drive_state_allowed_when_disengaged_even_while_driving(monkeypatch):
+  # as in StarPilot's own settings: no Park needed once openpilot isn't steering or driving at all
+  hub = make_hub(onroad=True, started=True)
+  monkeypatch.setattr(hub, "_aol_steering", lambda: False)
   ack = hub.control({"action": "drive_state", "mode": "offroad"})
   assert ack["ok"] is True
   assert hub.params.values["ForceOffroad"] is True
 
 
-def test_not_moving_without_reading_carstate_when_offroad():
+class FakeAolSock:
+  def __init__(self, aol=None, fail=False):
+    self.aol, self.fail, self.reads = aol, fail, 0
+
+
+def test_aol_state(monkeypatch, clock):
   hub = make_hub()
-  assert hub._moving() is False
-  assert hub._car_state_sock is None
+  assert hub._aol_steering() is False and hub._aol_sock is None          # offroad: nothing read
+  hub = make_hub(onroad=True, started=True)
+  hub.aol_active, hub._aol_t = True, clock[0]                              # fresh from the tablet's stream
+  assert hub._aol_steering() is True and hub._aol_sock is None
+  reads = []
+
+  def fake_sub(name, **kw):
+    assert name == "starpilotCarState"                                     # never another carState reader
+    return FakeAolSock()
+
+  def fake_recv(sock):
+    reads.append(1)
+    if fake_recv.fail:
+      raise RuntimeError("msgq")
+    return None if fake_recv.aol is None else SimpleNamespace(starpilotCarState=SimpleNamespace(alwaysOnLateralEnabled=fake_recv.aol))
+  monkeypatch.setattr(starviewd.messaging, "sub_sock", fake_sub)
+  monkeypatch.setattr(starviewd.messaging, "recv_one", fake_recv)
+  clock[0] += hub.AOL_FRESH_S + 1                                         # stream stale: read it directly
+  fake_recv.fail, fake_recv.aol = False, False
+  assert hub._aol_steering() is False
+  fake_recv.aol = True
+  assert hub._aol_steering() is True
+  fake_recv.aol = None                                                     # card not running: nothing steers
+  assert hub._aol_steering() is False
+  fake_recv.fail = True                                                    # can't tell: refuse
+  assert hub._aol_steering() is True
+  assert len(reads) == 4
 
 
 def test_params_snapshot_is_shared_between_tablets(monkeypatch):

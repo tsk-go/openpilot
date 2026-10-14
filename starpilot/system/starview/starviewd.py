@@ -600,7 +600,11 @@ class Hub:
     self._ds_t = time.monotonic()
     self._info = {}
     self._info_t = 0.0
-    self._car_state_sock = None
+    # Always On Lateral steers with openpilot disengaged (starpilotCarState.alwaysOnLateralEnabled, not selfdriveState):
+    # from the tablet's own starpilotCarState stream when it's fresh, else one conflated socket made on first need
+    self.aol_active = False
+    self._aol_t = float("-inf")
+    self._aol_sock = None
     # one params snapshot per second shared by every connected tablet (~150 param reads each)
     self._snap_lock = threading.Lock()
     self._snap = None
@@ -674,18 +678,24 @@ class Hub:
     except Exception:
       return False
 
-  def _moving(self) -> bool:
-    """Car speed from carState (control actions only). No carState within 0.25 s means the car isn't running."""
+  AOL_FRESH_S = 1.0
+
+  def _aol_steering(self) -> bool:
+    """Always On Lateral active now (control actions only). It steers while openpilot is disengaged, so "not engaged"
+    alone doesn't mean the car is driven by hand. No starpilotCarState within 0.25 s means card isn't running, so
+    nothing is steering. Not carState: it already has msgq's maximum of 15 readers while driving."""
     if not self._onroad() and not self.started:
       return False
+    if time.monotonic() - self._aol_t < self.AOL_FRESH_S:
+      return self.aol_active
     try:
-      if self._car_state_sock is None:
-        self._car_state_sock = messaging.sub_sock("carState", conflate=True, timeout=250)
-      msg = messaging.recv_one(self._car_state_sock)
-      return msg is not None and msg.carState.vEgo > 0.5
+      if self._aol_sock is None:
+        self._aol_sock = messaging.sub_sock("starpilotCarState", conflate=True, timeout=250)
+      msg = messaging.recv_one(self._aol_sock)
+      return msg is not None and bool(msg.starpilotCarState.alwaysOnLateralEnabled)
     except Exception as e:
-      cloudlog.warning(f"starview: carState read failed: {e}")
-      return True  # can't tell: refuse rather than risk switching while moving
+      cloudlog.warning(f"starview: starpilotCarState read failed: {e}")
+      return True  # can't tell: refuse rather than risk cutting the steering
 
   def video_health_tick(self):
     """Cameras deliver frames but the encoders put out nothing: on 09-24 both encoders sat silent for minutes (drive
@@ -866,13 +876,15 @@ class Hub:
     if not clients:
       return
     prefix = bytes([len(name)]) + name.encode()
-    if name == "selfdriveState" or name == "deviceState":
-      try:  # tiny messages: parse the newest one so the settings actions can honour engaged/onroad guards
+    if name in ("selfdriveState", "deviceState", "starpilotCarState"):
+      try:  # parse the newest one so the settings actions can honour engaged / onroad / Always On Lateral guards
         evt = messaging.log_from_bytes(msgs[-1])
         if name == "selfdriveState":
           self.engaged = bool(evt.selfdriveState.enabled)
-        else:
+        elif name == "deviceState":
           self.started = bool(evt.deviceState.started)
+        else:
+          self.aol_active, self._aol_t = bool(evt.starpilotCarState.alwaysOnLateralEnabled), now
       except Exception:
         pass
     # rate limiting: deliver at most `rate` Hz per client; always deliver the newest of a burst
@@ -1132,10 +1144,13 @@ class Hub:
         return {"ok": True, "tablet_mode": self.tablet_mode}
       if act == "drive_state":  # "default" | "onroad" | "offroad"  (same as Galaxy / settings Force drive state)
         mode = req.get("mode", "default")
-        # switching onroad/offroad starts or stops openpilot: never while engaged. As in StarPilot's own settings it is
-        # allowed while driving otherwise (going offroad on the move just stops openpilot; the car is driven by hand)
+        # switching onroad/offroad starts or stops openpilot: never while engaged or while Always On Lateral steers (it
+        # steers with openpilot disengaged). Otherwise allowed while driving: going offroad on the move just stops
+        # openpilot, and the car is already driven by hand
         if self.engaged:
           return {"ok": False, "error": "Disengage to change the drive state."}
+        if self._aol_steering():
+          return {"ok": False, "error": "Always On Lateral is steering: turn it off to change the drive state."}
         self.params.put_bool("ForceOnroad", mode == "onroad")
         self.params.put_bool("ForceOffroad", mode == "offroad")
         return {"ok": True, "mode": mode}
