@@ -67,6 +67,8 @@ class ToyotaFlags(IntFlag):
   DISABLE_RADAR = 4
   # The DSU's ACC messages are rerouted through the camera bus by an adapter.
   DSU_BYPASS = 8192
+  ARS510_RADAR = 16384
+  ARS510_FUSED = 32768
 
   # Static flags
   TSS2 = 8
@@ -619,6 +621,7 @@ UNSUPPORTED_DSU_CAR = CAR.with_flags(ToyotaFlags.UNSUPPORTED_DSU)
 
 # these cars have a radar which sends ACC messages instead of the camera
 RADAR_ACC_CAR = CAR.with_flags(ToyotaFlags.RADAR_ACC)
+ARS510_RADAR_CAR = {CAR.TOYOTA_RAV4_TSS2_2022, CAR.TOYOTA_RAV4_TSS2_2023}
 
 ANGLE_CONTROL_CAR = CAR.with_flags(ToyotaFlags.ANGLE_CONTROL)
 

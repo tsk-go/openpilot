@@ -1484,6 +1484,56 @@ def test_tesla_screen_tap_ignores_low_speed_cruise_availability_changes(tesla_sc
     assert card.tesla_screen_aol_override is False
 
 
+@pytest.mark.parametrize("cruise_enabled", (False, True))
+def test_tesla_screen_aol_disabled_brake_pause_ignores_speed_filter_undershoot(tesla_screen_card, cruise_enabled):
+  card = tesla_screen_card
+  toggles, sm, fp_cs = screen_toggles(), make_sm(), SimpleNamespace(distancePressed=False)
+  assert card.update(screen_state(), fp_cs, sm, toggles).alwaysOnLateralEnabled
+  for speed, standstill in ((1.0, False), (0.03, False), (-0.00208549, False), (-0.00323952, False),
+                           (0.0, True), (-0.00619203, False), (0.00135644, False), (0.1, False)):
+    cs = make_car_state(available=cruise_enabled, enabled=cruise_enabled, brake_pressed=True)
+    cs.vEgo, cs.standstill = speed, standstill
+    ret = card.update(cs, fp_cs, sm, toggles)
+    assert ret.alwaysOnLateralAllowed
+    assert ret.alwaysOnLateralEnabled
+    assert not ret.pauseLateral
+    assert card.tesla_screen_aol_override is True
+
+
+def test_tesla_screen_aol_preserves_configured_brake_pause(tesla_screen_card):
+  card = tesla_screen_card
+  toggles = screen_toggles(always_on_lateral_pause_speed=1.0)
+  sm, fp_cs = make_sm(), SimpleNamespace(distancePressed=False)
+  assert card.update(screen_state(), fp_cs, sm, toggles).alwaysOnLateralEnabled
+  for speed, standstill, expected in ((1.1, False, True), (0.8, False, False), (-0.002, False, False),
+                                     (0.0, True, True), (1.1, False, True)):
+    cs = make_car_state(brake_pressed=True)
+    cs.vEgo, cs.standstill = speed, standstill
+    ret = card.update(cs, fp_cs, sm, toggles)
+    assert ret.alwaysOnLateralAllowed
+    assert ret.alwaysOnLateralEnabled == expected
+
+
+@pytest.mark.parametrize("brand,candidate,flags,tap_enabled", (
+  ("tesla", spc.TESLA_CAR.TESLA_MODEL_3, spc.TeslaFlags.AOL_SCREEN_BUTTON, False),
+  ("tesla", spc.TESLA_CAR.TESLA_MODEL_3, spc.TeslaFlags.HAS_VEHICLE_BUS, True),
+  ("tesla", spc.TESLA_CAR.TESLA_MODEL_X, spc.TeslaFlags.AOL_SCREEN_BUTTON, True),
+  ("gm", "CHEVROLET_BOLT_EUV", 0, True),
+))
+def test_disabled_brake_pause_exception_is_limited_to_tesla_screen_aol(monkeypatch, tmp_path, brand, candidate, flags, tap_enabled):
+  monkeypatch.setattr(spc, "Params", FakeParams)
+  monkeypatch.setattr(spc, "ERROR_LOGS_PATH", tmp_path)
+  card = spc.StarPilotCard(SimpleNamespace(brand=brand, carFingerprint=candidate, flags=flags),
+                           SimpleNamespace(alternativeExperience=spc.ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL))
+  toggles = make_toggles(always_on_lateral=True, always_on_lateral_main=True, tesla_aol_screen_tap=tap_enabled)
+  sm, fp_cs = make_sm(), SimpleNamespace(distancePressed=False)
+  cs = make_car_state(available=True, brake_pressed=True)
+  cs.vEgo = -0.002
+  ret = card.update(cs, fp_cs, sm, toggles)
+  assert ret.alwaysOnLateralAllowed
+  assert not ret.alwaysOnLateralEnabled
+
+
 @pytest.mark.parametrize("available", (False, True))
 def test_tesla_screen_stalk_cancel_needs_a_new_tap(tesla_screen_card, available):
   card = tesla_screen_card

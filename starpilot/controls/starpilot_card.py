@@ -433,7 +433,8 @@ class StarPilotCard:
       self.tesla_aol_brake_disengaged = False
       self.always_on_lateral_allowed = True
 
-    if self.tesla_screen_button and getattr(starpilot_toggles, "tesla_aol_screen_tap", False):
+    tesla_screen_tap_enabled = self.tesla_screen_button and getattr(starpilot_toggles, "tesla_aol_screen_tap", False)
+    if tesla_screen_tap_enabled:
       # ACC availability is not a driver request and can flicker at low speed.
       if carState.cruiseState.enabled and not self.prev_cruise_enabled:
         self.pause_lateral = False
@@ -559,7 +560,8 @@ class StarPilotCard:
     self.always_on_lateral_enabled &= not aol_blocked_by_immediate_disable(
       sm["selfdriveState"].alertType, sm["starpilotSelfdriveState"].alertType,
     )
-    self.always_on_lateral_enabled &= not (carState.brakePressed and carState.vEgo < starpilot_toggles.always_on_lateral_pause_speed) or carState.standstill
+    if not (tesla_screen_tap_enabled and starpilot_toggles.always_on_lateral_pause_speed <= 0.0):
+      self.always_on_lateral_enabled &= not (carState.brakePressed and carState.vEgo < starpilot_toggles.always_on_lateral_pause_speed) or carState.standstill
     self.always_on_lateral_enabled &= not self._error_log_present
 
     if getattr(starpilot_toggles, "has_canfd_media_buttons", False):

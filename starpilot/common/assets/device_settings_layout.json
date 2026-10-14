@@ -3672,6 +3672,23 @@
         "settings_tier": "simple"
       },
       {
+        "key": "ToyotaRadarMode",
+        "label": "RAV4 Radar (Experimental)",
+        "description": "Opt-in ARS510 radar on Toyota RAV4 2022-2025, including hybrids. ACC Target uses the radar's selected lead; Fused Tracks filters the full object list. Off preserves vision-only operation. Restart the device after changing this setting. Does not enable Alpha Long, restore AEB, or change tuning. Collect validation routes and remain ready to take over.",
+        "picker_description": "Experimental radar parsing for 2022-2025 RAV4s; disabled by default.",
+        "data_type": "int",
+        "ui_type": "dropdown",
+        "vehicle_makes": ["Toyota"],
+        "options": [
+          {"value": 0, "label": "Off"},
+          {"value": 1, "label": "ACC Target"},
+          {"value": 2, "label": "Fused Tracks"}
+        ],
+        "galaxy_only": true,
+        "requires_offroad": true,
+        "settings_tier": "simple"
+      },
+      {
         "key": "RemapCancelToDistance",
         "label": "Remap Cancel Button",
         "description": "On pedal-interceptor Bolts, treat the steering-wheel CANCEL button as an extra mappable button.",
@@ -4730,6 +4747,17 @@
         "default": 101,
         "min": 0,
         "max": 101
+      },
+      {
+        "key": "KeepScreenOnGpuLoading",
+        "label": "Keep Screen On While eGPU Loads",
+        "description": "Keep the driving screen awake while an eGPU model loads so you can watch its status. The normal timeout resumes when loading finishes. A manual Screen Off action still works.",
+        "picker_description": "Keep the driving screen awake during eGPU model loading.",
+        "data_type": "bool",
+        "ui_type": "toggle",
+        "default": false,
+        "parent_key": "ScreenManagement",
+        "settings_tier": "simple"
       },
       {
         "key": "ScreenRecorder",

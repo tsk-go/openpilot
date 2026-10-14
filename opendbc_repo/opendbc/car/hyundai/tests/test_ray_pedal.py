@@ -34,6 +34,9 @@ def test_ray_pedal_fingerprint_isolation(candidate, fingerprint, has_pedal):
     assert CP.safetyConfigs[-1].safetyParam == 0x9405
     assert CP.minEnableSpeed == -1.0
     assert not CP.autoResumeSng
+    assert all(gain > 0 for gain in CP.longitudinalTuning.kpV)
+    assert all(gain > 0 for gain in CP.longitudinalTuning.kiV)
+    assert CP.longitudinalTuning.kfDEPRECATED == 1.0
     FPCP = CarInterface.get_starpilot_params(candidate, fingerprint, [], CP, SimpleNamespace())
     assert FPCP.canUsePedal
     assert not FPCP.pcmCruiseSpeed
@@ -41,6 +44,8 @@ def test_ray_pedal_fingerprint_isolation(candidate, fingerprint, has_pedal):
   else:
     assert CP.pcmCruise
     assert not (CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.LONG)
+    assert list(CP.longitudinalTuning.kpV) == [0.0]
+    assert list(CP.longitudinalTuning.kiV) == [0.0]
 
 
 def test_ray_pedal_safety_signature_is_unique_across_hyundai_platforms():
@@ -91,12 +96,18 @@ def test_ray_pedal_fault_clears_only_with_healthy_sensor_state():
   assert not ret.accFaulted
 
 
-def test_ray_driver_override_uses_physical_interceptor_tracks():
+@pytest.mark.parametrize("physical_rest", [
+  "010801f30cef",  # September 15 calibration: raw 264/497.
+  "009b01ad0ef0",  # October 9 route 0000007b segment 6: raw 155/429.
+  "00b601c4074b",  # October 11 route 00000096 segment 28: raw 182/452.
+])
+def test_ray_driver_override_uses_physical_interceptor_tracks(physical_rest):
   CP = CarInterface.get_params(CAR.KIA_RAY_EV, ray_fingerprint(), [], False, False, False, None)
   state = CarState(CP, None)
   parsers = state.get_can_parsers(CP)
   native_gas = (0x371, bytes.fromhex("004e008000ae0700"), 0)
-  physical_rest = (0x201, bytes.fromhex("010801f30cef"), 0)
+  rest_data = bytes.fromhex(physical_rest)
+  physical_rest = (0x201, rest_data, 0)
   for parser in parsers.values():
     parser.update([(1_000_000_000, [native_gas, physical_rest])])
   ret, _ = state.update(parsers, SimpleNamespace())
@@ -107,7 +118,7 @@ def test_ray_driver_override_uses_physical_interceptor_tracks():
   physical_press = packer.make_can_msg("GAS_SENSOR", 0, {
     "INTERCEPTOR_GAS": (310 - 264) * 0.672,
     "INTERCEPTOR_GAS2": (593 - 497) * 0.332,
-    "STATE": 0, "COUNTER_PEDAL": 13,
+    "STATE": 0, "COUNTER_PEDAL": ((rest_data[4] & 0xF) + 1) & 0xF,
   })
   for parser in parsers.values():
     parser.update([(1_020_000_000, [physical_press])])

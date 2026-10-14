@@ -64,6 +64,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_toyota_rav4_tss2_early_lead_cap,
   get_toyota_sienna_post_departure_restop_cap,
   is_toyota_rav4_tss2_radar_follow_lead,
+  is_kia_niro_ev_follow_lead,
   is_gm_silverado_early_follow_lead,
   is_toyota_rav4_tss2_post_departure_tune,
 )
@@ -422,6 +423,98 @@ def test_niro_ev_far_follow_slew_is_vehicle_specific_and_preserves_urgent_brakin
   planner.lead_one.vLead = 10.0
   assert planner.get_vehicle_far_follow_slew_target(16.0, release, -1.5, False, False) == pytest.approx(-1.5)
   assert not planner.far_follow_output_slew_active
+
+
+def niro_curved_follow_scene():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_NIRO_EV)
+  lead = make_lead(status=True, d_rel=60.5, v_lead=18.05, a_lead=-0.24, model_prob=0.987, y_rel=6.67)
+  sm = make_sm(20.46, 0.0, -3.5, experimental_mode=False, lead_one=lead)
+  sm['modelV2'].position.y = [-6.0 * x / 60.5 for x in sm['modelV2'].position.x]
+  return CP, sm
+
+
+def test_niro_ev_early_follow_uses_path_relative_offset():
+  CP, sm = niro_curved_follow_scene()
+  lead = sm['radarState'].leadOne
+  assert not is_kia_niro_ev_follow_lead(CP, lead, 20.46)
+  assert is_kia_niro_ev_follow_lead(CP, lead, 20.46, sm['modelV2'].position)
+  lead.yRel = -6.67
+  sm['modelV2'].position.y = [-y for y in sm['modelV2'].position.y]
+  assert is_kia_niro_ev_follow_lead(CP, lead, 20.46, sm['modelV2'].position)
+
+
+@pytest.mark.parametrize('field,value', [
+  ('status', False), ('radar', True), ('modelProb', 0.94), ('modelProb', float('nan')),
+  ('aLeadK', -0.14), ('aLeadK', float('nan')), ('vLead', 20.0), ('dRel', 72.0), ('yRel', 9.0),
+])
+def test_niro_ev_early_follow_rejects_unqualified_leads(field, value):
+  CP, sm = niro_curved_follow_scene()
+  setattr(sm['radarState'].leadOne, field, value)
+  assert not is_kia_niro_ev_follow_lead(CP, sm['radarState'].leadOne, 20.46, sm['modelV2'].position)
+
+
+@pytest.mark.parametrize('x,y', [([], []), ([0.0, 100.0], []), ([0.0, 40.0], [0.0, -4.0]),
+                                  ([0.0, 100.0], [0.0, float('nan')]), ([100.0, 0.0], [-10.0, 0.0])])
+def test_niro_ev_early_follow_rejects_invalid_or_short_path(x, y):
+  CP, sm = niro_curved_follow_scene()
+  position = SimpleNamespace(x=x, y=y)
+  assert not is_kia_niro_ev_follow_lead(CP, sm['radarState'].leadOne, 20.46, position)
+
+
+@pytest.mark.parametrize('candidate', [HYUNDAI_CAR.KIA_NIRO_EV_2ND_GEN, HYUNDAI_CAR.HYUNDAI_KONA_EV,
+                                      HYUNDAI_CAR.HYUNDAI_IONIQ_6])
+def test_niro_ev_early_follow_does_not_enable_other_vehicles(candidate):
+  _, sm = niro_curved_follow_scene()
+  CP = HyundaiCarInterface.get_non_essential_params(candidate)
+  assert not is_kia_niro_ev_follow_lead(CP, sm['radarState'].leadOne, 20.46, sm['modelV2'].position)
+
+
+def test_niro_ev_existing_near_follow_is_unchanged():
+  CP, sm = niro_curved_follow_scene()
+  lead = make_lead(status=True, d_rel=35.0, v_lead=21.0, model_prob=0.99)
+  assert is_kia_niro_ev_follow_lead(CP, lead, 20.46)
+  assert is_kia_niro_ev_follow_lead(CP, lead, 20.46, SimpleNamespace(x=[], y=[]))
+
+
+def test_niro_ev_braking_starts_before_raw_urgent_gate(monkeypatch):
+  CP, sm = niro_curved_follow_scene()
+  assert not LongitudinalPlanner.raw_close_lead_needs_control(sm['radarState'].leadOne, 20.46)
+  planner = LongitudinalPlanner(CP, init_v=20.46)
+  for _ in range(20):
+    planner.update(sm, make_toggles())
+  assert planner.mpc.status
+  assert planner.output_a_target < -0.1
+
+  monkeypatch.setattr(longitudinal_planner_module, 'is_kia_niro_ev_follow_lead', lambda *_args: False)
+  baseline = LongitudinalPlanner(CP, init_v=20.46)
+  for _ in range(20):
+    baseline.update(sm, make_toggles())
+  assert not baseline.mpc.status
+  assert planner.output_a_target < baseline.output_a_target
+
+
+@pytest.mark.parametrize('context', ['experimental', 'redLight', 'forcingStop', 'stopSignConfirmed', 'urgent', 'tracked'])
+def test_niro_ev_early_follow_preserves_existing_stop_and_safety_paths(monkeypatch, context):
+  CP, sm = niro_curved_follow_scene()
+  if context == 'experimental':
+    sm['selfdriveState'].experimentalMode = True
+  elif context == 'urgent':
+    sm['radarState'].leadOne.dRel = 20.0
+    sm['radarState'].leadOne.vLead = 5.0
+    sm['radarState'].leadOne.aLeadK = -2.0
+  elif context == 'tracked':
+    sm['starpilotPlan'].trackingLead = True
+  else:
+    setattr(sm['starpilotPlan'], context, True)
+  planner = LongitudinalPlanner(CP, init_v=20.46)
+  for _ in range(20):
+    planner.update(sm, make_toggles())
+  monkeypatch.setattr(longitudinal_planner_module, 'is_kia_niro_ev_follow_lead', lambda *_args: False)
+  baseline = LongitudinalPlanner(CP, init_v=20.46)
+  for _ in range(20):
+    baseline.update(sm, make_toggles())
+  assert planner.output_a_target == pytest.approx(baseline.output_a_target)
+  assert planner.output_should_stop == baseline.output_should_stop
 
 
 def test_crv_far_follow_output_slew_damps_nonurgent_lead_transition():

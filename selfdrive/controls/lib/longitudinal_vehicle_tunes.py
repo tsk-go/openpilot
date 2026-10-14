@@ -144,6 +144,26 @@ FORD_MACH_E_FORCE_STOP_LOW_SPEED_HOLD = 1.0
 KIA_CARNIVAL_2025_STOP_SIGN_LOW_SPEED_HOLD = 0.75
 
 
+def get_planner_v_ego(CP, car_state):
+  v_ego = max(car_state.vEgo, car_state.vEgoCluster)
+
+  if (getattr(CP, "carFingerprint", None) == "KIA_RAY_EV" and
+      getattr(CP, "enableGasInterceptorDEPRECATED", False)):
+    return float(car_state.vEgo)
+
+  is_gm = getattr(CP, "carName", "") == "gm" or getattr(CP, "brand", "") == "gm"
+  if is_gm and getattr(CP, "enableGasInterceptorDEPRECATED", False):
+    try:
+      from opendbc.car.gm.values import GMFlags
+      is_gm_pedal_long = bool(CP.flags & GMFlags.PEDAL_LONG.value)
+      if is_gm_pedal_long:
+        return float(car_state.vEgo)
+    except Exception:
+      pass
+
+  return float(v_ego)
+
+
 def get_toyota_prius_stopped_lead_obstacle_bias(CP, lead, v_ego):
   """Move the ordinary Prius stopped-lead target back without touching stop targets."""
   if (
@@ -589,15 +609,32 @@ def allow_radar_standstill_gap_settle(CP):
   )
 
 
-def is_kia_niro_ev_follow_lead(CP, lead, v_ego):
+def is_kia_niro_ev_follow_lead(CP, lead, v_ego, model_position=None):
   if (
     getattr(CP, "brand", "") != "hyundai" or str(getattr(CP, "carFingerprint", "")) != "KIA_NIRO_EV" or
     lead is None or not bool(getattr(lead, "status", False)) or bool(getattr(lead, "radar", False)) or
-    float(getattr(lead, "modelProb", 0.0)) < 0.95 or
-    abs(float(getattr(lead, "yRel", 0.0))) > 1.5 or float(v_ego) < 5.0
+    not float(getattr(lead, "modelProb", 0.0)) >= 0.95 or float(v_ego) < 5.0
   ):
     return False
-  return 10.0 <= float(lead.dRel) <= max(40.0, 2.5 * float(v_ego))
+
+  distance = float(lead.dRel)
+  lateral_offset = float(getattr(lead, "yRel", 0.0))
+  if abs(lateral_offset) <= 1.5 and 10.0 <= distance <= max(40.0, 2.5 * float(v_ego)):
+    return True
+  if not (
+    model_position is not None and
+    10.0 <= distance <= max(40.0, 3.5 * float(v_ego)) and
+    float(v_ego) - float(getattr(lead, "vLead", v_ego)) >= 0.75 and
+    float(getattr(lead, "aLeadK", 0.0)) <= -0.15
+  ):
+    return False
+
+  path_x = np.asarray(getattr(model_position, "x", ()), dtype=float)
+  path_y = np.asarray(getattr(model_position, "y", ()), dtype=float)
+  if (len(path_x) < 2 or len(path_x) != len(path_y) or distance > path_x[-1] or
+      not np.all(np.isfinite(path_x)) or not np.all(np.isfinite(path_y)) or not np.all(np.diff(path_x) > 0.0)):
+    return False
+  return abs(lateral_offset + float(np.interp(distance, path_x, path_y))) <= 1.5
 
 
 def get_far_follow_output_slew_min_speed(CP, default_min_speed):

@@ -5,7 +5,7 @@ from opendbc.car.toyota.radar_interface import RadarInterface
 from opendbc.car.toyota.values import Ecu, CAR, DBC, ToyotaFlags, CarControllerParams, TSS2_CAR, RADAR_ACC_CAR, NO_DSU_CAR, \
                                                   MIN_ACC_SPEED, EPS_SCALE, NO_STOP_TIMER_CAR, ANGLE_CONTROL_CAR, \
                                                   ToyotaSafetyFlags, LEGACY_PRIUS_CAR, TOYOTA_AUTO_HOLD_CARS, \
-                                                  uses_toyota_auto_hold_aeb
+                                                  uses_toyota_auto_hold_aeb, ARS510_RADAR_CAR
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
@@ -18,6 +18,17 @@ class CarInterface(CarInterfaceBase):
   CarState = CarState
   CarController = CarController
   RadarInterface = RadarInterface
+
+  @classmethod
+  def get_params(cls, candidate, fingerprint, car_fw, alpha_long, is_release, docs, starpilot_toggles):
+    ret = super().get_params(candidate, fingerprint, car_fw, alpha_long, is_release, docs, starpilot_toggles)
+    radar_mode = getattr(starpilot_toggles, "toyota_radar_mode_requested", 0)
+    if candidate in ARS510_RADAR_CAR and radar_mode in (1, 2):
+      ret.flags |= ToyotaFlags.ARS510_RADAR.value
+      if radar_mode == 2:
+        ret.flags |= ToyotaFlags.ARS510_FUSED.value
+      ret.radarUnavailable = False
+    return ret
 
   @staticmethod
   def get_pid_accel_limits(CP, current_speed, cruise_speed):

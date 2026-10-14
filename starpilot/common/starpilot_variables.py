@@ -652,6 +652,7 @@ class StarPilotVariables:
     toggle.tesla_aol_screen_tap_requested = self.params.get_bool("TeslaAOLScreenTap") and self.params.get_bool("AlwaysOnLateral")
     toggle.tesla_aol_screen_brake_disengage_requested = self.params.get_bool("TeslaAOLDisengageOnBrake")
     toggle.rivian_angle_control = self.params.get_bool("RivianAngleControl")
+    toggle.toyota_radar_mode_requested = self.params.get_int("ToyotaRadarMode")
 
     fallback_platform = GM_CAR.CHEVROLET_BOLT_ACC_2022_2023 if HARDWARE.get_device_type() == "pc" else MOCK.MOCK
 
