@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import json
+import math
 import sys
 import time
 import signal
@@ -60,6 +62,55 @@ def get_assistnow_messages(token: str) -> list[bytes]:
     msgs.append(dat[:msg_len])
     dat = dat[msg_len:]
   return msgs
+
+
+LAST_POSITION_MAX_AGE = 7 * 24 * 3600  # s; an older saved position may be anywhere
+LAST_POSITION_ACCURACY_CM = 100_000 * 100  # 100 km: a hint for the search, never a fix
+
+
+def last_position_message(saved, now: float) -> bytes | None:
+  """UBX-MGA-INI-POS_LLH from StarPilot's LastGPSPosition (JSON saved when the car goes offroad), or None.
+
+  Ported from comma's pigeond (Oct 2026, "aid startup with last GPS position"). Knowing roughly where it is, the
+  receiver finds its satellites much sooner after a start - without it the first minutes could give positions far
+  off (seen Oct 13: 1000 km away) before the first real fix. Skipped when the position has no fix, no save time, or
+  is more than a week old."""
+  if isinstance(saved, bytes):
+    saved = saved.decode("utf-8", errors="replace")
+  if isinstance(saved, str):
+    try:
+      saved = json.loads(saved)
+    except ValueError:
+      return None
+  if not isinstance(saved, dict) or not saved.get("hasFix", False):
+    return None
+  try:
+    lat, lon = float(saved["latitude"]), float(saved["longitude"])
+    saved_at = float(saved.get("updatedAtSec") or 0.0)
+    alt = float(saved.get("altitude") or 0.0)
+  except (KeyError, TypeError, ValueError):
+    return None
+  if not (math.isfinite(lat) and math.isfinite(lon) and abs(lat) <= 90 and abs(lon) <= 180) or (abs(lat) < 1e-6 and abs(lon) < 1e-6):
+    return None
+  if not saved_at > 0 or not -3600 < now - saved_at < LAST_POSITION_MAX_AGE:
+    return None
+  if not math.isfinite(alt):
+    alt = 0.0
+  return add_ubx_checksum(b"\xB5\x62\x13\x40\x14\x00" + struct.pack("<BB2xiiiI",
+    0x01, 0x00,
+    round(lat * 1e7),
+    round(lon * 1e7),
+    round(alt * 100),
+    LAST_POSITION_ACCURACY_CM,
+  ))
+
+
+def send_position(pigeon: "TTYPigeon") -> None:
+  msg = last_position_message(Params().get("LastGPSPosition"), datetime.now(UTC).timestamp())
+  if msg is None:
+    return
+  cloudlog.warning("Sending last position to ublox")
+  pigeon.send_with_ack(msg, ack=UBLOX_ASSIST_ACK)
 
 
 class TTYPigeon:
@@ -269,7 +320,12 @@ def init(pigeon: TTYPigeon) -> None:
   time.sleep(0.5)
 
   init_baudrate(pigeon)
-  init_pigeon(pigeon)
+  if init_pigeon(pigeon) and system_time_valid():
+    # the time went in during the setup; the last position goes after it (its age is judged by the clock)
+    try:
+      send_position(pigeon)
+    except Exception:
+      cloudlog.exception("failed to send the last position to ublox")
 
 def run_receiving(duration: int = 0):
   pm = messaging.PubMaster(['ubloxRaw'])
