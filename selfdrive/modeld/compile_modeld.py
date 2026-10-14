@@ -92,6 +92,7 @@ from tinygrad.engine.jit import TinyJit
 from tinygrad.helpers import Context
 from tinygrad.tensor import Tensor
 from openpilot.selfdrive.modeld.helpers import dump_oob
+from openpilot.selfdrive.modeld.map_fp32 import fp32_map_encoder
 from openpilot.selfdrive.modeld.usbgpu_link import wait_usbgpu_link
 
 
@@ -646,6 +647,8 @@ def main():
       parser.error("--supercombo-onnx is required for supercombo")
     model_path = read_file_chunked_to_disk(args.supercombo_onnx)
     model_runner = OnnxRunner(model_path)
+    if map_boundary := fp32_map_encoder(model_runner):
+      print(f"navigation model: map encoder compiled in float32 (it overflows float16), float16 again at {map_boundary}")
     output["metadata"]["model"] = make_metadata_dict(model_path)
     validate_metadata(output["metadata"]["model"])
     policy_shapes = output["metadata"]["model"]["input_shapes"]
@@ -693,6 +696,9 @@ def main():
     resolved_policy_paths = {key: read_file_chunked_to_disk(path) for key, path in policy_paths.items()}
     vision_runner = OnnxRunner(vision_path)
     policy_runners = {key: OnnxRunner(path) for key, path in resolved_policy_paths.items()}
+    for key, runner in policy_runners.items():
+      if map_boundary := fp32_map_encoder(runner):
+        print(f"{key}: map encoder compiled in float32 (it overflows float16), float16 again at {map_boundary}")
     output["metadata"]["vision"] = make_metadata_dict(vision_path)
     validate_metadata(output["metadata"]["vision"])
     for key, path in resolved_policy_paths.items():
