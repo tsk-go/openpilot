@@ -1,9 +1,15 @@
 """Model inputs for navigation (ported from commaai/openpilot nav-model-integration, Oct 2026)."""
+import json
+import math
+from datetime import UTC, datetime
 import re
 import time
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
+
+from cereal import log
 
 
 def latest_gps_source(sm) -> str | None:
@@ -79,3 +85,77 @@ def advance_maneuvers(maneuvers: list, driven: float) -> list:
   if driven <= 0.0:
     return maneuvers
   return [dict(m, distance=max(0.0, float(m.get("distance") or 0.0) - driven)) if isinstance(m, dict) else m for m in maneuvers]
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# When the model gets the route (Oct 14 2026, drive 00000a2d--4071d6c156): with a destination set the nav model moved
+# three lanes left in 12 s after merging onto a highway (two of them unasked) while being told "exit right in 16.7 km",
+# and refused the driver's right lane changes (its own lane-change forecast stayed at 0.01-0.08 while openpilot asked).
+# Without a destination it drives fine. Without a destination the model gets a black map and no maneuver - the same as
+# passing it nothing - so both rules below do exactly that.
+#   1. the next turn is farther than the horizon (default 2 km): no route yet, it holds its lane like without one;
+#   2. the driver is changing lanes with the stalk: no route until the lane change is over (+ a short tail).
+# Lane changes started by StarPilot itself (a future automatic blinker that follows the model's own forecast,
+# DesireHelper.lane_change_by_system) keep the route.
+
+NAV_HORIZON_FILE = Path('/data/starview/nav_model_horizon_m')   # metres; 0 = always give the route
+DEFAULT_NAV_HORIZON_M = 2000.0
+NAV_GATE_STATUS_FILE = Path('/dev/shm/nav_model_gate.json')     # what the model got last, for StarView / debugging
+DRIVER_LANE_CHANGE_TAIL_S = 1.5
+_ACTIVE_LANE_CHANGE = (log.LaneChangeState.laneChangeStarting, log.LaneChangeState.laneChangeFinishing)
+
+
+def nav_horizon_m(path: Path = NAV_HORIZON_FILE) -> float:
+  """How far ahead (m) the next turn may be for the model to get the route; inf when the file says 0."""
+  try:
+    value = float(path.read_text().strip())
+  except (OSError, ValueError):
+    return DEFAULT_NAV_HORIZON_M
+  if not math.isfinite(value) or value < 0:
+    return DEFAULT_NAV_HORIZON_M
+  return math.inf if value == 0 else value
+
+
+def next_turn_distance(navigation: np.ndarray | None) -> float | None:
+  """Distance (m) to the maneuver in the model's navigation input, None when it holds none."""
+  if navigation is None or not np.any(navigation[:-1] > 0):
+    return None
+  return float(navigation[-1]) * 100.0
+
+
+class DriverLaneChange:
+  """True while a lane change the driver started is running, and DRIVER_LANE_CHANGE_TAIL_S after."""
+  def __init__(self):
+    self.until = 0.0
+
+  def update(self, lane_change_state, by_system: bool, now: float) -> bool:
+    if lane_change_state in _ACTIVE_LANE_CHANGE and not by_system:
+      self.until = now + DRIVER_LANE_CHANGE_TAIL_S
+    return now < self.until
+
+
+def gate_nav_inputs(nav_inputs: dict, horizon_m: float, driver_lane_change: bool) -> tuple[dict, str]:
+  """The inputs to give the model and why some were held back ('' = all given)."""
+  if not nav_inputs:
+    return nav_inputs, ""
+  if driver_lane_change:
+    return {}, "driver lane change"
+  if math.isfinite(horizon_m):
+    distance = next_turn_distance(nav_inputs.get("navigation"))
+    if distance is None:
+      return {}, "no turn ahead"
+    if distance > horizon_m:
+      return {}, f"next turn beyond {horizon_m:.0f} m"
+  return nav_inputs, ""
+
+
+def write_gate_status(reason: str, navigation: np.ndarray | None, path: Path = NAV_GATE_STATUS_FILE) -> None:
+  """Write what the model gets now (on change only), for StarView and for reading back after a drive."""
+  try:
+    distance = next_turn_distance(navigation)
+    command = int(np.argmax(navigation[:-1])) if distance is not None else None
+    path.write_text(json.dumps({"destination": navigation is not None, "routeGiven": reason == "" and navigation is not None,
+                                "reason": reason, "nextTurnType": command,
+                                "nextTurnM": None if distance is None else round(distance), "t": datetime.now(UTC).timestamp()}))
+  except Exception:
+    pass

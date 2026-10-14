@@ -76,6 +76,9 @@ class DesireHelper:
     self.lane_change_completed = False
 
     self.lane_change_wait_timer = 0.0
+    # True while a lane change StarPilot started itself is running (reserved for an automatic blinker that follows the
+    # model's own lane-change forecast): the nav model keeps the route then; a driver's lane change gets it held back
+    self.lane_change_by_system = False
     self.nav_desires_allowed = False
     self.nav_lane_positioning_allowed = False
     self._nav_instruction_state_raw: object = None

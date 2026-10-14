@@ -74,7 +74,8 @@ from openpilot.starpilot.common.model_lab import (
   model_lab_manifest_eligible,
 )
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
-from openpilot.starpilot.navigation.nav_model.helpers import starpilot_navigation_input
+from openpilot.starpilot.navigation.nav_model.helpers import (DriverLaneChange, gate_nav_inputs, nav_horizon_m, starpilot_navigation_input,
+                                                              write_gate_status)
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles, MODELS_PATH, params_memory
 
 
@@ -1276,6 +1277,9 @@ def main(demo=False):
 
   DH = DesireHelper()
   nav_map, nav_map_time = None, 0.
+  driver_lane_change = DriverLaneChange()
+  nav_horizon = nav_horizon_m()
+  nav_gate = None
 
   starpilot_toggles = get_starpilot_toggles(sm)
 
@@ -1338,6 +1342,17 @@ def main(demo=False):
       nav_inputs["nav_map"] = nav_map
     if sm.valid["navInstruction"] and now - sm.recv_time["navInstruction"] < 2:
       nav_inputs["navigation"] = starpilot_navigation_input(sm["navInstruction"].allManeuvers, v_ego * (now - sm.recv_time["navInstruction"]))
+    # route only for the next turn within the horizon, and not while the driver changes lanes (helpers.gate_nav_inputs)
+    if sm.frame % 60 == 0:
+      nav_horizon = nav_horizon_m()
+    full_navigation = nav_inputs.get("navigation")
+    in_lane_change = driver_lane_change.update(DH.lane_change_state, DH.lane_change_by_system, now)
+    nav_inputs, gate = gate_nav_inputs(nav_inputs, nav_horizon, in_lane_change)
+    if gate != nav_gate:
+      nav_gate = gate
+      write_gate_status(gate, full_navigation)
+      if gate:
+        cloudlog.info(f"nav model: route held back ({gate})")
     if sm.frame % 60 == 0:
       camera_offset.set_target(params.get_float("CameraOffset", return_default=True))
 
