@@ -19,6 +19,21 @@ NAVIGATIOND_HZ = 1
 REROUTE_TRIGGER_SECONDS = 2.0
 ARRIVAL_CLEAR_SECONDS = 5.0
 LOCATION_STATE_STALE_SECONDS = 2.5
+# Standing still the position can't go out of date: at a light between tall buildings the GPS may pause for a while,
+# and the turn instructions used to stop (the tablet's turn card vanished) until it came back.
+STOPPED_STALE_SECONDS = 30.0
+STOPPED_WHEEL_SPEED = 0.3  # m/s
+STOPPED_FIX_SPEED = 0.5  # m/s
+WHEEL_SPEED_FRESH_NS = 1_000_000_000
+
+
+def location_age_ok(age: float, fix_speed: float, wheel_speed: float | None) -> bool:
+  """Is a GPS position this old (s) still where the car is? Always up to LOCATION_STATE_STALE_SECONDS; up to
+  STOPPED_STALE_SECONDS when the car was stopped at that fix and its wheels still say it is (unknown wheel speed: no)."""
+  if age <= LOCATION_STATE_STALE_SECONDS:
+    return True
+  return (wheel_speed is not None and wheel_speed < STOPPED_WHEEL_SPEED and fix_speed < STOPPED_FIX_SPEED
+          and age <= STOPPED_STALE_SECONDS)
 
 
 ROUTE_RESEND_SECONDS = 5.0
@@ -44,6 +59,7 @@ class Navigationd:
     self._last_position: Coordinate | None = None
     self._last_bearing: float | None = None
     self._fix_age = 0.0  # seconds: how old the GPS position was when read
+    self._speed_sock = None  # starpilotSelfdriveState (wheel speed), not carState: its listener slots are all taken
     self._off_route_started_at: float | None = None
     self._bearing_misaligned_started_at: float | None = None
     self._arrival_started_at: float | None = None
@@ -153,8 +169,11 @@ class Navigationd:
       return False, 0.0
 
     updated_at = float(gps_state.get("updatedAtMonotonic", 0.0) or 0.0)
-    if updated_at > 0.0 and (monotonic() - updated_at) > LOCATION_STATE_STALE_SECONDS:
-      return False, 0.0
+    if updated_at > 0.0:
+      age = monotonic() - updated_at
+      fix_speed = float(gps_state.get("speed", 0.0) or 0.0)
+      if not location_age_ok(age, fix_speed, self._wheel_speed() if age > LOCATION_STATE_STALE_SECONDS else None):
+        return False, 0.0
 
     self._last_position = Coordinate(latitude, longitude)
     self._fix_age = min(max(monotonic() - updated_at, 0.0), LOCATION_STATE_STALE_SECONDS) if updated_at > 0.0 else 0.0
@@ -164,6 +183,21 @@ class Navigationd:
 
     speed = float(gps_state.get("speed", 0.0) or 0.0)
     return True, max(speed, 0.0)
+
+  def _wheel_speed(self) -> float | None:
+    """The car's wheel speed (m/s) from starpilotSelfdriveState, None when not fresh or not readable."""
+    try:
+      if self._speed_sock is None:
+        self._speed_sock = messaging.sub_sock("starpilotSelfdriveState", conflate=True)
+        self._speed = None
+      msg = messaging.recv_one_or_none(self._speed_sock)
+      if msg is not None:
+        self._speed = (msg.logMonoTime, float(msg.starpilotSelfdriveState.vEgo))
+      if self._speed is None or int(monotonic() * 1e9) - self._speed[0] > WHEEL_SPEED_FRESH_NS:
+        return None
+      return self._speed[1]
+    except Exception:
+      return None
 
   def _maybe_update_route(self, current_destination: dict[str, object] | None) -> tuple[NavigationRoute | None, dict[str, object] | None, int]:
     route, active_destination, route_generation = self._snapshot_route()
