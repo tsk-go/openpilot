@@ -446,3 +446,34 @@ def test_tablet_destination(tmp_path, monkeypatch):
   assert "NavDestination" not in params.d and not feed._tablet_route
   assert not feed.set_tablet_destination("", "", 40.0, -74.0)["ok"]
   assert not feed.set_tablet_destination("X", "", 95.0, -74.0)["ok"]
+
+
+def test_drive_oct15_opposite_sides_and_other_streets_disagree():
+  # Waze LEFT onto "Ave N." in 50 ft, StarPilot RIGHT onto Avenue N in 60 ft: same street, other way
+  w = {"navigating": True, "street": "Ave N.", "distanceM": 15.2, "modifier": "left"}
+  mb = {"valid": True, "maneuverType": "turn", "maneuverPrimaryText": "Avenue N", "maneuverDistance": 18.0, "maneuverModifier": "right"}
+  r = waze_parser.compare(w, mb)
+  assert r["wazeAgree"] is False and r["wazeWhy"] == "waze left, starpilot right" and r["wazeSide"] == "left"
+  # Waze "Ave R" in 0.1 mi, StarPilot Kings Highway in 100 ft: the distance is within Waze's 0.1 mi step, the streets aren't
+  w = {"navigating": True, "street": "Ave R", "distanceM": 160.9, "modifier": ""}
+  mb = {"valid": True, "maneuverType": "turn", "maneuverPrimaryText": "Kings Highway", "maneuverDistance": 30.0, "maneuverModifier": "right"}
+  r = waze_parser.compare(w, mb)
+  assert r["wazeAgree"] is False
+  # same street, same side: agree
+  w = {"navigating": True, "street": "Ave R", "distanceM": 160.9, "modifier": "left"}
+  mb = {"valid": True, "maneuverType": "turn", "maneuverPrimaryText": "Avenue R", "maneuverDistance": 150.0, "maneuverModifier": "left"}
+  r = waze_parser.compare(w, mb)
+  assert r["wazeAgree"] is True and r["wazeSide"] == "left"
+  # a slight right (exit) is the right side too
+  w = {"navigating": True, "street": "Belt Pkwy", "distanceM": 400.0, "modifier": "right"}
+  mb = {"valid": True, "maneuverType": "off ramp", "maneuverPrimaryText": "Belt Parkway", "maneuverDistance": 420.0, "maneuverModifier": "slightRight"}
+  r = waze_parser.compare(w, mb)
+  assert r["wazeAgree"] is True
+
+
+def test_tablet_arrow_reading_gives_the_direction():
+  snap = nav_snapshot()
+  snap["nodes"] = [n for n in snap["nodes"] if n["d"] != "Turn right"]
+  snap["nodes"].append(node(d="turn left (StarView arrow)", i="starview_arrow", c="ImageView", b=(20, 20, 140, 140)))
+  p = waze_parser.parse(snap)
+  assert p["modifier"] == "left" and p["maneuverType"] == "turn"

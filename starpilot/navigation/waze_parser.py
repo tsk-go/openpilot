@@ -290,6 +290,11 @@ def road_names(text: str) -> list[str]:
   return roads or parts
 
 
+def _numbered(text: str) -> bool:
+  """A route number in it (I-287, NY 878, 495): Waze and Mapbox name such roads differently."""
+  return any(w.isdigit() for w in street_tokens(text))
+
+
 def compare(waze: dict[str, Any], mapbox_state: dict[str, Any] | None, upcoming: list[tuple[str, float | None]] | None = None) -> dict[str, Any]:
   """Does Waze's next maneuver look like the Mapbox route's next maneuver?"""
   res: dict[str, Any] = {"wazeStreet": waze.get("street", ""), "wazeDistance": waze.get("distanceM"),
@@ -304,15 +309,33 @@ def compare(waze: dict[str, Any], mapbox_state: dict[str, Any] | None, upcoming:
     res["wazeWhy"] = "starting"          # Mapbox's first step is "head <dir> on ...": nothing to compare yet
     return res
   mb_text = f"{primary} {mapbox_state.get('maneuverSecondaryText', '')}"
-  s_ok = street_match(waze.get("street", ""), mb_text) if waze.get("street") else False
+  ws = str(waze.get("street") or "")
+  s_ok = street_match(ws, mb_text) if ws else False
   wd = waze.get("distanceM")
   d_ok = wd is not None and abs(float(wd) - md) <= max(150.0, 0.25 * md)
   wm, mm = waze.get("modifier", ""), str(mapbox_state.get("maneuverModifier") or "")
   m_ok = bool(wm) and bool(mm) and (wm == mm or wm.lower().endswith(mm.lower()[-4:]))
-  # Waze's arrow is a picture, so its direction is usually unknown: then a matching distance alone counts
-  res["wazeAgree"] = bool(s_ok or (d_ok and (m_ok or not wm)))
+  # Oct 15 2026 (Chaim's drive): "agrees" while Waze said LEFT onto Ave N and StarPilot RIGHT onto Avenue N, and while
+  # Waze said Ave R in 0.1 mi and StarPilot Kings Highway in 100 ft (0.1 mi is Waze's step, so the distance matched).
+  #  - opposite sides (Waze's direction is now read from its arrow by the tablet) = different routes, whatever the street;
+  #  - two plain street names that don't match = different turns: distance alone may only stand in for the street when
+  #    the names can't be compared (route numbers / signposts: Waze "878 North", Mapbox "Nassau Expressway").
+  side = {"left": "left", "right": "right"}
+  ws_side = next((v for k, v in side.items() if wm.lower().endswith(k)), "")
+  mb_side = next((v for k, v in side.items() if mm.lower().endswith(k)), "")
+  side_conflict = bool(ws_side and mb_side and ws_side != mb_side)
+  comparable = bool(ws and primary) and not _numbered(ws) and not _numbered(mb_text) and "/" not in ws
+  if side_conflict:
+    res["wazeAgree"] = False
+  elif comparable:
+    res["wazeAgree"] = s_ok
+  else:
+    res["wazeAgree"] = bool(s_ok or (d_ok and (m_ok or not wm)))
   res["wazeWhy"] = ",".join(k for k, v in (("street", s_ok), ("distance", d_ok), ("direction", m_ok)) if v) or "none"
-  if not res["wazeAgree"] and upcoming and waze.get("street") and wd is not None:
+  if side_conflict:
+    res["wazeWhy"] = f"waze {ws_side}, starpilot {mb_side}"
+  res["wazeSide"] = ws_side
+  if not res["wazeAgree"] and not side_conflict and upcoming and waze.get("street") and wd is not None:
     # Mapbox often has small steps Waze skips ("continue onto ...", name changes): Waze's maneuver may be a later one
     for text, dist in upcoming:
       if not text or not street_match(waze["street"], text):
