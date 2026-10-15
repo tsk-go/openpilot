@@ -11,8 +11,17 @@ import sys
 import termios
 import time
 
+def is_pico(tty):
+  """USB vendor 2e8a (Raspberry Pi): never write L/R/0 into some other serial device on the comma"""
+  try:
+    dev = os.path.realpath(f'/sys/class/tty/{os.path.basename(tty)}/device')
+    with open(os.path.join(os.path.dirname(dev), 'idVendor')) as f:
+      return f.read().strip().lower() == '2e8a'
+  except OSError:
+    return False
+
 def port():
-  cands = sorted(glob.glob('/dev/serial/by-id/*MicroPython*')) + sorted(glob.glob('/dev/ttyACM*'))
+  cands = sorted(glob.glob('/dev/serial/by-id/*MicroPython*')) + [t for t in sorted(glob.glob('/dev/ttyACM*')) if is_pico(t)]
   if not cands:
     sys.exit('Pico not found (no /dev/ttyACM*). Is it plugged into the comma?')
   return cands[0]

@@ -541,10 +541,19 @@ class PicoBlinker:
     if self.path:
       return self.path
     import glob
-    cands = sorted(glob.glob('/dev/serial/by-id/*MicroPython*')) + sorted(glob.glob('/dev/ttyACM*'))
+    # only a Pico (Raspberry Pi USB vendor 2e8a): never write L/R/0 into some other serial device on the comma
+    cands = sorted(glob.glob('/dev/serial/by-id/*MicroPython*')) + [t for t in sorted(glob.glob('/dev/ttyACM*')) if self._is_pico(t)]
     if not cands:
       raise RuntimeError("Pico relay box not found (no /dev/ttyACM*) - is it plugged into the comma?")
     return cands[0]
+
+  @staticmethod
+  def _is_pico(tty):
+    try:
+      dev = os.path.realpath(f"/sys/class/tty/{os.path.basename(tty)}/device")
+      return Path(dev).parent.joinpath("idVendor").read_text().strip().lower() == "2e8a"
+    except OSError:
+      return False
 
   def _open(self):
     if self.fd is None:
@@ -559,6 +568,8 @@ class PicoBlinker:
       self.thread.start()
 
   def _write(self, ch):
+    if self.fd is None:                       # port dropped by an earlier failed write
+      return
     try:
       os.write(self.fd, ch.encode())
     except OSError as e:                      # unplugged / stalled: drop the port, the Pico releases on its own
@@ -573,6 +584,9 @@ class PicoBlinker:
   def set(self, side: str) -> dict:
     ch = {"left": "L", "right": "R"}.get(side, "0")
     with self.lock:
+      if ch == "0" and self.fd is None:       # nothing open, nothing held: no need to find the Pico to let go
+        self.side = "0"
+        return {"ok": True, "side": "off"}
       self._open()
       if ch == "0":
         if self.side != "0":
@@ -1362,8 +1376,9 @@ async def ws_data(request):
           ack["type"] = "ack"
           ack["id"] = req.get("id")
           await ws.send_str(json.dumps(ack))
-          hub.invalidate_params_snapshot()
-          c.force_params = True
+          if req.get("action") != "blink":    # blink changes no setting and comes 4x a second while held
+            hub.invalidate_params_snapshot()
+            c.force_params = True
         elif req.get("get") == "params":
           c.force_params = True
       elif msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):

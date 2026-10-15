@@ -2,6 +2,8 @@ import os
 import pty
 import time
 
+import pytest
+
 from openpilot.starpilot.system.starview.starviewd import PicoBlinker
 
 
@@ -52,3 +54,24 @@ def test_switching_sides_never_holds_both():
   b.set("off")
   got = _read(master, wait=0.1)
   assert got.startswith(b'L') and b'R' in got and got.endswith(b'000')
+
+
+def test_unplugged_mid_hold_keeps_the_thread_alive():
+  master, path = _pair()
+  b = PicoBlinker(path)
+  b.set("left")
+  os.close(master)                          # writes now fail (EIO), like the Pico being pulled out
+  time.sleep(0.5)
+  assert b.thread.is_alive() and b.fd is None and b.side == "0"
+  assert b.set("off")["side"] == "off"      # no crash on an already dropped port
+
+
+def test_only_a_pico_is_picked(monkeypatch):
+  import glob
+  monkeypatch.setattr(glob, "glob", lambda pat: ["/dev/ttyACM0"] if "ttyACM" in pat else [])
+  monkeypatch.setattr(PicoBlinker, "_is_pico", staticmethod(lambda tty: False))
+  b = PicoBlinker()
+  with pytest.raises(RuntimeError):
+    b._port()
+  monkeypatch.setattr(PicoBlinker, "_is_pico", staticmethod(lambda tty: True))
+  assert b._port() == "/dev/ttyACM0"
