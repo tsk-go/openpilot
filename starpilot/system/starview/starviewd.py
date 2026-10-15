@@ -18,6 +18,7 @@ Endpoints (default port 8090, env STARVIEW_PORT):
   POST /waze             the tablet's Waze reader: raw Waze screen snapshot -> parsed + compared with the Mapbox
                          route (starpilot/navigation/waze_bridge.py); GET /waze = last result
   HTTP /fs/*             file browser API for the tablet's Files screen (same guard) -- see the files section
+  GET  /techstream/     TechStream, Toyota diagnostics (techstream/, from toyopilot); its API is /api/toyota/*
   WS   /video/{road|wide|driver}
                          binary frames: 28-byte header | H.264 Annex-B (SPS/PPS prepended on keyframes)
                          header  = struct '<IQQIHH': frameId, timestampEof(ns mono), unixTimestampNanos, flags(bit0=key), width, height
@@ -704,6 +705,9 @@ class Hub:
     self._snap_lock = threading.Lock()
     self._snap = None
     self._snap_t = 0.0
+    # newest raw message per service (time, bytes): TechStream's "parked?" check reads carState from here instead of
+    # opening one more reader
+    self.last_raw = {}
     self.thread = threading.Thread(target=self._reader, name="starview-reader", daemon=True)
     self.thread.start()
 
@@ -914,6 +918,7 @@ class Hub:
           continue
         if not msgs:
           continue
+        self.last_raw[name] = (now, msgs[-1])
         st = self.stats[name]
         st["msgs"] += len(msgs)
         st["bytes"] += sum(len(m) for m in msgs)
@@ -2178,6 +2183,88 @@ def log_archive_thread():
     time.sleep(300)
 
 
+# ------------------------------------------------------------------------------------------ TechStream
+# Toyota diagnostics on the tablet (techstream/, from toyopilot): the page is served from techstream/web (built from
+# techstream/web_src), its API under /api/toyota like toyopilot's LANLink so the page works unchanged. The page and its
+# files only need a local peer (no secrets in them); every /api/toyota call needs the tablet's session like the rest.
+TECHSTREAM_WEB = Path(__file__).resolve().parent / "techstream" / "web"
+CARSTATE_FRESH_S = 2.0
+
+
+def techstream_parked(hub) -> bool:
+  """carState newer than 2 s (only there while the tablet is connected), in Park, standing still."""
+  t_raw = hub.last_raw.get("carState")
+  if t_raw is None or time.monotonic() - t_raw[0] > CARSTATE_FRESH_S:
+    return False
+  try:
+    from cereal import log
+    with log.Event.from_bytes(t_raw[1]) as ev:
+      cs = ev.carState
+      return str(cs.gearShifter) == "park" and bool(cs.standstill) and cs.vEgo < 0.1
+  except Exception:
+    return False
+
+
+def techstream_api(app):
+  ts = app.get("techstream")
+  if ts is None:
+    from openpilot.starpilot.system.starview.techstream import api as ts_api
+    hub = app["hub"]
+    ts = ts_api.create(is_offroad=lambda: Params().get_bool("IsOffroad"), is_parked=lambda: techstream_parked(hub))
+    stop = threading.Event()
+    threading.Thread(target=ts.watchdog, args=(stop,), name="techstream-watchdog", daemon=True).start()
+    import atexit
+    atexit.register(lambda: (stop.set(), ts.session.exit()))
+    app["techstream"] = ts
+  return ts
+
+
+async def techstream_page(request):
+  _require_local(request)
+  name = request.match_info.get("name") or "index.html"
+  f = (TECHSTREAM_WEB / name).resolve()
+  if TECHSTREAM_WEB not in f.parents or not f.is_file():
+    raise web.HTTPNotFound()
+  headers = {"Cache-Control": "no-cache"} if f.name == "index.html" else {"Cache-Control": "public, max-age=31536000, immutable"}
+  return web.FileResponse(f, headers=headers)
+
+
+async def techstream_call(request):
+  require_paired(request)
+  ts = techstream_api(request.app)
+  method = request.match_info.route.name
+  args = []
+  if "key" in request.match_info:
+    args.append(request.match_info["key"])
+  if "backup_id" in request.match_info:
+    args.append(request.match_info["backup_id"])
+  if request.method == "POST" and method in ("customizations_scan", "customization_write", "dtc_scan", "dtc_clear", "live_read"):
+    try:
+      body = await request.json()
+    except Exception:
+      body = {}
+    args.append(body if isinstance(body, dict) else {})
+  code, body = await asyncio.get_running_loop().run_in_executor(None, lambda: getattr(ts, method)(*args))
+  if body is None:
+    return web.Response(status=204)
+  return web.json_response(body, status=code)
+
+
+TECHSTREAM_ROUTES = [
+  ("GET", "/api/toyota/session", "session_get"),
+  ("GET", "/api/toyota/catalog", "catalog_get"),
+  ("POST", "/api/toyota/session/enter", "session_enter"),
+  ("POST", "/api/toyota/session/exit", "session_exit"),
+  ("POST", "/api/toyota/customizations/scan", "customizations_scan"),
+  ("POST", "/api/toyota/customizations/{key}/write", "customization_write"),
+  ("GET", "/api/toyota/backups", "backups_list"),
+  ("POST", "/api/toyota/backups/{backup_id}/restore", "backup_restore"),
+  ("POST", "/api/toyota/dtc/scan", "dtc_scan"),
+  ("POST", "/api/toyota/dtc/clear", "dtc_clear"),
+  ("POST", "/api/toyota/live/read", "live_read"),
+]
+
+
 def main():
   import atexit
   atexit.register(lambda: os.path.exists(Hub.TABLET_FLAG) and os.unlink(Hub.TABLET_FLAG))
@@ -2207,7 +2294,11 @@ def main():
     web.post("/fs/op", fs_op),
     web.get("/data", ws_data),
     web.get("/video/{cam}", ws_video),
+    web.get("/techstream/", techstream_page),
+    web.get("/techstream/{name:.+}", techstream_page),
   ])
+  for method, path, name in TECHSTREAM_ROUTES:
+    app.router.add_route(method, path, techstream_call, name=name)
   cloudlog.info(f"starview: listening on {HOST}:{PORT}")
   print(f"starviewd listening on http://{HOST}:{PORT}/", flush=True)
   web.run_app(app, host=HOST, port=PORT, loop=loop, print=None, access_log=None)

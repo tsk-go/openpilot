@@ -2,6 +2,7 @@ import os
 import operator
 import platform
 import sys
+import time
 
 from types import SimpleNamespace
 
@@ -82,6 +83,15 @@ def qcomgps(started: bool, params: Params, CP: car.CarParams, starpilot_toggles:
 
 def always_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return True
+
+def pandad_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  # StarView TechStream's diagnostic mode has the panda to itself (starpilot/system/starview/techstream/session.py):
+  # pandad stays stopped while /dev/shm/starview_diag is fresh. starviewd renews it every 5 s, so a flag nobody
+  # renews (starviewd gone) is ignored after 20 s and pandad comes back on its own.
+  try:
+    return time.time() - os.path.getmtime("/dev/shm/starview_diag") >= 20  # noqa: TID251  file mtimes are wall clock
+  except OSError:
+    return True
 
 def only_onroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started
@@ -209,7 +219,7 @@ procs = [
   PythonProcess("deleter", "system.loggerd.deleter", always_run),
   PythonProcess("dmonitoringd", "selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "system.qcomgpsd.qcomgpsd", qcomgps, enabled=TICI),
-  PythonProcess("pandad", "selfdrive.pandad.pandad", always_run),
+  PythonProcess("pandad", "selfdrive.pandad.pandad", pandad_run),
   PythonProcess("paramsd", "selfdrive.locationd.paramsd", only_onroad),
   PythonProcess("lagd", "selfdrive.locationd.lagd", only_onroad),
   PythonProcess("ubloxd", "system.ubloxd.ubloxd", ublox, enabled=TICI),
