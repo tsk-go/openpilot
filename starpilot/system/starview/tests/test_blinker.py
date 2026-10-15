@@ -75,3 +75,43 @@ def test_only_a_pico_is_picked(monkeypatch):
     b._port()
   monkeypatch.setattr(PicoBlinker, "_is_pico", staticmethod(lambda tty: True))
   assert b._port() == "/dev/ttyACM0"
+
+
+def test_why_is_published_while_held_and_cleared_on_release(tmp_path):
+  master, path = _pair()
+  sig = tmp_path / "starview_signal"
+  b = PicoBlinker(path, signal_path=str(sig))
+  assert b.set("left", "lane")["signal"] is True
+  why, side, t0 = sig.read_text().split()
+  assert (why, side) == ("lane", "left") and abs(float(t0) - time.monotonic()) < 0.5
+  time.sleep(0.05)
+  b.set("left", "lane")                    # repeated request: freshly stamped
+  assert float(sig.read_text().split()[2]) > float(t0)
+  b.set("right", "turn")
+  assert sig.read_text().split()[:2] == ["turn", "right"]
+  b.set("off")
+  assert not sig.exists()
+  _read(master)
+
+
+def test_manual_hold_and_timeout_leave_no_signal(tmp_path):
+  master, path = _pair()
+  sig = tmp_path / "starview_signal"
+  b = PicoBlinker(path, signal_path=str(sig))
+  b.set("left", "bogus")                   # only turn / lane are published
+  assert not sig.exists()
+  b.set("left", "turn")
+  assert sig.exists()
+  time.sleep(1.2)                          # the tablet stopped asking: released, and the reason with it
+  assert b.side == "0" and not sig.exists()
+  _read(master)
+
+
+def test_unplugged_clears_the_signal(tmp_path):
+  master, path = _pair()
+  sig = tmp_path / "starview_signal"
+  b = PicoBlinker(path, signal_path=str(sig))
+  b.set("left", "lane")
+  os.close(master)
+  time.sleep(0.5)
+  assert b.fd is None and not sig.exists()

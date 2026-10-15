@@ -526,17 +526,44 @@ class PicoBlinker:
   one character every 0.2 s while a side is held - 'L' / 'R' latched (TL/TR + CR) - and '0' to release. The tablet sends
   the side it holds every 250 ms; if that stops for 0.6 s (button let go, link lost, app closed) the signal is released
   here, and the Pico itself drops everything after 1 s without a character. Both sides at once is never sent: the Pico
-  switches both off when asked for both (a real stalk can't close both sides), and the tablet asks for "off" then."""
+  switches both off when asked for both (a real stalk can't close both sides), and the tablet asks for "off" then.
+
+  Why the tablet signals (its automatic blinker) goes to SIGNAL_PATH while the side is held, for desire_helper:
+  "turn left|right" = a route turn (never start a lane change from it), "lane left|right" = a lane change the driver
+  confirmed on the tablet (tap or steering nudge) or set to automatic (counts as the nudge), then time.monotonic().
+  Rewritten with every request (4x a second) and removed on release; desire_helper ignores it once it is 1 s old."""
   KEEP_S = 0.6
   PERIOD_S = 0.2
+  SIGNAL_PATH = "/dev/shm/starview_signal"
+  WHYS = ("turn", "lane")
 
-  def __init__(self, path=None):
+  def __init__(self, path=None, signal_path=None):
     self.path = path
+    self.signal_path = signal_path or self.SIGNAL_PATH
     self.fd = None
     self.side = "0"
+    self.why = ""
     self.until = 0.0
     self.lock = threading.Lock()
     self.thread = None
+
+  def _signal(self, side: str, why: str) -> None:
+    """Publish (or clear, why "") why this side is held, stamped with the time."""
+    try:
+      if not why or side not in ("left", "right"):
+        if self.why:
+          self.why = ""
+          os.remove(self.signal_path)
+        return
+      tmp = self.signal_path + ".tmp"
+      with open(tmp, "w") as f:
+        f.write(f"{why} {side} {time.monotonic():.3f}")
+      os.replace(tmp, self.signal_path)
+      self.why = f"{why} {side}"
+    except FileNotFoundError:
+      self.why = ""
+    except OSError as e:
+      cloudlog.warning(f"starview: blinker signal file: {e}")
 
   def _port(self):
     if self.path:
@@ -581,25 +608,31 @@ class PicoBlinker:
         pass
       self.fd = None
       self.side = "0"
+      self._signal("off", "")
 
-  def set(self, side: str) -> dict:
+  def set(self, side: str, why: str = "") -> dict:
     ch = {"left": "L", "right": "R"}.get(side, "0")
+    why = why if why in self.WHYS else ""
     with self.lock:
       if ch == "0" and self.fd is None:       # nothing open, nothing held: no need to find the Pico to let go
         self.side = "0"
-        return {"ok": True, "side": "off"}
+        self._signal("off", "")
+        return {"ok": True, "side": "off", "signal": True}
       self._open()
       if ch == "0":
         if self.side != "0":
           for _ in range(3):
             self._write("0")
         self.side = "0"
+        self._signal("off", "")
       else:
         if ch != self.side:
           self._write(ch)
-        self.side = ch
+        self.side = ch if self.fd is not None else "0"
         self.until = time.monotonic() + self.KEEP_S
-    return {"ok": True, "side": side if ch != "0" else "off"}
+        self._signal(side if self.side != "0" else "off", why)
+    # "signal": this starviewd tells desire_helper why it signals (the tablet's automatic blinker needs that)
+    return {"ok": True, "side": side if ch != "0" else "off", "signal": True}
 
   def _run(self):
     while True:
@@ -611,6 +644,7 @@ class PicoBlinker:
           for _ in range(3):
             self._write("0")
           self.side = "0"
+          self._signal("off", "")
         else:
           self._write(self.side)
 
@@ -1242,8 +1276,8 @@ class Hub:
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
         return {"ok": True, "tablet_mode": self.tablet_mode}
-      if act == "blink":  # {"side": "left" | "right" | "off"} - repeated every 250 ms while the tablet's button is held
-        return self.blinker.set(str(req.get("side", "off")))
+      if act == "blink":  # {"side": "left" | "right" | "off", "why"?: "turn" | "lane"} - repeated every 250 ms while held
+        return self.blinker.set(str(req.get("side", "off")), str(req.get("why") or ""))
       if act == "drive_state":  # "default" | "onroad" | "offroad"  (same as Galaxy / settings Force drive state)
         mode = req.get("mode", "default")
         # switching onroad/offroad starts or stops openpilot: never while engaged or while Always On Lateral steers (it

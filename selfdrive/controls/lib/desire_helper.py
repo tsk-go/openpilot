@@ -1,4 +1,5 @@
 import json
+import os
 from time import monotonic
 
 import numpy as np
@@ -29,6 +30,12 @@ NAV_KEEP_DISTANCE_SPEED_BREAKPOINTS = [0.0, 15.0, 30.0]
 NAV_KEEP_DISTANCE_BREAKPOINTS = [25.0, 90.0, 160.0]
 NAV_KEEP_AMBIGUOUS_SPLIT_DISTANCE_SCALE = 0.6
 NAV_KEEP_SMALL_SPLIT_MAX_OTHER_LANES = 2
+# StarView's automatic blinker (starviewd PicoBlinker) says why it holds a blinker: "turn left|right" = a route turn,
+# "lane left|right" = a lane change the driver confirmed on the tablet (tap / steering nudge) or set to automatic.
+# The file holds "<why> <side> <time.monotonic()>", rewritten every 250 ms while held; older than this = starviewd /
+# the tablet is gone, ignored.
+STARVIEW_SIGNAL_PATH = "/dev/shm/starview_signal"
+STARVIEW_SIGNAL_MAX_AGE = 1.0
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -83,6 +90,29 @@ class DesireHelper:
     self.nav_lane_positioning_allowed = False
     self._nav_instruction_state_raw: object = None
     self._nav_instruction_state: dict[str, object] = {}
+    self._starview_signal_key: tuple[int, int] = (0, 0)
+    self._starview_signal_text = ""
+    self._starview_signal_t = 0.0
+
+  def _starview_signal(self) -> str:
+    """'turn left' / 'turn right' / 'lane left' / 'lane right' while StarView's automatic blinker holds that side, else ''."""
+    try:
+      st = os.stat(STARVIEW_SIGNAL_PATH)
+    except OSError:
+      return ""
+    key = (st.st_ino, st.st_mtime_ns)            # starviewd replaces the file: a new inode every time
+    if key != self._starview_signal_key:
+      self._starview_signal_key = key
+      self._starview_signal_text, self._starview_signal_t = "", 0.0
+      try:
+        with open(STARVIEW_SIGNAL_PATH) as f:
+          why, side, t = f.read(64).split()
+        self._starview_signal_text, self._starview_signal_t = f"{why} {side}", float(t)
+      except (OSError, ValueError):
+        pass
+    if not -0.05 <= monotonic() - self._starview_signal_t <= STARVIEW_SIGNAL_MAX_AGE:   # -: the stamp is rounded to ms
+      return ""
+    return self._starview_signal_text
 
   def _update_nav_params(self):
     raw = self.params_memory.get("NavInstructionState") or {}
@@ -298,6 +328,11 @@ class DesireHelper:
 
     return log.Desire.none
 
+  def _starview_turn_imminent(self, carstate):
+    """StarView signals a route turn well before it: the blinker's own turn desire waits until the turn is near (the
+    same preview as the route's turn desire), so the model doesn't turn into an earlier street or driveway."""
+    return self._nav_instruction_is_fresh() and self._nav_turn_is_imminent(carstate, self._nav_instruction_state.get("maneuverDistance"))
+
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
@@ -310,6 +345,13 @@ class DesireHelper:
     self._update_nav_params()
     self.nav_desires_allowed = bool(getattr(starpilot_toggles, "nav_desires_allowed", self.nav_desires_allowed))
     nav_turn_signal = self.nav_desires_allowed and self._nav_instruction_is_fresh() and self._nav_turn_signal_matches(carstate, self._nav_instruction_state)
+    # StarView's automatic blinker: a route turn is never a lane change; a confirmed lane change needs no further nudge
+    # (and isn't taken for the route's turn when that is on the same side)
+    starview_signal = self._starview_signal() if one_blinker else ""
+    blinker_side = "left" if carstate.leftBlinker else "right"
+    starview_turn = starview_signal == f"turn {blinker_side}"
+    starview_lane_confirmed = starview_signal == f"lane {blinker_side}"
+    nav_turn_signal = (nav_turn_signal and not starview_lane_confirmed) or starview_turn
 
     stop_imminent = (bool(getattr(starpilotPlan, "redLight", False))
                      or bool(getattr(starpilotPlan, "forcingStop", False))
@@ -354,13 +396,14 @@ class DesireHelper:
         blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
                               (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
 
-        if torque_applied:
+        desired_lane_width = starpilotPlan.laneWidthLeft if self.lane_change_direction == LaneChangeDirection.left else starpilotPlan.laneWidthRight
+        confirmed = starview_lane_confirmed and desired_lane_width >= starpilot_toggles.lane_detection_width
+        if torque_applied or confirmed:
+          torque_applied = True
           self.lane_change_wait_timer = starpilot_toggles.lane_change_delay
         else:
           torque_applied |= nudgeless_enabled
           torque_applied &= self.lane_change_wait_timer >= starpilot_toggles.lane_change_delay
-
-          desired_lane_width = starpilotPlan.laneWidthLeft if self.lane_change_direction == LaneChangeDirection.left else starpilotPlan.laneWidthRight
           torque_applied &= desired_lane_width >= starpilot_toggles.lane_detection_width
 
         if not one_blinker or below_lane_change_speed or self.lane_change_completed:
@@ -368,8 +411,11 @@ class DesireHelper:
           self.lane_change_direction = LaneChangeDirection.none
         elif torque_applied and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
+          # one StarView suggested and the driver confirmed: the nav model keeps the route through it
+          self.lane_change_by_system = starview_lane_confirmed
 
-          self.lane_change_completed = starpilot_toggles.one_lane_change
+          # a confirmation is good for one lane change: the blinker has to go off before another
+          self.lane_change_completed = starpilot_toggles.one_lane_change or starview_lane_confirmed
 
           self.lane_change_wait_timer = 0.0
 
@@ -398,13 +444,15 @@ class DesireHelper:
 
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange):
       self.lane_change_timer = 0.0
+      self.lane_change_by_system = False
     else:
       self.lane_change_timer += DT_MDL
 
     self.prev_one_blinker = one_blinker
 
     if lateral_active and one_blinker and below_lane_change_speed and not carstate.standstill \
-        and starpilot_toggles.use_turn_desires and not self.turn_stop_hold:
+        and starpilot_toggles.use_turn_desires and not self.turn_stop_hold \
+        and not starview_lane_confirmed and (not starview_turn or self._starview_turn_imminent(carstate)):
       self.turn_direction = TurnDirection.turnLeft if carstate.leftBlinker else TurnDirection.turnRight
       self.desire = TURN_DESIRES[self.turn_direction]
     else:
