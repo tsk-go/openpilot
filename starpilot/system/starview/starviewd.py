@@ -520,6 +520,86 @@ VIDEO_QUEUE = 8       # frames per video client before resync-on-keyframe
 TICK_S = 0.010        # reader thread period (adds <= 10 ms latency)
 
 
+class PicoBlinker:
+  """Turn signals from the tablet's blinker buttons, through the Pico relay box (same protocol as starpilot/tools/blink.py):
+  one character every 0.2 s while a side is held - 'L' / 'R' latched (TL/TR + CR) - and '0' to release. The tablet sends
+  the side it holds every 250 ms; if that stops for 0.6 s (button let go, link lost, app closed) the signal is released
+  here, and the Pico itself drops everything after 1 s without a character. Both sides at once is never sent: the Pico
+  switches both off when asked for both (a real stalk can't close both sides), and the tablet asks for "off" then."""
+  KEEP_S = 0.6
+  PERIOD_S = 0.2
+
+  def __init__(self, path=None):
+    self.path = path
+    self.fd = None
+    self.side = "0"
+    self.until = 0.0
+    self.lock = threading.Lock()
+    self.thread = None
+
+  def _port(self):
+    if self.path:
+      return self.path
+    import glob
+    cands = sorted(glob.glob('/dev/serial/by-id/*MicroPython*')) + sorted(glob.glob('/dev/ttyACM*'))
+    if not cands:
+      raise RuntimeError("Pico relay box not found (no /dev/ttyACM*) - is it plugged into the comma?")
+    return cands[0]
+
+  def _open(self):
+    if self.fd is None:
+      fd = os.open(self._port(), os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+      a = termios.tcgetattr(fd)
+      a[0] = a[1] = a[3] = 0
+      a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+      termios.tcsetattr(fd, termios.TCSANOW, a)
+      self.fd = fd
+    if self.thread is None:
+      self.thread = threading.Thread(target=self._run, name="starview-blinker", daemon=True)
+      self.thread.start()
+
+  def _write(self, ch):
+    try:
+      os.write(self.fd, ch.encode())
+    except OSError as e:                      # unplugged / stalled: drop the port, the Pico releases on its own
+      cloudlog.warning(f"starview: blinker write: {e}")
+      try:
+        os.close(self.fd)
+      except OSError:
+        pass
+      self.fd = None
+      self.side = "0"
+
+  def set(self, side: str) -> dict:
+    ch = {"left": "L", "right": "R"}.get(side, "0")
+    with self.lock:
+      self._open()
+      if ch == "0":
+        if self.side != "0":
+          for _ in range(3):
+            self._write("0")
+        self.side = "0"
+      else:
+        if ch != self.side:
+          self._write(ch)
+        self.side = ch
+        self.until = time.monotonic() + self.KEEP_S
+    return {"ok": True, "side": side if ch != "0" else "off"}
+
+  def _run(self):
+    while True:
+      time.sleep(self.PERIOD_S)
+      with self.lock:
+        if self.fd is None or self.side == "0":
+          continue
+        if time.monotonic() > self.until:     # the tablet stopped asking: let go
+          for _ in range(3):
+            self._write("0")
+          self.side = "0"
+        else:
+          self._write(self.side)
+
+
 class DataClient:
   def __init__(self, ws, loop):
     self.ws = ws
@@ -591,6 +671,7 @@ class Hub:
     self.live_off_at = None   # monotonic time the livestream encoder may be switched off (hold after the last video client)
     self.ops = DeviceOps(self.params, self.params_mem)
     self.tablet_mode = True   # tablet asks to turn the comma screen off while connected (control action "tablet_mode")
+    self.blinker = PicoBlinker()
     self._flag_t = 0.0
     self.engaged = False
     self.started = False
@@ -1142,6 +1223,8 @@ class Hub:
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
         return {"ok": True, "tablet_mode": self.tablet_mode}
+      if act == "blink":  # {"side": "left" | "right" | "off"} - repeated every 250 ms while the tablet's button is held
+        return self.blinker.set(str(req.get("side", "off")))
       if act == "drive_state":  # "default" | "onroad" | "offroad"  (same as Galaxy / settings Force drive state)
         mode = req.get("mode", "default")
         # switching onroad/offroad starts or stops openpilot: never while engaged or while Always On Lateral steers (it
