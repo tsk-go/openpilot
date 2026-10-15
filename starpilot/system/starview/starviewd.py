@@ -2238,7 +2238,8 @@ async def techstream_call(request):
     args.append(request.match_info["key"])
   if "backup_id" in request.match_info:
     args.append(request.match_info["backup_id"])
-  if request.method == "POST" and method in ("customizations_scan", "customization_write", "dtc_scan", "dtc_clear", "live_read"):
+  if request.method == "POST" and method in ("customizations_scan", "customization_write", "dtc_scan", "dtc_clear", "live_read",
+                                             "tests_check", "test_start", "test_stop", "test_ping"):
     try:
       body = await request.json()
     except Exception:
@@ -2263,6 +2264,11 @@ TECHSTREAM_ROUTES = [
   ("POST", "/api/toyota/dtc/scan", "dtc_scan"),
   ("POST", "/api/toyota/dtc/clear", "dtc_clear"),
   ("POST", "/api/toyota/live/read", "live_read"),
+  ("GET", "/api/toyota/tests", "tests_list"),
+  ("POST", "/api/toyota/tests/check", "tests_check"),
+  ("POST", "/api/toyota/tests/start", "test_start"),
+  ("POST", "/api/toyota/tests/stop", "test_stop"),
+  ("POST", "/api/toyota/tests/ping", "test_ping"),
 ]
 
 

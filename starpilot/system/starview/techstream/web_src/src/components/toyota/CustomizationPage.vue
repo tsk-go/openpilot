@@ -33,11 +33,14 @@ const unlisted = computed(() =>
   scan.value.showUnlisted ? catalog.value.settings.filter((s) => !(s.key in scan.value.values) && toyotaData.ecuAnswered[s.ecu]) : [],
 );
 const shown = computed(() => [...readable.value, ...unlisted.value]);
-const categories = computed(() =>
+const allCategories = computed(() =>
   catalog.value.categories
     .map((c) => ({ ...c, count: shown.value.filter((s) => s.category === c.id).length }))
     .filter((c) => c.count > 0),
 );
+// StarView: Toyota's own list (unverified values) gets its own section under toyopilot's verified categories
+const categories = computed(() => allCategories.value.filter((c) => !c.id.startsWith("TOYOTA_")));
+const toyotaCategories = computed(() => allCategories.value.filter((c) => c.id.startsWith("TOYOTA_")));
 const categorySettings = computed(() => readable.value.filter((s) => s.category === currentPage.value.arg));
 const categoryUnlisted = computed(() => unlisted.value.filter((s) => s.category === currentPage.value.arg));
 const ecuName = (s: ToyotaSetting) => catalog.value.ecus.find((e) => e.id === s.ecu)?.name ?? s.ecu;
@@ -83,6 +86,7 @@ const valueText = (s: ToyotaSetting) => settingValueLabel(s, scan.value.values[s
         <span class="flex-1 text-[15px] text-sl-text-1">
           {{ s.name }}
           <span v-if="scan.probed[s.key]" class="ml-1 text-[12px] text-sl-warn">not listed by the car</span>
+          <span v-if="s.unverified" class="ml-1 text-[12px] text-sl-text-3">Toyota list · values unverified</span>
         </span>
         <span class="max-w-[44%] text-right text-[14px] font-semibold text-sl-accent">{{ valueText(s) }}</span>
       </button>
@@ -151,6 +155,28 @@ const valueText = (s: ToyotaSetting) => settingValueLabel(s, scan.value.values[s
             <ChevronRight class="size-4 text-sl-text-3" />
           </button>
         </div>
+
+        <template v-if="toyotaCategories.length">
+          <h2 class="mx-1 mt-4 text-[13px] font-semibold tracking-wide text-sl-text-2">More settings · Toyota's own list</h2>
+          <p class="mx-1 text-[12px] text-sl-text-3">
+            Names and addresses come from Toyota's dealer software and match the car; what each value means isn't verified
+            (Toyota's option names are shown as hints). Only what your modules report is listed. Every change is still backed up and undoable.
+          </p>
+          <div class="sl-card divide-y divide-sl-border overflow-hidden">
+            <button
+              v-for="c in toyotaCategories"
+              :key="c.id"
+              type="button"
+              class="flex w-full items-center gap-3 px-3.5 py-3 text-left hover:bg-sl-surface-2"
+              @click="goTo('customCat', c.id)"
+            >
+              <component :is="iconByName(c.icon)" class="size-5 shrink-0 text-sl-text-2" />
+              <span class="flex-1 text-[15px] text-sl-text-1">{{ c.name.replace(/^Toyota list: /, "") }}</span>
+              <span class="text-[13px] text-sl-text-3">{{ plural(c.count, "item") }}</span>
+              <ChevronRight class="size-4 text-sl-text-3" />
+            </button>
+          </div>
+        </template>
       </template>
 
       <Button class="self-center" @click="scanCustomizations"><RefreshCw />Read again</Button>

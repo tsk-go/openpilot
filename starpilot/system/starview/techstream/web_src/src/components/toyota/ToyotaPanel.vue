@@ -11,6 +11,7 @@ import { canGoBack, currentPage, goBack, resetToHome } from "@/lib/toyotaNav";
 import { loadCatalog, resetScanData, toyotaData } from "@/lib/toyotaData";
 import { startSessionWatch, touch, currentSessionView } from "@/lib/toyotaSession";
 import Button from "../ui/Button.vue";
+import ActiveTestsPage from "./ActiveTestsPage.vue";
 import BackupsPage from "./BackupsPage.vue";
 import BatteryPage from "./BatteryPage.vue";
 import CustomizationPage from "./CustomizationPage.vue";
@@ -22,6 +23,7 @@ import SessionBar from "./SessionBar.vue";
 
 const PAGE_TITLES: Record<string, string> = {
   home: "Toyota diagnostics", custom: "Customize", dtc: "Trouble codes", live: "Live data", battery: "Hybrid battery", backups: "Backups",
+  tests: "Active tests",
 };
 
 const title = computed(() => {
@@ -80,6 +82,7 @@ watch(() => currentSessionView.value.canUseDiagnostics, (on, wasOn) => {
       <LivePage v-else-if="currentPage.page === 'live' || currentPage.page === 'liveTool'" />
       <BatteryPage v-else-if="currentPage.page === 'battery'" />
       <BackupsPage v-else-if="currentPage.page === 'backups'" />
+      <ActiveTestsPage v-else-if="currentPage.page === 'tests'" />
     </template>
   </div>
 </template>

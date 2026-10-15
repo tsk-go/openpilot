@@ -101,6 +101,12 @@ async function undo(s: ToyotaSetting, backupId: string): Promise<void> {
     <template v-if="setting">
       <!-- Pick value -->
       <template v-if="stage === 'pick'">
+        <div v-if="setting.unverified" class="mt-3 rounded-lg border border-sl-warn/40 bg-sl-warn/10 px-3 py-2 text-[13px] text-sl-text-1">
+          From Toyota's own list: the name and address are right, but what each value does isn't verified.
+          Current raw value: <b class="sl-tabular">{{ current ?? "?" }}</b>.
+          <span v-if="setting.hint" class="mt-1 block text-[12px] text-sl-text-2">{{ setting.hint }}</span>
+          <span class="mt-1 block text-[12px] text-sl-text-2">Tip: change it in the car's own settings menu, read again here, and see which value moves.</span>
+        </div>
         <div v-if="setting.numeric" class="mt-4">
           <div class="my-3 flex justify-center">
             <i class="sl-tabular rounded-lg bg-sl-accent-muted px-4 py-1.5 text-[20px] font-semibold not-italic text-sl-accent">{{ picked }}</i>
@@ -133,6 +139,7 @@ async function undo(s: ToyotaSetting, backupId: string): Promise<void> {
           <i class="rounded-lg bg-sl-accent-muted px-3 py-1.5 font-semibold not-italic text-sl-accent">{{ label(picked) }}</i>
         </div>
         <p class="text-center text-[13px] text-sl-text-2">A backup is made first; you can undo anytime.</p>
+        <p v-if="setting.unverified" class="mt-1 text-center text-[13px] text-sl-warn">Unverified setting: check what it did, and undo from Backups if it isn't what you wanted.</p>
         <p class="mt-1 text-center text-[13px] text-sl-warn">Make sure the vehicle is in IG-ON (not Ready)</p>
         <div class="mt-4 flex gap-2.5">
           <Button class="flex-1" @click="stage = 'pick'">Cancel</Button>

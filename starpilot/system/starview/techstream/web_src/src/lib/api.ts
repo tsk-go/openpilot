@@ -8,7 +8,7 @@
 import type {
   BluetoothStatus, Capabilities, DiagnosticsReport, ParamValues, SettingsSchema,
   SoftwareStatus, StatusSnapshot, ToyotaBackup, ToyotaCatalog, ToyotaCustomizationScan, ToyotaDtcClearResult,
-  ToyotaDtcScan, ToyotaLiveValue, ToyotaSession, ToyotaWriteResult, VehicleState, WifiStatus,
+  ToyotaDtcScan, ToyotaLiveValue, ToyotaSession, ToyotaWriteResult, VehicleState, WifiStatus, ToyotaTest, ToyotaTestEcu, ToyotaTestStatus,
 } from "./schema";
 
 export class ApiError extends Error {
@@ -102,6 +102,14 @@ export const api = {
   toyotaCatalog: () => request<ToyotaCatalog>("/api/toyota/catalog"),
   // Scans are called one ECU at a time by the frontend, following the catalog ECU list
   toyotaScanCustomizations: (ecu: string) => post<ToyotaCustomizationScan>("/api/toyota/customizations/scan", { ecu }),
+  // StarView: Toyota Active Tests - start runs one (stopping any other), ping keeps it running, stop returns control
+  toyotaTests: () => request<{ ecus: ToyotaTestEcu[]; tests: ToyotaTest[] }>("/api/toyota/tests"),
+  // read-only: which of Toyota's tests this module really has (direct tests by DID; routines always listed)
+  toyotaTestCheck: (ecu: string) => post<{ ecu: string; status: "ok" | "offline"; have: string[] }>("/api/toyota/tests/check", { ecu }),
+  toyotaTestStart: (ecu: string, id: string, choice: string | null) =>
+    post<ToyotaTestStatus>("/api/toyota/tests/start", { ecu, id, choice }),
+  toyotaTestPing: () => post<ToyotaTestStatus>("/api/toyota/tests/ping", {}),
+  toyotaTestStop: () => post<ToyotaTestStatus>("/api/toyota/tests/stop", {}),
   // StarView: read an item the ECU didn't list in the scan (nothing is written)
   toyotaProbe: (key: string) =>
     post<{ key: string; value: number; raw: string }>(`/api/toyota/customizations/${encodeURIComponent(key)}/probe`),

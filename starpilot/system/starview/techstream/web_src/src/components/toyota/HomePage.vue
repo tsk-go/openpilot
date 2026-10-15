@@ -4,7 +4,7 @@
  * When not in diagnostic mode the first four entries are grayed out; tapping one shakes the session bar and shows a notice (Backups doesn't need diagnostic mode).
  */
 import { computed, onMounted, ref, watch, type Component } from "vue";
-import { Activity, Archive, BatteryCharging, CarFront, ChevronRight, Stethoscope, Wrench } from "lucide-vue-next";
+import { Activity, Archive, BatteryCharging, CarFront, ChevronRight, Stethoscope, ToggleRight, Wrench } from "lucide-vue-next";
 import { api } from "@/lib/api";
 import { BATTERY_LEVEL_LABEL } from "@/lib/battery";
 import type { ToyotaLiveValue } from "@/lib/schema";
@@ -40,6 +40,7 @@ const entries = computed<Entry[]>(() => [
   { page: "custom", icon: Wrench, title: "Customize", desc: `${catalog.value?.settings.length ?? 0} adjustable items · change by category with one tap`, needsSession: true },
   { page: "dtc", icon: Stethoscope, title: "Trouble codes", desc: dtcSummaryText(toyotaData.dtc.state === "done" ? toyotaData.dtc.scans : null), needsSession: true },
   { page: "live", icon: Activity, title: "Live data", desc: "Wheel speeds, engine & 12V, A/C", needsSession: true },
+  { page: "tests", icon: ToggleRight, title: "Active tests", desc: "Run outputs: horn, locks, windows, lights, wipers, doors, meter…", needsSession: true },
   { page: "battery", icon: BatteryCharging, title: "Hybrid battery", desc: "Voltage and resistance of 12 blocks", needsSession: true },
   { page: "backups", icon: Archive, title: "Backups", desc: "Backed up automatically before changes, restore anytime", needsSession: false },
 ]);

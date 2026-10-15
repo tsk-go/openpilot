@@ -2,7 +2,7 @@
  *  so only the icons it uses are registered (lucide is not imported wholesale); unregistered names fall back to a generic icon. */
 import {
   Armchair, Bell, BatteryCharging, CircleGauge, CloudRain, DoorOpen, FlipHorizontal2, Gauge, KeyRound,
-  LampCeiling, Lightbulb, Lock, Megaphone, PackageOpen, PanelTop, Radar, ShieldCheck, Siren, Snowflake,
+  LampCeiling, Lightbulb, List, Lock, Megaphone, PackageOpen, PanelTop, Radar, ShieldCheck, Siren, Snowflake,
   Settings2, SunMoon, Thermometer,
 } from "lucide-vue-next";
 import type { Component } from "vue";
@@ -19,6 +19,7 @@ const ICONS: Record<string, Component> = {
   "key-round": KeyRound,
   "lamp-ceiling": LampCeiling,
   lightbulb: Lightbulb,
+  list: List,
   lock: Lock,
   megaphone: Megaphone,
   "package-open": PackageOpen,

@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { clearToasts } from "./store";
 
 export type ToyotaPageName =
-  | "home" | "custom" | "customCat" | "dtc" | "dtcEcu" | "live" | "liveTool" | "battery" | "backups";
+  | "home" | "custom" | "customCat" | "dtc" | "dtcEcu" | "live" | "liveTool" | "battery" | "backups" | "tests";
 
 export interface ToyotaPageEntry {
   page: ToyotaPageName;

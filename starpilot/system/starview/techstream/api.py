@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.starpilot.system.starview.techstream import catalog, coding, customization, dtc, live_data
+from openpilot.starpilot.system.starview.techstream import active_tests, catalog, coding, customization, dtc, live_data
 from openpilot.starpilot.system.starview.techstream.backups import BackupStore
 from openpilot.starpilot.system.starview.techstream.link import EcuRejectedError, MalformedResponseError, NoResponseError
 from openpilot.starpilot.system.starview.techstream.session import DiagSession, SessionError
@@ -117,6 +117,7 @@ class TechStreamApi:
   def __init__(self, session: DiagSession, backup_dir: str):
     self.session = session
     self.backups = BackupStore(backup_dir)
+    self.tests = active_tests.Runner(lambda fn: self.session.run(fn))
 
   def watchdog(self, stop: threading.Event) -> None:
     """Background thread: keeps the pandad flag fresh while in diagnostic mode, leaves it after the idle timeout, and
@@ -124,9 +125,11 @@ class TechStreamApi:
     while not stop.wait(WATCHDOG_PERIOD_S):
       try:
         self.session.keepalive()
-        self.session.expire_if_idle()
+        if self.tests.active is None:     # a running Active Test counts as activity
+          self.session.expire_if_idle()
       except Exception:
         cloudlog.exception("techstream: watchdog")
+    self.tests.stop("starviewd stopping")
     self.session.exit()
 
   # ---- session ----
@@ -140,7 +143,10 @@ class TechStreamApi:
     return _guarded(enter)
 
   def session_exit(self):
-    return _guarded(self.session.exit)
+    def leave():
+      self.tests.stop("diagnostic mode exited")
+      self.session.exit()
+    return _guarded(leave)
 
   # ---- catalog ----
   def catalog_get(self):
@@ -192,6 +198,43 @@ class TechStreamApi:
           raise RequestError(404, f"{missing} (not in its setting table)") from exc
         raise
     return _guarded(probe)
+
+  # ---- Active Tests (StarView addition, Toyota's GTS+ definitions) ----
+  def tests_list(self):
+    return _guarded(active_tests.listing)
+
+  def tests_check(self, body: dict):
+    def run():
+      ecu = str(body.get("ecu"))
+      if not any(e["id"] == ecu for e in active_tests.load()["ecus"]):
+        raise RequestError(404, "unknown module")
+      return self.session.run(lambda link: active_tests.check(link, ecu))
+    return _guarded(run)
+
+  def test_start(self, body: dict):
+    def start():
+      test = active_tests.find(str(body.get("ecu")), str(body.get("id")))
+      if test is None:
+        raise RequestError(404, "unknown test")
+      choice = body.get("choice")
+      try:
+        return self.tests.start(test, choice if isinstance(choice, str) else None)
+      except active_tests.TestError as exc:
+        raise RequestError(400, str(exc)) from exc
+      except EcuRejectedError as exc:
+        if exc.nrc in (0x31, 0x11, 0x12):
+          raise RequestError(404, f"{test['name']}: this module doesn't have this test") from exc
+        if exc.nrc == 0x22:
+          why = "conditions not correct - power on, parked, doors / gear as the test needs"
+          raise RequestError(409, f"{test['name']}: the module refused right now ({why})") from exc
+        raise
+    return _guarded(start)
+
+  def test_stop(self, body: dict | None = None):
+    return _guarded(lambda: self.tests.stop())
+
+  def test_ping(self, body: dict | None = None):
+    return _guarded(self.tests.ping)
 
   # ---- backups ----
   def backups_list(self):

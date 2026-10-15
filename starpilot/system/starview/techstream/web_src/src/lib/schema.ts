@@ -410,6 +410,18 @@ export interface ToyotaSetting {
   options: ToyotaOption[];         // empty for numeric settings
   numeric: { min: number; max: number } | null;
   popular: boolean;
+  /** StarView: from Toyota's own North America list (names/addresses check out, values unverified) */
+  source?: "toyota";
+  unverified?: boolean;
+  /** Toyota's option names for the raw values, shown as a hint */
+  hint?: string;
+}
+/** StarView: Toyota Active Tests (output tests) */
+export interface ToyotaTestEcu { id: string; tx: string; sub: string | null; name: string }
+export interface ToyotaTest { ecu: string; id: string; name: string; kind: "direct" | "routine"; choices: string[] }
+export interface ToyotaTestStatus {
+  active: { ecu: string; id: string; name: string; choice: string | null; runningS: number } | null;
+  error: string;
 }
 export interface ToyotaLiveItem {
   key: string;
