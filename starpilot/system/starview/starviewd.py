@@ -2257,6 +2257,7 @@ TECHSTREAM_ROUTES = [
   ("POST", "/api/toyota/session/exit", "session_exit"),
   ("POST", "/api/toyota/customizations/scan", "customizations_scan"),
   ("POST", "/api/toyota/customizations/{key}/write", "customization_write"),
+  ("POST", "/api/toyota/customizations/{key}/probe", "customization_probe"),
   ("GET", "/api/toyota/backups", "backups_list"),
   ("POST", "/api/toyota/backups/{backup_id}/restore", "backup_restore"),
   ("POST", "/api/toyota/dtc/scan", "dtc_scan"),

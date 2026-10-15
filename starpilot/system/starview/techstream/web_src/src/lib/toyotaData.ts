@@ -22,6 +22,10 @@ export const toyotaData = reactive({
     unreachable: [] as ToyotaEcu[],
     /** Setting key → current value and the raw data at scan time (sent as `before` on write to verify the ECU data wasn't changed elsewhere) */
     values: {} as Record<string, { value: number; raw: string }>,
+    /** StarView: also list items the ECUs didn't report as supported, so they can be tried */
+    showUnlisted: false,
+    /** keys read with "Try reading" although the ECU didn't list them */
+    probed: {} as Record<string, boolean>,
   },
   dtc: {
     state: "idle" as "idle" | "scanning" | "done",
@@ -69,6 +73,7 @@ export async function scanCustomizations(): Promise<void> {
   c.statuses = [];
   c.unreachable = [];
   c.values = {};
+  c.probed = {};
   for (const ecu of ecusWithSettings(catalog.ecus, catalog.settings)) {
     try {
       const r = await api.toyotaScanCustomizations(ecu.id);
@@ -111,6 +116,15 @@ export async function scanDtcs(): Promise<void> {
   d.state = "done";
 }
 
+/** StarView: read one unlisted item directly. On success it joins the scan values (so the normal sheet / write path works);
+ *  an ECU that doesn't have it throws ApiError (404 "... doesn't have this setting"). Nothing is written. */
+export async function probeSetting(key: string): Promise<void> {
+  const r = await api.toyotaProbe(key);
+  const c = toyotaData.customization;
+  c.values[key] = { value: r.value, raw: r.raw };
+  c.probed[key] = true;
+}
+
 /** ECUs that cleared successfully get their list emptied locally; whether codes were really cleared, or the fault is still present, takes a rescan to know */
 export async function clearDtcs(ecuIds: string[]): Promise<{ ecu: string; ok: boolean; error?: string }[]> {
   const { results } = await api.toyotaClearDtc(ecuIds);
@@ -140,6 +154,7 @@ export function resetScanData(): void {
   c.statuses = [];
   c.unreachable = [];
   c.values = {};
+  c.probed = {};
   toyotaData.dtc.state = "idle";
   toyotaData.dtc.scans = [];
   toyotaData.battery.analysis = null;

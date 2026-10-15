@@ -132,6 +132,18 @@ def scan_ecu(link, ecu: dict, settings: list[dict]) -> dict:
   return report
 
 
+def probe_setting(link, ecu: dict, setting: dict) -> dict:
+  """Read one item directly, even when the ECU's support bitmap / mask table doesn't list it (StarView's "show unlisted
+  items"). An ECU that really doesn't have it answers 7F 22 31 (request out of range) -> EcuRejectedError; nothing is
+  written here. Returns {key, value, raw} like a scan item, so the normal write path (backup, write, read back) can follow."""
+  payload = _read_payload(link, catalog.ecu_address(ecu), ecu, setting)
+  try:
+    value = coding.extract_value(payload, setting["byteIndex"], int(setting["mask"], 16))
+  except ValueError as exc:
+    raise MalformedResponseError(f"answer too short: {exc}") from exc
+  return {"key": setting["key"], "value": value, "raw": payload.hex()}
+
+
 # ---- write, restore (read-modify-write -> read back; always backed up first) ----
 
 def _read_payload(link, address: Address, ecu: dict, setting: dict) -> bytes:

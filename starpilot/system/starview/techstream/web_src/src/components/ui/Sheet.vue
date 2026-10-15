@@ -32,7 +32,7 @@ const emit = defineEmits<{ "update:open": [boolean] }>();
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-50 bg-black/70" />
       <DialogContent
-        class="fixed inset-x-0 bottom-0 z-50 mx-auto max-h-[86vh] w-full max-w-[480px] overflow-y-auto rounded-t-2xl border border-b-0 border-sl-border-strong bg-sl-surface px-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-4 shadow-lg shadow-black/50 focus:outline-none data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom"
+        class="fixed inset-x-0 bottom-0 z-50 mx-auto max-h-[86vh] w-full overflow-y-auto rounded-t-2xl border border-b-0 border-sl-border-strong bg-sl-surface px-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-4 shadow-lg shadow-black/50 focus:outline-none data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom"
         :aria-describedby="props.description ? undefined : ''"
         @escape-key-down="props.persistent && $event.preventDefault()"
         @interact-outside="props.persistent && $event.preventDefault()"

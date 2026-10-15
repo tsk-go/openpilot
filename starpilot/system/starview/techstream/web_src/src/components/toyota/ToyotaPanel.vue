@@ -56,7 +56,7 @@ watch(() => currentSessionView.value.canUseDiagnostics, (on, wasOn) => {
 </script>
 
 <template>
-  <div class="mx-auto flex w-full max-w-[480px] flex-col gap-3">
+  <div class="flex w-full flex-col gap-3">
     <SessionBar />
 
     <div v-if="!toyotaData.catalog" class="sl-card flex flex-col items-center gap-3 px-5 py-8 text-center text-[13px] text-sl-text-2">

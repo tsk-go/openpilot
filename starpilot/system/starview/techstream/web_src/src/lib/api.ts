@@ -102,6 +102,9 @@ export const api = {
   toyotaCatalog: () => request<ToyotaCatalog>("/api/toyota/catalog"),
   // Scans are called one ECU at a time by the frontend, following the catalog ECU list
   toyotaScanCustomizations: (ecu: string) => post<ToyotaCustomizationScan>("/api/toyota/customizations/scan", { ecu }),
+  // StarView: read an item the ECU didn't list in the scan (nothing is written)
+  toyotaProbe: (key: string) =>
+    post<{ key: string; value: number; raw: string }>(`/api/toyota/customizations/${encodeURIComponent(key)}/probe`),
   toyotaWrite: (key: string, value: number, before: string) =>
     post<ToyotaWriteResult>(`/api/toyota/customizations/${encodeURIComponent(key)}/write`, { value, before }),
   toyotaBackups: () => request<{ backups: ToyotaBackup[] }>("/api/toyota/backups"),

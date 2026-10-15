@@ -32,7 +32,7 @@ const emit = defineEmits<{ "update:open": [boolean] }>();
     <DialogPortal>
       <DialogOverlay class="fixed inset-0 z-50 bg-black/80" />
       <DialogContent
-        class="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2.5rem)] max-w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-sl-border bg-sl-surface p-5 shadow-lg shadow-black/40 focus:outline-none"
+        class="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2.5rem)] max-w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-sl-border bg-sl-surface p-5 shadow-lg shadow-black/40 focus:outline-none"
       >
         <DialogTitle class="text-[15px] font-semibold text-sl-text-1">
           {{ title }}

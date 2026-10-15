@@ -337,3 +337,43 @@ class TestOpenPandaLink:
     with pytest.raises(RuntimeError, match="usb gone"):
       api.open_panda_link()
     assert BrokenPanda.closed
+
+
+CLOSE_REMOTE = "car_setting_comfort_close_remote"   # 750/40 DID 224C: listed by the recorded (Chinese) Sienna, not by a US one
+
+
+class TestProbeUnlisted:
+  """StarView's "show items the car didn't list": read one item directly, write only through the normal path."""
+
+  def test_ecu_that_has_it_returns_value_and_raw_and_writes_nothing(self, tmp_path):
+    body_ecu, api_ = make_active_api(tmp_path)
+    before = dict(body_ecu.memory)
+    status, body = api_.customization_probe(CLOSE_REMOTE)
+    assert status == 200 and body["key"] == CLOSE_REMOTE and body["raw"] == body_ecu.memory[0x224C].hex()
+    assert body_ecu.memory == before and not any(r[0] == 0x2E for r in body_ecu.requests)
+    status, result = api_.customization_write(CLOSE_REMOTE, {"value": 1, "before": body["raw"]})
+    assert status == 200 and result["verified"] and body_ecu.memory[0x224C] == b"\x01"
+
+  def test_ecu_without_it_says_so_and_writes_nothing(self, tmp_path):
+    body_ecu, api_ = make_active_api(tmp_path)
+    del body_ecu.memory[0x224C]      # a US Main Body: 22 224C -> 7F 22 31
+    status, body = api_.customization_probe(CLOSE_REMOTE)
+    assert status == 404 and body["error"] == 'Main Body doesn\'t have this setting (it answered "request out of range")'
+    assert not any(r[0] == 0x2E for r in body_ecu.requests)
+
+  def test_unknown_key(self, tmp_path):
+    _, api_ = make_active_api(tmp_path)
+    assert api_.customization_probe("nope") == (404, {"error": "unknown setting"})
+
+  def test_silent_ecu_is_504(self, tmp_path):
+    _, api_ = make_active_api(tmp_path, ecus={})
+    status, body = api_.customization_probe(CLOSE_REMOTE)
+    assert status == 504 and body["error"].startswith("ECU didn't respond")
+
+  def test_can_window_motor_without_it_says_so(self, tmp_path):
+    from .fakes import FakeEcu
+    motor = FakeEcu(handler=lambda req: b"\x7f" + req[:1] + b"\x11")    # answers every request "service not supported"
+    _, api_ = make_active_api(tmp_path, ecus={(0x750, 0x93): motor})
+    status, body = api_.customization_probe("car_setting_window_auto_down_rear_left")
+    assert status == 404 and body["error"].startswith("Rear Left Window Motor doesn't have this setting")
+    assert not any(r[0] == 0x3B for r in motor.requests)

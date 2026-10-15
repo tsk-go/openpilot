@@ -171,6 +171,28 @@ class TechStreamApi:
       return self.session.run(lambda link: customization.write_setting(link, ecu, setting, value, before, self.backups))
     return _guarded(write)
 
+  def customization_probe(self, key: str):
+    """StarView addition: read an item the ECU didn't list in the scan (see customization.probe_setting)."""
+    def probe():
+      setting = catalog.setting(key)
+      if setting is None:
+        raise RequestError(404, "unknown setting")
+      ecu = catalog.ecu(setting["ecu"])
+      missing = f"{ecu['name']} doesn't have this setting"
+      try:
+        return self.session.run(lambda link: customization.probe_setting(link, ecu, setting))
+      except EcuRejectedError as exc:
+        # 31 request out of range (UDS: no such DID), 11 / 12 service / sub-function not supported (CAN window motors)
+        reason = {0x31: "request out of range", 0x11: "not supported", 0x12: "not supported"}.get(exc.nrc)
+        if reason:
+          raise RequestError(404, f"{missing} (it answered \"{reason}\")") from exc
+        raise
+      except MalformedResponseError as exc:
+        if "mask table" in str(exc):   # Toyota CAN ECU whose A8 03 table has no entry for this item
+          raise RequestError(404, f"{missing} (not in its setting table)") from exc
+        raise
+    return _guarded(probe)
+
   # ---- backups ----
   def backups_list(self):
     return _guarded(lambda: {"backups": [_backup_view(b) for b in self.backups.list() if _is_listable(b)]})

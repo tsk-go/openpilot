@@ -6,7 +6,7 @@ import Toasts from "./components/Toasts.vue";
 </script>
 
 <template>
-  <div class="h-dvh overflow-y-auto bg-sl-bg px-4 py-5">
+  <div class="h-dvh overflow-y-auto bg-sl-bg px-5 py-5">
     <ToyotaPanel />
   </div>
   <Toasts />
