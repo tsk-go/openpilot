@@ -9,7 +9,7 @@ from openpilot.common.realtime import Priority, config_realtime_process, drop_re
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.main import MainLayout
 from openpilot.selfdrive.ui.mici.layouts.main import MiciMainLayout
-from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.startup import select_ui
 
@@ -60,9 +60,13 @@ def main():
     controllers = None
 
   pm = messaging.PubMaster(['uiDebug'])
+  # StarView: the comma's screen stays off while a StarView tablet shows the drive
+  from openpilot.starpilot.system.starview.tablet_mode import StarViewTabletMode
+  tablet_mode = StarViewTabletMode(device, ui_state)
   star = layout.star if star_ui else None
   try:
     for should_render, frame_time, cpu_time in gui_app.render(before_frame=lambda: update_frame(preview, controllers, star)):
+      tablet_mode.update(time.monotonic())
       if should_render:
         if camera_core_ui and not main_thread_configured:
           # Share the camera core with normal scheduling, without FIFO display
