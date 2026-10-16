@@ -9,6 +9,10 @@ LaneChangeDirection = log.LaneChangeDirection
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
+# StarView: a lane change confirmed on the tablet starts once the adjacent lane has been seen with the blind spot clear
+# this long, and only within STARVIEW_CONFIRM_MAX_S of the confirmation; an occupied blind spot cancels it
+STARVIEW_SETTLE_S = 0.5
+STARVIEW_CONFIRM_MAX_S = 5.0
 
 class DesireHelper:
   def __init__(self, policy: LaneChangePolicy | None = None):
@@ -23,17 +27,32 @@ class DesireHelper:
     self.auto_signal_blocked = False
     self.last_signal_direction = LaneChangeDirection.none
     self.auto_status = "manualRequired"
+    self._starview_reset()
+
+  def _starview_reset(self):
+    self.starview_confirm_used = False
+    self.starview_pending_s = 0.0
+    self.starview_clear_s = 0.0
 
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob, *, auto_evidence=False, engaged=False, navigation_turn=False):
+  def update(self, carstate, lateral_active, lane_change_prob, *, auto_evidence=False, engaged=False, navigation_turn=False,
+             starview_lane=False, starview_evidence=False):
+    """starview_lane: StarView's tablet holds this blinker for a lane change the driver confirmed there (tap, nudge or
+    its countdown; starpilot/system/starview/blinker_signal.py). It stands in for the nudge once per blinker hold, when
+    starview_evidence (the adjacent lane, as for an automatic lane change) and a clear blind spot have held for
+    STARVIEW_SETTLE_S, within STARVIEW_CONFIRM_MAX_S. Confirmed while openpilot wasn't steering, or with the blind spot
+    occupied: void (the driver nudges, or confirms again)."""
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     if not carstate.leftBlinker and not carstate.rightBlinker:
       self.lane_change_performed = False
       self.auto_signal_blocked = False
+      self._starview_reset()
+    if starview_lane and (not lateral_active or not engaged):
+      self.starview_confirm_used = True
     signal_direction = self.get_lane_change_direction(carstate) if one_blinker else LaneChangeDirection.none
     if self.policy.auto_lane_change and (carstate.leftBlinker or carstate.rightBlinker) and (
       not one_blinker or not lateral_active or not engaged or
@@ -83,12 +102,22 @@ class DesireHelper:
         elif self.policy.auto_lane_change and engaged:
           self.auto_status = "waitingForDelay" if auto_evidence and not self.auto_signal_blocked else "laneUnavailable"
 
+        confirmed = False
+        if starview_lane and not self.starview_confirm_used:
+          self.starview_pending_s += DT_MDL
+          self.starview_clear_s = self.starview_clear_s + DT_MDL if starview_evidence and not blindspot_detected else 0.0
+          if blindspot_detected or self.starview_pending_s > STARVIEW_CONFIRM_MAX_S:
+            self.starview_confirm_used = True
+          else:
+            confirmed = self.starview_clear_s >= STARVIEW_SETTLE_S
+
         if not one_blinker or below_lane_change_speed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
           self.lane_change_timer = 0.0
           self.pre_lane_change_timer = 0.0
-        elif (torque_applied or auto_ready) and not blindspot_detected and not (self.policy.one_per_signal and self.lane_change_performed):
+        elif (torque_applied or auto_ready or confirmed) and not blindspot_detected and not (self.policy.one_per_signal and self.lane_change_performed):
+          self.starview_confirm_used |= starview_lane     # one lane change per confirmation, however it started
           self.lane_change_state = LaneChangeState.laneChangeStarting
           self.lane_change_timer = 0.0
           self.pre_lane_change_timer = 0.0
