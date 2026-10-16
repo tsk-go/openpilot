@@ -1,6 +1,7 @@
 import os
 import operator
 import platform
+import time
 
 from opendbc.car.structs import car
 from openpilot.common.params import Params
@@ -101,6 +102,16 @@ def parked_camera(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
+def pandad_run(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # StarView TechStream's diagnostic mode has the panda to itself (starpilot/system/starview/techstream/session.py):
+  # pandad stays stopped while /dev/shm/starview_diag is fresh. starviewd renews it every 5 s, so a flag nobody
+  # renews (starviewd gone) is ignored after 20 s and pandad comes back on its own.
+  try:
+    age = time.time() - os.path.getmtime("/dev/shm/starview_diag")  # noqa: TID251  file mtimes are wall clock
+    return not 0 <= age < 20    # a clock set back can't hold pandad off
+  except OSError:
+    return True
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -156,7 +167,7 @@ procs = [
   PythonProcess("deleter", "openpilot.system.loggerd.deleter", always_run),
   PythonProcess("dmonitoringd", "openpilot.selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "openpilot.system.qcomgpsd.qcomgpsd", qcomgps, enabled=COMMA_HARDWARE),
-  PythonProcess("pandad", "openpilot.selfdrive.pandad.pandad", always_run),
+  PythonProcess("pandad", "openpilot.selfdrive.pandad.pandad", pandad_run),
   PythonProcess("paramsd", "openpilot.selfdrive.locationd.paramsd", only_onroad),
   PythonProcess("lagd", "openpilot.selfdrive.locationd.lagd", only_onroad),
   PythonProcess("ubloxd", "openpilot.system.ubloxd.ubloxd", ublox, enabled=COMMA_HARDWARE),
@@ -170,6 +181,9 @@ procs = [
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run),
+  # StarView runs as its own system service (starview.service), so the tablet, its terminal and file copying keep
+  # working while openpilot is stopped; this only starts and watches it (starpilot/system/starview/service.py).
+  PythonProcess("starviewd", "openpilot.starpilot.system.starview.service", always_run),
 
   # debug procs
   NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),
