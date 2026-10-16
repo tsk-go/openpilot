@@ -37,6 +37,7 @@ from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
 from openpilot.starpilot.lateral.auto_lane_change import ClockEpochGuard, auto_evidence, paired_clocks_ns, session_policy, steering_capable
+from openpilot.starpilot.system.starview.blinker_signal import StarViewSignal
 from openpilot.starpilot.lateral.lane_change_status_wire import (
   Direction as StatusDirection, LaneChangeStatus, Phase as StatusPhase, encode_optional as encode_lane_status,
 )
@@ -424,6 +425,7 @@ def main(demo=False):
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy)
   navigation_turn = TurnIntent()
+  starview = StarViewSignal()
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
 
@@ -462,8 +464,12 @@ def main(demo=False):
 
     sm.update(0)
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
+    # StarView's automatic blinker: "lane" = a lane change confirmed on the tablet, not the route's turn
+    starview_why = starview.for_blinker(sm['carState'])
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
                                      supported=turn_supported, model_stop=bool(prev_action.shouldStop))
+    if starview_why == "lane":     # not the route's turn: keep the lane change helper's desire (TurnIntent keeps its stop latch)
+      desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
@@ -581,9 +587,17 @@ def main(demo=False):
                                   now_mono_ns=mono_now_ns, now_boot_ns=boot_now_ns,
                                   model_valid=bool(modelv2_send.valid), vehicle_capable=auto_vehicle_capable))
       engaged = bool(sm['carControl'].latActive)
+      # a lane change confirmed on StarView's tablet starts with the same adjacent-lane check as an automatic one
+      starview_lane = starview_why == "lane"
+      starview_evidence = (starview_lane and direction != 0 and
+                           lane_clock_guard.ready(sm, mono_now_ns, boot_now_ns, clock_skew_ns) and
+                           auto_evidence(sm, modelv2_send.modelV2, direction, runtime_lane_policy.minimum_lane_width_m,
+                                         now_mono_ns=mono_now_ns, now_boot_ns=boot_now_ns,
+                                         model_valid=bool(modelv2_send.valid), vehicle_capable=auto_vehicle_capable))
+      route_turn = matching_turn_signal(sm, mono_now_ns, supported=turn_supported) and starview_why != "lane"
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=matching_turn_signal(sm, mono_now_ns, supported=turn_supported))
+                navigation_turn=route_turn or starview_why == "turn", starview_lane=starview_lane, starview_evidence=starview_evidence)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 
