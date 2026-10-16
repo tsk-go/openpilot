@@ -1,0 +1,62 @@
+<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>StarView probe</title>
+<style>
+body{font:15px system-ui,sans-serif;background:#0b0d12;color:#dfe3ea;margin:0;padding:12px}
+h1{font-size:18px;margin:0 0 8px} .row{display:flex;gap:12px;flex-wrap:wrap}
+.card{background:#151924;border-radius:10px;padding:10px 12px;min-width:260px;flex:1}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums} td,th{padding:2px 6px;text-align:right;border-bottom:1px solid #222a3a} td:first-child,th:first-child{text-align:left}
+canvas{width:100%;background:#000;border-radius:8px} .k{color:#8fa3c7} .ok{color:#6fe3a1} .bad{color:#ff7b7b}
+button{background:#263049;color:#fff;border:0;border-radius:6px;padding:6px 10px;margin-right:6px}
+</style></head><body>
+<h1>StarView probe <span id=st class=k>connecting…</span></h1>
+<div class=row>
+ <div class=card style="flex:2">
+  <div><button onclick="startVideo('road')">road</button><button onclick="startVideo('wide')">wide</button><button onclick="startVideo('driver')">driver</button>
+  <span id=vst class=k>video: idle</span></div>
+  <canvas id=cv width=1280 height=720></canvas>
+ </div>
+ <div class=card>
+  <div>RTT <b id=rtt>–</b> ms &nbsp; clock offset <b id=off>–</b> ms &nbsp; total <b id=tot>0</b> kB/s</div>
+  <table><thead><tr><th>service</th><th>Hz</th><th>kB/s</th><th>msgs</th></tr></thead><tbody id=tb></tbody></table>
+ </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const stats={}; let bytesWin=0, tWin=performance.now();
+const ws=new WebSocket(`ws://${location.host}/data`); ws.binaryType='arraybuffer';
+ws.onopen=()=>{$('st').textContent='data connected'; setInterval(()=>ws.send(JSON.stringify({ping:performance.now()})),1000);};
+ws.onclose=()=>{$('st').textContent='data closed'; $('st').className='bad'};
+ws.onmessage=e=>{
+  if(typeof e.data==='string'){const m=JSON.parse(e.data);
+    if(m.type==='hello'){$('st').textContent=`connected to ${m.dongleId||'?'} ${m.branch||''} ${m.commit||''}`; $('st').className='ok';}
+    if(m.pong!==undefined){const rtt=performance.now()-m.pong; $('rtt').textContent=rtt.toFixed(1);
+      $('off').textContent=((Date.now()*1e6-m.unix_ns)/1e6-rtt/2).toFixed(0);} return;}
+  const b=new Uint8Array(e.data); const n=b[0]; const name=new TextDecoder().decode(b.subarray(1,1+n));
+  const s=stats[name]||(stats[name]={msgs:0,bytes:0,wm:0,wb:0}); s.msgs++; s.bytes+=b.length; s.wm++; s.wb+=b.length; bytesWin+=b.length;
+};
+setInterval(()=>{const now=performance.now(), dt=(now-tWin)/1000; tWin=now;
+  const rows=Object.entries(stats).sort().map(([k,s])=>{const r=`<tr><td>${k}</td><td>${(s.wm/dt).toFixed(1)}</td><td>${(s.wb/dt/1000).toFixed(1)}</td><td>${s.msgs}</td></tr>`; s.wm=0;s.wb=0; return r;});
+  $('tb').innerHTML=rows.join(''); $('tot').textContent=(bytesWin/dt/1000).toFixed(0); bytesWin=0;},1000);
+
+// ---- video via WebCodecs (Chrome/Android 94+) ----
+let vws=null, dec=null, frames=0, vwin=0, vt=performance.now(), lat=0;
+const cv=$('cv'), ctx=cv.getContext('2d');
+function startVideo(cam){
+  if(vws){vws.close(); vws=null;} if(dec){try{dec.close()}catch(e){} dec=null;}
+  if(!('VideoDecoder' in window)){$('vst').className='bad';$('vst').textContent=`WebCodecs needs a "secure" origin. In Chrome open chrome://flags/#unsafely-treat-insecure-origin-as-secure, add http://${location.host} , enable, relaunch.`;return;}
+  dec=new VideoDecoder({output:f=>{if(cv.width!==f.displayWidth){cv.width=f.displayWidth;cv.height=f.displayHeight;} ctx.drawImage(f,0,0); f.close(); frames++; vwin++;},
+                        error:e=>{$('vst').textContent='decoder error: '+e; $('vst').className='bad';}});
+  dec.configure({codec:'avc1.64001F', optimizeForLatency:true});
+  vws=new WebSocket(`ws://${location.host}/video/${cam}`); vws.binaryType='arraybuffer';
+  vws.onopen=()=>{$('vst').textContent=`video[${cam}] connected, waiting for keyframe…`; $('vst').className='k'};
+  vws.onclose=()=>{$('vst').textContent='video closed'; $('vst').className='bad'};
+  vws.onmessage=e=>{const dv=new DataView(e.data);
+    const frameId=dv.getUint32(0,true), unixNs=dv.getBigUint64(12,true), flags=dv.getUint32(20,true), w=dv.getUint16(24,true), h=dv.getUint16(26,true);
+    lat=Number(BigInt(Date.now())*1000000n-unixNs)/1e6;
+    if(dec.state!=='configured')return;
+    if(dec.decodeQueueSize>4)return; // drop if the tablet can't keep up
+    dec.decode(new EncodedVideoChunk({type:(flags&1)?'key':'delta', timestamp:frameId*50000, data:new Uint8Array(e.data,28)}));
+  };
+  setInterval(()=>{const now=performance.now(),dt=(now-vt)/1000;vt=now; if(vws&&vws.readyState===1){$('vst').textContent=`video[${cam}] ${(vwin/dt).toFixed(1)} fps, ${cv.width}x${cv.height}, encode→tablet ≈ ${lat.toFixed(0)} ms (needs synced clocks)`; $('vst').className='ok'; vwin=0;}},1000);
+}
+</script></body></html>
