@@ -1,0 +1,12 @@
+# Dependencies never go into git or onto the device: the comma has no Node, it only serves the built ../web.
+# package.json + package-lock.json describe them; run `npm ci && npm run build` on a PC to rebuild.
+node_modules/
+
+# build leftovers
+.vite/
+*.tsbuildinfo
+vite.config.ts.timestamp-*
+
+# local overrides (e.g. your own comma's address)
+.env
+.env.local
