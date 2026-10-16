@@ -731,6 +731,13 @@ class Hub:
     self.params = Params()
     self.params_mem = compat.MemParams()   # 7.0 has no memory params: built from messages (compat.py)
     self.translator = compat.Translator(self.params, toggles=self._toggles)
+    # Waze: compared with StarPilot's next maneuver in the tablet's NavInstructionState (waze_bridge.py)
+    try:
+      waze = _waze_feed()
+      waze.nav_state = self.params_mem.nav_base
+      self.params_mem.nav_extra = waze.fields
+    except Exception as e:
+      cloudlog.warning(f"starview: waze bridge unavailable: {e}")
     self._param_keys = None
     self.last_params_json = None
     self.lock = threading.Lock()
@@ -1338,17 +1345,14 @@ class Hub:
           return {"ok": False, "error": "latitude / longitude missing"}
         return _waze_feed().set_tablet_destination(str(req.get("name") or ""), str(req.get("address") or ""), lat, lon)
       if act == "nav_list":  # StarView 2.30: StarPilot's favourites and recent destinations for the tablet's search
-        from openpilot.starpilot.navigation.destination_store import (load_favorite_destinations, load_recent_destinations,
-                                                                       ordered_favorite_destinations)
-        favs = ordered_favorite_destinations(load_favorite_destinations(self.params.get("FavoriteDestinations")))
-        recent = load_recent_destinations(self.params.get("ApiCache_NavDestinations"))
-        return {"ok": True, "favorites": favs, "recents": recent}
+        doc = _waze_feed().dest.owner.read()     # 7.0's navigation settings (starpilot/navigation/owner.py)
+        return {"ok": True, "favorites": doc.get("favorites", []), "recents": doc.get("recents", [])}
       if act == "nav_cancel":
-        for p, k in ((self.params, "NavDestination"), (self.params_mem, "NavInstructionState"), (self.params_mem, "NavInstructionCollapsed")):
-          try:
-            p.remove(k)
-          except Exception:
-            pass
+        self.params_mem.remove("NavInstructionCollapsed")
+        dest = _waze_feed().dest
+        cur = dest.current()
+        if cur:
+          dest.clear_if(cur["id"])
         return {"ok": True}
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
         self.tablet_mode = bool(req.get("on", True))
@@ -1986,7 +1990,7 @@ _WAZE_FEED = None
 def _waze_feed():
   global _WAZE_FEED
   if _WAZE_FEED is None:
-    from openpilot.starpilot.navigation.waze_bridge import WazeFeed
+    from openpilot.starpilot.system.starview.waze_bridge import WazeFeed
     _WAZE_FEED = WazeFeed()
   return _WAZE_FEED
 

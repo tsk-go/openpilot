@@ -220,7 +220,7 @@ class MemParams:
     self._read_t = {}
     self._local: dict[str, object] = {}
     self.lock = threading.Lock()
-    self.nav_extra = None     # callable -> dict merged into NavInstructionState (the Waze bridge's fields)
+    self.nav_extra = None     # callable(base state) -> dict merged into NavInstructionState (the Waze bridge's fields)
 
   def _newest(self, service):
     if service not in SERVICE_LIST:
@@ -276,11 +276,19 @@ class MemParams:
   def remove(self, key):
     self._local.pop(key, None)
 
-  def nav_state(self):
+  def nav_base(self):
+    """StarPilot's turn instruction in the old NavInstructionState form (no Waze fields)."""
     m = self._newest("starpilotNavigation")
-    if m is None:
-      return None
-    return nav_instruction_state(m[1].starpilotNavigation.navigation, extra=self.nav_extra() if self.nav_extra else None)
+    return nav_instruction_state(m[1].starpilotNavigation.navigation) if m is not None else None
+
+  def nav_state(self):
+    base = self.nav_base()
+    if base is not None and self.nav_extra is not None:
+      try:
+        base.update(self.nav_extra(base))
+      except Exception as e:
+        cloudlog.warning(f"starview compat: waze fields: {e}")
+    return base
 
 
 def nav_instruction_state(nav, extra=None):
