@@ -146,7 +146,29 @@ def value_buttons(state: FeatureSettingsState, row: FeatureRow, y: float = 0) ->
   return tuple(buttons)
 
 
+def lane_strength_level(row: FeatureRow) -> float | None:
+  if row.key != "LaneCenteringStrength" or row.unit != "%" or not row.minimum < 100 < row.maximum:
+    return None
+  try:
+    raw = float(row.value)
+  except ValueError:
+    return None
+  if not math.isfinite(raw) or not row.minimum <= raw <= row.maximum:
+    return None
+  return round(1 + (raw - row.minimum) * 4 / (100 - row.minimum) if raw <= 100 else
+               5 + (raw - 100) * 5 / (row.maximum - 100), 2)
+
+
+def value_reason(row: FeatureRow) -> str:
+  if row.available and lane_strength_level(row) is not None:
+    return "1–10; 5 is normal. Lower values reduce centering and higher values strengthen it"
+  return row.reason
+
+
 def value_text(row: FeatureRow) -> str:
+  level = lane_strength_level(row)
+  if level is not None:
+    return f"{level:g}"
   label = dict(row.presets).get(row.value)
   if label is not None:
     return "Muted" if label == "Mute" else label
@@ -468,8 +490,17 @@ def row_change(row: FeatureRow, direction: int = 1) -> FeatureSettingsRequest | 
       current = float(row.value)
     except ValueError:
       return None
-    precision = 8 if row.key.startswith("torque:") else 4
-    value = str(round(max(row.minimum, min(row.maximum, current + row.step * direction)), precision))
+    level = lane_strength_level(row)
+    if level is not None:
+      if direction not in (-1, 1):
+        return None
+      next_level = max(1, min(10, level + direction))
+      raw = (row.minimum + (next_level - 1) * (100 - row.minimum) / 4 if next_level <= 5 else
+             100 + (next_level - 5) * (row.maximum - 100) / 5)
+      value = str(math.floor(raw + 0.5))
+    else:
+      precision = 8 if row.key.startswith("torque:") else 4
+      value = str(round(max(row.minimum, min(row.maximum, current + row.step * direction)), precision))
     if float(value) == current:
       return None
   else:

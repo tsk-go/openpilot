@@ -17,7 +17,7 @@ from openpilot.starpilot.ui.onroad_curve import controlling as curve_controlling
 from openpilot.starpilot.ui.onroad_conditional import reason as conditional_reason, status as conditional_status, stop_active
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole
 from openpilot.starpilot.ui.onroad_widget_style import draw_widget_frame
-from openpilot.starpilot.ui.wheel_feedback import wheel_feedback_rgb
+from openpilot.starpilot.ui.wheel_feedback import WheelFeedbackFade
 from openpilot.starpilot.ui.speed_limit_pulse import SpeedLimitPulse
 from openpilot.starpilot.ui.moon import draw_moon
 
@@ -95,6 +95,7 @@ class CompactHudRenderer:
     self.fonts = fonts
     self.asset_directory = asset_directory
     self._wheel: rl.Texture | None = None
+    self._feedback = WheelFeedbackFade()
     self._speed_limit_pulse = SpeedLimitPulse()
     self._set_speed_alpha = FirstOrderFilter(0.0, 0.1, 1 / 60)
     self._wheel_alpha = FirstOrderFilter(0.0, 0.05, 1 / 60)
@@ -149,6 +150,7 @@ class CompactHudRenderer:
       self.fonts.draw(cruise, FontRole.SET_SPEED, speed_size, 17 + mx, -4 + my, color)
       self.fonts.draw("MAX", FontRole.SEMI_BOLD, 36, 25 + mx, 109 + my, color)
   def render_steering_wheel(self, state: OnroadState) -> None:
+    color = self._feedback.update(state.wheel_acceleration, state.appearance.wheel_pedal_feedback, state.observed_ns, state.drive_frame)
     if state.lateral_active:
       wheel_alpha = self._wheel_alpha.update(255 * 0.9)
       wheel_y = self._wheel_y.update(0)
@@ -160,7 +162,6 @@ class CompactHudRenderer:
     if (state.alert.size == AlertSize.NONE and wheel_alpha > 1 and
         placement(state.customization, "compact", "steering_wheel")["enabled"]):
       self.prepare()
-      color = wheel_feedback_rgb(state.wheel_feedback, state.appearance.wheel_pedal_feedback) or (255, 255, 255)
       size, _ = widget_size(state.customization, "compact", "steering_wheel")
       rl.draw_texture_pro(self._wheel, rl.Rectangle(0, 0, 50, 50),
                           rl.Rectangle(21 + wx + size / 2, 176 + wy + size / 2 + wheel_y, size, size),

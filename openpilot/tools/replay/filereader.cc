@@ -12,6 +12,11 @@ std::string FileReader::read(const std::string &file, std::atomic<bool> *abort) 
   auto read_bounded = [&](const std::string &path) {
     std::ifstream source(path, std::ios::binary);
     std::string data;
+    if (source && max_bytes_) {
+      std::error_code error;
+      const auto size = std::filesystem::file_size(path, error);
+      if (!error && size <= max_bytes_) data.reserve(size);
+    }
     char chunk[65536];
     while (source && !(abort && *abort)) {
       source.read(chunk, sizeof(chunk));
@@ -19,7 +24,8 @@ std::string FileReader::read(const std::string &file, std::atomic<bool> *abort) 
       if (max_bytes_ && data.size() + count > max_bytes_) return std::string{};
       data.append(chunk, count);
     }
-    return source.bad() || (abort && *abort) ? std::string{} : data;
+    if (source.bad() || (abort && *abort)) return std::string{};
+    return data;
   };
   const bool is_remote = (file.find("https://") == 0) || (file.find("http://") == 0);
   if (is_remote) {

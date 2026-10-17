@@ -34,9 +34,9 @@ def decode(raw):
     raise ValueError('Invalid profile document') from error
   if (
     type(doc) is not dict
-    or set(doc) != {'version', 'profiles'}
+    or set(doc) != ({'version', 'profiles'} if doc.get('version') == 1 else {'version', 'profiles', 'fullSurfaces'})
     or type(doc['version']) is not int
-    or doc['version'] != 1
+    or doc['version'] not in (1, 2)
     or type(doc['profiles']) is not dict
     or len(doc['profiles']) > MAX_PROFILES
   ):
@@ -73,6 +73,9 @@ def decode(raw):
     expected_scope = hashlib.sha256(json.dumps([row['identity'], row['parameters']], separators=(',', ':'), allow_nan=False).encode()).hexdigest()
     if identity != expected_scope:
       raise ValueError('Stored profile scope mismatch')
+  if doc['version'] == 2:
+    from openpilot.starpilot.flm.full_surface_store import validate_rows
+    validate_rows(doc['fullSurfaces'])
   return doc
 
 
@@ -156,7 +159,7 @@ class StorageOwner:
   def __init__(self, params):
     self.params = params
 
-  def save(self, profile, *, reset, replay_validation, authorized):
+  def save(self, profile, *, reset, replay_validation, authorized, full_binding=None):
     from openpilot.starpilot.flm.adaptive_profile import replay_accepts
     from dataclasses import asdict
     import hashlib
@@ -172,7 +175,15 @@ class StorageOwner:
     try:
       if any(not p.low <= v <= p.high or abs(v) > p.max_step for p, v in zip(profile.parameters, profile.coefficients, strict=True)):
         return False
-      desired = remember(raw, profile, reset=reset, validation_sha256=validation_sha256)
+      if profile.policy in ('event_effect_coordinate_v2', 'event_effect_restore_v1'):
+        from openpilot.starpilot.flm.full_surface_store import remember_full
+        if (profile.effect_envelope is None or profile.effect_envelope.reset_generation != reset or
+            profile.effect_envelope.source_binding() != full_binding or
+            replay_validation.baseline_revision != profile.effect_envelope.selected_baseline_revision):
+          return False
+        desired = remember_full(raw, profile, validation_sha256=validation_sha256)
+      else:
+        desired = remember(raw, profile, reset=reset, validation_sha256=validation_sha256)
     except (AttributeError, TypeError, ValueError, OverflowError):
       return False
     result = commit_exact(self.params, key=KEY, max_bytes=MAX_BYTES, raw=desired, expected=raw, authorized=authorized, temp_prefix='.automatic-steering-')
@@ -187,13 +198,13 @@ class ProducerPersistence:
     self.last_ns = None
     self.saved = None
 
-  def update(self, profile, replay_validation, *, now_ns, reset, current_sources):
+  def update(self, profile, replay_validation, *, now_ns, reset, current_sources, current_full_binding=None):
     try:
-      return self._update(profile, replay_validation, now_ns=now_ns, reset=reset, current_sources=current_sources)
+      return self._update(profile, replay_validation, now_ns=now_ns, reset=reset, current_sources=current_sources, current_full_binding=current_full_binding)
     except (AttributeError, TypeError, ValueError, OverflowError, OSError, RuntimeError):
       return False
 
-  def _update(self, profile, replay_validation, *, now_ns, reset, current_sources):
+  def _update(self, profile, replay_validation, *, now_ns, reset, current_sources, current_full_binding=None):
     from openpilot.starpilot.flm.adaptive_profile import replay_accepts
 
     if type(now_ns) is not int or now_ns <= 0:
@@ -214,17 +225,41 @@ class ProducerPersistence:
       reset,
       replay_validation.baseline_revision,
       replay_validation.physical_model_revision,
+      None if getattr(profile, 'effect_envelope', None) is None else profile.effect_envelope.full_profile_sha256,
     )
     if token == self.saved:
       return False
 
-    def authorized():
-      return current_sources() == captured
+    full_binding = None
+    if profile.policy in ('event_effect_coordinate_v2', 'event_effect_restore_v1'):
+      if current_full_binding is None:
+        return False
+      full_binding = current_full_binding()
+      if profile.effect_envelope is None or profile.effect_envelope.source_binding() != full_binding:
+        return False
 
-    committed = self.storage.save(profile, reset=reset, replay_validation=replay_validation, authorized=authorized)
+    def authorized():
+      return current_sources() == captured and (full_binding is None or current_full_binding() == full_binding)
+
+    committed = self.storage.save(profile, reset=reset, replay_validation=replay_validation, authorized=authorized, full_binding=full_binding)
     if committed:
       self.saved = token
     return committed
+
+  def full_prior(self, *, identity, binding, reset, current_sources):
+    from openpilot.starpilot.flm.full_surface_store import load_prior
+    from openpilot.starpilot.saved_source import read_saved
+    try:
+      captured = current_sources()
+      if captured != (identity, True, False, reset) or binding[3] != reset:
+        return None
+      raw, readable = read_saved(self.storage.params, KEY, MAX_BYTES)
+      if not readable:
+        return None
+      prior = load_prior(raw, binding=binding)
+      return prior if current_sources() == captured else None
+    except (AttributeError, IndexError, TypeError, ValueError, OverflowError, OSError, RuntimeError):
+      return None
 
   def prior(self, *, identity, parameters, reset, current_sources):
     try:

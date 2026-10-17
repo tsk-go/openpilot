@@ -8,6 +8,12 @@ No Params, PID, factor, table, inverse or final actuator writes.
 
 from dataclasses import dataclass
 import math
+from openpilot.starpilot.flm.selected_effects import (
+  apply_selected_stage,
+  apply_selected_friction as apply_selected_friction,
+  apply_selected_deadzone as apply_selected_deadzone,
+  apply_selected_output as apply_selected_output,
+)
 
 REVISION = 'torque-post-baseline-prefriction-v1'
 
@@ -56,8 +62,13 @@ def apply_stages(parent, cs, setpoint, jerk, ff, threshold, *, active, limited):
     candidate_threshold = threshold if delta_threshold == 0 else threshold * (1 + delta_threshold)
     if not math.isfinite(candidate_ff) or not math.isfinite(candidate_threshold) or candidate_threshold <= 0:
       return ff, threshold
+    effect = getattr(parent, 'automatic_flm_effects', None)
+    if effect is not None:
+      # Only one admitted profile exists; legacy stage residual is neutral for V2.
+      candidate_ff, candidate_threshold = apply_selected_stage(parent, frame)
     if observer is not None:
-      observer.observe_stage(frame, candidate_ff, tuple(source.applied_coordinates), candidate_threshold)
+      observer.observe_stage(frame, candidate_ff,
+                             tuple(effect.applied_coordinates if effect is not None else source.applied_coordinates), candidate_threshold)
     return candidate_ff, candidate_threshold
   except (AttributeError, TypeError, ValueError, OverflowError):
     return ff, threshold

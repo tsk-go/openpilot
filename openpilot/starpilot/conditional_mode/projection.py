@@ -23,7 +23,10 @@ from openpilot.starpilot.conditional_mode.signal_lane import MonoSource, SignalL
 from openpilot.starpilot.conditional_mode.slower_lead import SlowerLeadDetector, SlowerLeadFrame
 from openpilot.starpilot.conditional_mode.stop import StopFrame, StopLead, StopLightDetector, StopObservation
 from openpilot.starpilot.conditional_mode.turn_scene import committed_turn_scene
-from openpilot.starpilot.model_geometry import normalized_origin
+from openpilot.starpilot.model_geometry import (
+  STANDSTILL_MODEL_PREFIX_NOISE_M as STANDSTILL_MODEL_PREFIX_NOISE_M, STANDSTILL_SPEED_NOISE_MPS, normalized_origin,
+  standstill_clear_horizon as _standstill_clear_horizon, standstill_release_speed,
+)
 
 
 SERVICES = ('carState', 'carControl', 'selfdriveState', 'controlsState', 'radarState', 'modelV2', 'longitudinalPlan', 'starpilotRadarState')
@@ -33,8 +36,6 @@ CLOCK_PAIR_MAX_SKEW_NS = 1_000_000
 KPH_TO_MPS = 1 / 3.6
 V_CRUISE_UNSET_KPH = 255.0
 FROZEN_CURVE_ACCEL_MPS2 = 1.3
-STANDSTILL_SPEED_NOISE_MPS = 0.01
-STANDSTILL_MODEL_PREFIX_NOISE_M = 0.01
 # Recorded standstill paths dip up to 0.46 m below their running max and 0.15 m below zero.
 STANDSTILL_PATH_JITTER_M = 0.5
 FROZEN_RAW_STOP_DISTANCE_M = 5.0 * ModelConstants.T_IDXS[-1]
@@ -235,32 +236,6 @@ def _standstill_path_extent(model) -> float | None:
       if peak - value > STANDSTILL_PATH_JITTER_M:
         return None
     return peak
-  except (AttributeError, TypeError, ValueError, OverflowError):
-    return None
-
-
-def _standstill_clear_horizon(model) -> float | None:
-  """Stop-release endpoint only; this never qualifies full spatial geometry."""
-  try:
-    distances = normalized_origin(tuple(model.position.x))
-    if len(distances) != ModelConstants.IDX_N or distances[0] != 0.0:
-      return None
-    parsed = tuple(_number(value, low=-STANDSTILL_MODEL_PREFIX_NOISE_M, high=500.0) for value in distances)
-    if any(value is None for value in parsed):
-      return None
-    finite = tuple(value for value in parsed if value is not None)
-    forward_tail = False
-    backtrack = 0.0
-    for previous, current in zip(finite, finite[1:], strict=False):
-      if current < previous:
-        if forward_tail or max(abs(previous), abs(current)) > STANDSTILL_MODEL_PREFIX_NOISE_M:
-          return None
-        backtrack += previous - current
-        if backtrack > STANDSTILL_MODEL_PREFIX_NOISE_M:
-          return None
-      if current > STANDSTILL_MODEL_PREFIX_NOISE_M:
-        forward_tail = True
-    return finite[-1] if forward_tail else None
   except (AttributeError, TypeError, ValueError, OverflowError):
     return None
 
@@ -474,12 +449,11 @@ class SceneProjector:
         horizon = _horizon(model)
         stop_horizon = horizon
         model_should_stop = _boolean(_field(_field(model, 'action'), 'shouldStop'))
-        if (horizon is None and self.stop_detector.committed and model_should_stop is False and
-            speed is not None and speed <= STANDSTILL_SPEED_NOISE_MPS and
-            _field(car, 'standstill') is True and _number(_field(car, 'vEgoRaw'), high=80.0) == 0.0):
+        if (horizon is None and self.stop_detector.committed and model_should_stop is False and speed is not None and
+            standstill_release_speed(_field(car, 'standstill'), _field(car, 'vEgo'), _field(car, 'vEgoRaw'))):
           # A stationary model can backstep millimeters near its origin before
           # projecting forward. Use that endpoint only to clear an existing stop;
-          # curve/lead geometry and cold stop acquisition retain strict validation.
+          # Curve geometry and cold stop acquisition retain strict validation.
           stop_horizon = _standstill_clear_horizon(model)
         current_stop = model_should_stop if stop_horizon is not None else None
     lead = _lead(radar) if radar is not None else None
@@ -499,7 +473,7 @@ class SceneProjector:
       observed_mono_s=model_observed,
       now_mono_s=now_mono_ns / 1e9,
       radar_fresh=radar is not None,
-      model_fresh=horizon is not None,
+      model_fresh=model_transport_current,
       car_fresh=car_valid,
       headway_fresh=headway_fresh,
     )

@@ -15,7 +15,7 @@ from openpilot.starpilot.ui.onroad_customization import offset, rgba, widget_siz
 from openpilot.starpilot.ui.onroad_state import ObservationKind, OnroadState
 from openpilot.starpilot.ui.onroad_widget_style import draw_control_card
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole
-from openpilot.starpilot.ui.wheel_feedback import wheel_feedback_rgb
+from openpilot.starpilot.ui.wheel_feedback import WheelFeedbackFade
 from openpilot.starpilot.ui.unified_speed_presentation import resolve_unified_speed
 
 
@@ -247,6 +247,7 @@ class SteeringWheelWidget:
   def __init__(self, asset_directory: Path):
     self.asset_directory = asset_directory
     self._texture: rl.Texture | None = None
+    self._feedback = WheelFeedbackFade()
 
   def prepare(self) -> None:
     if self._texture is not None:
@@ -281,8 +282,8 @@ class SteeringWheelWidget:
     border = rl.Color(*rgba(state.customization, "cardBorder", "large", "steering_wheel"))
     if border.a:
       rl.draw_ring(rl.Vector2(x + radius, y + radius), radius - 3, radius, 0, 360, 64, border)
-    feedback = wheel_feedback_rgb(state.wheel_feedback, state.appearance.wheel_pedal_feedback)
-    color = rl.Color(*feedback, 255) if feedback is not None else rl.WHITE
+    feedback = self._feedback.update(state.wheel_acceleration, state.appearance.wheel_pedal_feedback, state.observed_ns, state.drive_frame)
+    color = rl.Color(*feedback, 255)
     rl.draw_texture_pro(self._texture, rl.Rectangle(0, 0, 144, 144),
                         rl.Rectangle(x + size / 8, y + size / 8, size * .75, size * .75),
                         rl.Vector2(0, 0), 0, color)

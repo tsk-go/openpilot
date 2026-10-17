@@ -151,6 +151,8 @@ class CorollaTSS2TorquePolicy:
     roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY * roll_offset_fade
     curvature_deadzone = abs(VM.calc_curvature(math.radians(parent.steering_angle_deadzone_deg), CS.vEgo, 0.0))
     lateral_accel_deadzone = curvature_deadzone * CS.vEgo**2
+    lateral_accel_deadzone = auto_stages.apply_selected_deadzone(parent, CS, VM, float(lateral_accel_deadzone), desired_curvature,
+      active=active, limited=steer_limited_by_safety or curvature_limited)
     delay_frames = int(np.clip(lat_delay / self.dt, 1, self.request_buffer_len))
     expected_lateral_accel = self.curvature_request_buffer[-delay_frames] * CS.vEgo**2
     self.curvature_request_buffer.append(desired_curvature)
@@ -177,7 +179,9 @@ class CorollaTSS2TorquePolicy:
     friction_jerk = math.copysign(max(abs(desired_lateral_jerk) - friction_jerk_deadzone, 0.0), desired_lateral_jerk)
     ff, friction_threshold = auto_stages.apply_stages(parent, CS, setpoint, desired_lateral_jerk, ff, friction_threshold,
       active=active, limited=steer_limited_by_safety or curvature_limited)
-    ff += get_friction(error_with_lsf + JERK_GAIN * friction_jerk, lateral_accel_deadzone, friction_threshold, parent.torque_params)
+    selected_friction = get_friction(error_with_lsf + JERK_GAIN * friction_jerk, lateral_accel_deadzone, friction_threshold, parent.torque_params)
+    ff += auto_stages.apply_selected_friction(parent, CS, setpoint, float(selected_friction),
+      active=active, limited=steer_limited_by_safety or curvature_limited)
     if CS.vEgo < self.low_speed_reset_threshold:
       parent.pid.reset()
     freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < self.low_speed_reset_threshold or unwind_detected

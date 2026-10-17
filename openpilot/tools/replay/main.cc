@@ -50,6 +50,7 @@ Options:
   -h, --help         Show this help message
       --machine      Isolated local replay controlled by newline JSON on stdin
       --start-segment Start machine replay at a recorded segment boundary
+      --preload-seek Prepare the next cached segment before machine seeks resume
 )";
 
 struct ReplayConfig {
@@ -91,6 +92,7 @@ bool parseArgs(int argc, char *argv[], ReplayConfig &config) {
       {"benchmark", no_argument, nullptr, 0},
       {"machine", no_argument, nullptr, 0},
       {"start-segment", required_argument, nullptr, 0},
+      {"preload-seek", no_argument, nullptr, 0},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},  // Terminating entry
   };
@@ -107,6 +109,7 @@ bool parseArgs(int argc, char *argv[], ReplayConfig &config) {
       {"no-vipc", REPLAY_FLAG_NO_VIPC},
       {"all", REPLAY_FLAG_ALL_SERVICES},
       {"benchmark", REPLAY_FLAG_BENCHMARK},
+      {"preload-seek", REPLAY_FLAG_PRELOAD_SEEK},
   };
 
   if (argc == 1) {
@@ -151,6 +154,7 @@ bool parseArgs(int argc, char *argv[], ReplayConfig &config) {
     return false;
   }
   if (config.start_segment >= 0 && !config.machine) return false;
+  if ((config.flags & REPLAY_FLAG_PRELOAD_SEEK) && !config.machine) return false;
 
   return true;
 }
@@ -190,8 +194,11 @@ int runMachine(Replay &replay, int output, int start_segment) {
   std::string input, last_request, pending_request, command_error;
   uint64_t pending_epoch = 0;
   auto report = [&]() {
-    json11::Json::array ranges;
-    for (const auto &range : replay.seekRanges()) ranges.emplace_back(json11::Json::array{range.begin, range.end});
+    json11::Json::array ranges, segment_ranges;
+    for (const auto &range : replay.seekRanges()) {
+      ranges.emplace_back(json11::Json::array{range.begin, range.end});
+      segment_ranges.emplace_back(json11::Json::array{range.segment, range.begin, range.end});
+    }
     json11::Json::array warnings;
     if (replay.legacyClock()) warnings.emplace_back("Legacy recording uses original timestamps; exact camera/HUD clock alignment is unavailable.");
     const auto value = json11::Json::object{
@@ -199,7 +206,7 @@ int runMachine(Replay &replay, int output, int start_segment) {
       {"start", replay.minSeconds()}, {"end", replay.maxSeconds()}, {"rate", replay.getSpeed()},
       {"paused", replay.isPaused()}, {"epoch", double(replay.epoch())},
       {"routeStartNs", double(replay.routeStartNanos())}, {"wallMinusMonoNs", std::to_string(replay.wallMinusMonoNanos())},
-      {"seekRanges", ranges}, {"sourceWarnings", warnings}, {"lastRequestId", last_request},
+      {"seekRanges", ranges}, {"segmentRanges", segment_ranges}, {"sourceWarnings", warnings}, {"lastRequestId", last_request},
       {"error", command_error.empty() ? replay.error() : command_error}};
     const auto line = json11::Json(value).dump() + "\n";
     return write(output, line.data(), line.size()) == ssize_t(line.size());
@@ -314,6 +321,7 @@ int main(int argc, char *argv[]) {
                     "slcState", "vehicleParameters", "customReserved6", "spotMonitorState", "clocks", "narrowRoadEncodeIdx", "wideRoadEncodeIdx", "cabinEncodeIdx"};
     try {
       Replay replay(config.route, config.allow, {}, nullptr, config.flags, config.data_dir, false);
+      if (config.cache_segments > 0) replay.setSegmentCacheLimit(config.cache_segments);
       return runMachine(replay, machine_output, config.start_segment);
     } catch (const std::exception &error) {
       std::cerr << "Machine replay failed: " << error.what() << '\n';

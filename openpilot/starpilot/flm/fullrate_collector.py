@@ -5,7 +5,9 @@ Inputs are decoded custom evidence produced by actual owners; no Params/default
 controller selection is inferred here. Domain adapters qualify response inverse.
 """
 
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
+from openpilot.starpilot.flm.torque_eligibility import asynchronous_hint, bounded_context_output, exact_unclipped_pair
+
 from dataclasses import dataclass, replace
 import math
 import re
@@ -90,6 +92,8 @@ class ControlEvidence:
   applied_profile_sequence: int = 0
   applied_profile_observed_ns: int = 0
   applied_profile_expires_ns: int = 0
+  effect_trace: object | None = None
+  effect_prepare_ns: int = 0
 
 
 @dataclass(frozen=True)
@@ -178,12 +182,15 @@ class FullrateCollector:
     self.fit_block_sequence = 0
     self.result = None
     self.reason = 'initializing'
+    self.training_interruptions = Counter()
     self.dropped = 0
     self.sealed = False
     self.model_block_sequence = self.model_points = 0
     self.model_sealed = False
 
   def split(self, reason, *, reset=False):
+    if reason in self.training_interruptions or len(self.training_interruptions) < 24:
+      self.training_interruptions[reason] += 1
     self.controls.clear()
     self.applied.clear()
     self.recent_controls.clear()
@@ -211,6 +218,24 @@ class FullrateCollector:
     self.split('fullrate_overrun')
 
   def control(self, value, now_ns):
+    if isinstance(value, ControlEvidence) and value.effect_trace is not None:
+      try:
+        from openpilot.starpilot.flm.effect_trace import FullEffectTrace
+        trace = value.effect_trace
+        if not isinstance(trace, FullEffectTrace):
+          raise ValueError('typed full effect trace')
+        trace.validate()
+        if (trace.control_ns != value.effect_prepare_ns or trace.envelope.source_epoch != value.source_epoch or
+            trace.envelope.selected_baseline_revision != value.baseline_revision or
+            trace.envelope.controller_revision != value.controller_revision or any(value.applied_coordinates)):
+          raise ValueError('full effect trace source mismatch')
+        if trace.qualified and (value.applied_profile_sequence <= 0 or not
+            0 < value.applied_profile_observed_ns <= value.control_ns <= value.applied_profile_expires_ns <=
+            value.applied_profile_observed_ns + 500_000_000):
+          raise ValueError('applied full30 lacks original profile lease')
+      except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        self.split('full_effect_trace_invalid')
+        return
     if (
       not isinstance(value, ControlEvidence)
       or not identity(value.identity)
@@ -296,7 +321,7 @@ class FullrateCollector:
       or value.override
       or value.fault
       or value.saturated
-      or value.limited
+      or value.limited and not (getattr(self.adapter, 'raw_collection', False) and asynchronous_hint(value))
       or value.model_wobble
       or value.controller_chatter
       or now_ns < self.excluded_until
@@ -335,7 +360,9 @@ class FullrateCollector:
       return False
     if value.override:
       self.excluded_until = now_ns + EXCLUSION_NS
-    if not value.valid or not value.active or value.override or value.fault or value.limited or now_ns < self.excluded_until:
+    if (not value.valid or not value.active or value.override or value.fault or
+        value.limited and not (getattr(self.adapter, 'raw_collection', False) and bounded_context_output(value)) or
+        now_ns < self.excluded_until):
       self.split('ineligible_applied_output')
       return False
     if value.domain == 'normalized_torque':
@@ -491,8 +518,16 @@ class FullrateCollector:
       'clock_offset_ns': value.clock_offset_ns,
       'clock_uncertainty_ns': value.clock_uncertainty_ns,
     }
+    raw = bool(getattr(self.adapter, 'raw_collection', False))
     cohort = self.adapter.cohort(command, physical)
     if not cohort or not isinstance(cohort, str) or len(cohort) > 96:
+      complete = getattr(self.adapter, 'raw_maneuver_complete', None)
+      if (cohort is None and raw and complete is not None and complete(command, physical)):
+        self._seal_raw()
+        self.raw_points.clear()
+        self.cohort, self.sealed = None, False
+        self.reason = 'waiting_for_excited_maneuver'
+        return False
       self.split('response_cohort_unqualified')
       return False
     if getattr(self.adapter, 'raw_collection', False):
@@ -501,6 +536,9 @@ class FullrateCollector:
         self.raw_points.clear()
         self.sealed = False
       self.cohort = cohort
+      if output.limited or command.limited and not exact_unclipped_pair(command, output):
+        self.reason = 'waiting_for_unclipped_estimation'
+        return False
       if not self.sealed:
         self.raw_points.append(RawPoint(command.control_ns, output.apply_ns, value.mono_ns, command, output, physical, physical_context))
         if len(self.raw_points) == MAX_RAW_POINTS:
@@ -688,7 +726,7 @@ class FullrateCollector:
       or control.override
       or control.fault
       or control.saturated
-      or control.limited
+      or control.limited and not exact_unclipped_pair(control, output)
       or control.model_wobble
       or control.controller_chatter
       or not output.active
@@ -701,7 +739,11 @@ class FullrateCollector:
       self.result = self.last_validation = None
       return None
     self.live_profile_sequence = max(self.live_profile_sequence, fit.profile.sequence) + 1
-    admission = self.adapter.current_admission(fit.profile, control, output, self.physical_context)
+    # Only the registered event adapter accepts the collector's trusted clock;
+    # legacy/custom adapter signatures and conservative calls stay unchanged.
+    from openpilot.starpilot.flm.event_collection import EventCollectionAdapter
+    admission_clock = {'now_ns': now_ns} if isinstance(self.adapter, EventCollectionAdapter) else {}
+    admission = self.adapter.current_admission(fit.profile, control, output, self.physical_context, **admission_clock)
     admitted = readmit_profile(fit.profile, self.fit_validation, admission, now_ns=now_ns, sequence=self.live_profile_sequence)
     if admitted is None:
       self.result = self.last_validation = None

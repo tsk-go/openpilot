@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from openpilot.starpilot.galaxy.drive_history import DriveHistory
 from openpilot.starpilot.galaxy.recording_library import RecordingLibrary, attribute
-from openpilot.starpilot.galaxy.recording_media import RecordingMediaChanged
+from openpilot.starpilot.galaxy.recording_media import RecordingMediaChanged, VerifiedRoute
 
 ROUTE = '00000042--abcdef1234'
 
@@ -48,6 +48,84 @@ class RecordingLibraryTest(unittest.TestCase):
     (self.segment / 'fcamera.hevc').write_bytes(b'camera')
     self.history = DriveHistory(self.root)
     self.library = RecordingLibrary(self.history)
+
+  def test_empty_auxiliary_files_do_not_block_verified_downloads_or_cleanup(self):
+    for filename in ('qcamera.ts', 'qlog.zst'):
+      (self.segment / filename).touch()
+    detail = self.history.detail(ROUTE)
+    self.assertTrue(detail['inventoryComplete'])
+    self.assertFalse(detail['playable'], 'replay keeps its stricter source checks')
+    self.assertFalse(detail['segments'][0]['files']['qcamera'])
+    self.assertFalse(detail['segments'][0]['files']['qlog'])
+    source = VerifiedRoute(self.root, ROUTE, 'fcamera')
+    try:
+      self.assertTrue(source.current())
+      self.assertEqual([item.source_name for item in source.sources], ['fcamera.hevc'])
+    finally:
+      source.close()
+    lease = self.library.open_archive(ROUTE, permitted=lambda: True)
+    try:
+      with tarfile.open(fileobj=io.BytesIO(os.pread(lease.video_fd, lease.size, 0))) as archive:
+        self.assertEqual(archive.getnames(), [f'{ROUTE}--0/rlog.zst'])
+    finally:
+      lease.close()
+    self.library.action({'action': 'rename', 'routeId': ROUTE, 'name': 'Recovered drive'}, permitted=lambda: True)
+    self.assertEqual(os.getxattr(self.segment, 'user.galaxy.name'), b'Recovered drive')
+    self.library.action({'action': 'preserve', 'routeId': ROUTE, 'preserved': True}, permitted=lambda: True)
+    self.assertEqual(os.getxattr(self.segment, 'user.preserve'), b'1')
+    self.library.action({'action': 'delete', 'routeId': ROUTE, 'confirmed': True}, permitted=lambda: True)
+    self.assertFalse(self.segment.exists())
+
+  def test_selected_route_inventory_and_archive_are_complete_beyond_list_limit(self):
+    for number in range(1, 70):
+      folder = self.root / f'{ROUTE}--{number}'
+      folder.mkdir()
+      (folder / 'rlog.zst').write_bytes(b'log')
+    self.assertEqual(self.history.snapshot()['routes'][0]['segmentCount'], 64)
+    detail = self.history.detail(ROUTE)
+    self.assertTrue(detail['inventoryComplete'])
+    self.assertEqual(detail['segmentCount'], 70)
+    self.assertEqual(detail['videoBytes']['fcamera'], len(b'camera'))
+    lease = self.library.open_archive(ROUTE, permitted=lambda: True)
+    try:
+      with tarfile.open(fileobj=io.BytesIO(os.pread(lease.video_fd, lease.size, 0))) as archive:
+        self.assertEqual(len(archive.getnames()), 70)
+        self.assertIn(f'{ROUTE}--69/rlog.zst', archive.getnames())
+    finally:
+      lease.close()
+    self.library.action({'action': 'rename', 'routeId': ROUTE, 'name': 'Long drive'}, permitted=lambda: True)
+    self.assertEqual(os.getxattr(self.root / f'{ROUTE}--69', 'user.galaxy.name'), b'Long drive')
+    self.library.action({'action': 'preserve', 'routeId': ROUTE, 'preserved': True}, permitted=lambda: True)
+    self.assertEqual(os.getxattr(self.root / f'{ROUTE}--69', 'user.preserve'), b'1')
+
+  def test_empty_only_tail_does_not_block_route_management(self):
+    tail = self.root / f'{ROUTE}--1'
+    tail.mkdir()
+    (tail / 'rlog.zst').touch()
+    detail = self.history.detail(ROUTE)
+    self.assertTrue(detail['inventoryComplete'])
+    self.assertFalse(detail['playable'])
+    self.library.action({'action': 'rename', 'routeId': ROUTE, 'name': 'Recovered drive'}, permitted=lambda: True)
+    self.assertEqual(os.getxattr(tail, 'user.galaxy.name'), b'Recovered drive')
+    self.library.action({'action': 'preserve', 'routeId': ROUTE, 'preserved': True}, permitted=lambda: True)
+    self.assertEqual(os.getxattr(tail, 'user.preserve'), b'1')
+    self.library.action({'action': 'delete', 'routeId': ROUTE, 'confirmed': True}, permitted=lambda: True)
+    self.assertFalse(self.segment.exists())
+    self.assertFalse(tail.exists())
+
+  def test_cache_invalidation_happens_after_validation_before_deletion(self):
+    payload = {'action': 'delete', 'routeId': ROUTE, 'confirmed': True}
+    invalidations = []
+    with self.assertRaises(ValueError):
+      self.library.action({**payload, 'confirmed': False}, permitted=lambda: True, before_delete=invalidations.append)
+    self.assertEqual(invalidations, [])
+    def busy(route_id):
+      invalidations.append(route_id)
+      raise ValueError('download in progress')
+    with self.assertRaises(ValueError):
+      self.library.action(payload, permitted=lambda: True, before_delete=busy)
+    self.assertEqual(invalidations, [ROUTE])
+    self.assertTrue(self.segment.exists())
 
   def test_metadata_rename_preserve_delete_and_legacy_names(self):
     (self.segment / 'Old_name').touch()
@@ -146,6 +224,15 @@ class RecordingLibraryTest(unittest.TestCase):
       status, body, _ = request('/api/recordings/local', cookie=cookie)
       self.assertEqual(status, 200)
       self.assertEqual(json.loads(body)['routes'][0]['displayName'], 'Vacation')
+      status, body, _ = request(f'/api/recordings/detail?routeId={ROUTE}', cookie=cookie)
+      self.assertEqual(status, 200)
+      detail = json.loads(body)['route']
+      self.assertEqual(detail['displayName'], 'Vacation')
+      self.assertTrue(detail['inventoryComplete'])
+      self.assertTrue(detail['footageDownloads']['fcamera'])
+      self.assertTrue(detail['logArchiveAvailable'])
+      self.assertNotIn('sourceFiles', detail['segments'][0])
+      self.assertEqual(request(f'/api/recordings/detail?routeId={ROUTE}&routeId={ROUTE}', cookie=cookie)[0], 409)
       self.assertEqual(request(f'/api/recordings/files/{ROUTE}--0/rlog.zst', cookie=cookie)[:2], (200, b'log'))
       status, body, _ = request(f'/api/recordings/logs/{ROUTE}', cookie=cookie)
       self.assertEqual(status, 200)

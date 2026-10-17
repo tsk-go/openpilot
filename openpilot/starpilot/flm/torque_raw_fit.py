@@ -1,6 +1,7 @@
 """Child-only raw torque model/normalization/fit/replay. No heartbeat caller."""
 
 from dataclasses import asdict
+from openpilot.starpilot.flm.torque_eligibility import exact_unclipped_pair
 from openpilot.starpilot.flm.torque_emission_replay import delivered, projection
 from openpilot.starpilot.flm.physical_response import PhysicalRow, fit_physical
 from openpilot.starpilot.flm.adaptive_profile import Block, Sample, evaluate
@@ -16,6 +17,9 @@ def control_from_dict(value):
   for key in ('stage_values', 'replay_inputs', 'replay_snapshot'):
     if key in value:
       value[key] = tuple(tuple(row) for row in value[key])
+  if value.get('effect_trace') is not None:
+    from openpilot.starpilot.flm.effect_trace import trace_from_dict
+    value['effect_trace'] = trace_from_dict(value['effect_trace'])
   return ControlEvidence(**value)
 
 
@@ -60,7 +64,7 @@ def fit_raw_torque(payload, engine, objective):
         or command.override
         or command.fault
         or command.saturated
-        or command.limited
+        or command.limited and not exact_unclipped_pair(command, output)
         or command.model_wobble
         or command.controller_chatter
         or output.control_ns != command.control_ns
@@ -122,7 +126,7 @@ def fit_raw_torque(payload, engine, objective):
         or command.override
         or command.fault
         or command.saturated
-        or command.limited
+        or command.limited and not exact_unclipped_pair(command, output)
         or command.model_wobble
         or command.controller_chatter
         or not output.valid

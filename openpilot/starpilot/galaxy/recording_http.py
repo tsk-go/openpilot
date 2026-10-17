@@ -45,7 +45,7 @@ def camera_video(self, encoded_name: str, *, media, combined=False):
   self.send_recording(lease)
 
 
-def send_recording(self, lease, content_type='video/mp4'):
+def send_recording(self, lease, content_type='video/mp4', filename=None):
   try:
     if not self.require_session():
       return
@@ -63,6 +63,8 @@ def send_recording(self, lease, content_type='video/mp4'):
     start, end = selected
     self.send_response(206 if self.headers.get('Range') is not None else 200)
     self.send_header('Content-Type', content_type)
+    if filename is not None:
+      self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
     self.send_header('Content-Length', str(end - start + 1))
     self.send_header('Accept-Ranges', 'bytes')
     if self.headers.get('Range') is not None:

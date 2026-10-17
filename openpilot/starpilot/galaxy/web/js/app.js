@@ -203,7 +203,7 @@ createApp({
         </div>
       </aside>
       <main class="gx-content" :style="{'--route-direction': routeDirection}"><div class="gx-route-stage">
-        <Transition name="gx-route" @before-enter="setPageActive($event, true)" @before-leave="setPageActive($event, false)"><div class="gx-route" :key="route.path">
+        <Transition name="gx-route" @before-enter="setPageActive($event, true)" @before-leave="setPageActive($event, false)"><div class="gx-route" :key="isActive('/recordings') ? '/recordings' : route.path">
         <template v-if="state.loading && !state.error"><GalaxyLoading v-if="state.startupPending && !state.updateRestarting" message="Connecting to your device…" /></template>
         <GxNotice v-else-if="state.error" tone="danger">{{ state.error }}</GxNotice>
         <section v-else-if="state.monitorMode === 'local' && authState.status !== 'authenticated'" class="gx-card gx-auth" aria-label="Galaxy sign in">
@@ -218,8 +218,8 @@ createApp({
         </section>
         <GxNotice v-else-if="state.pageError" tone="danger">{{ state.pageError }} <button class="gx-btn" @click="reloadPage">Reload page</button></GxNotice>
         <Home v-else-if="route.path === '/'" :mode="state.monitorMode" :unauthorized="sessionExpired" :go="go" />
-        <LocalRecordingsPage v-else-if="route.path === '/recordings' && authState.localAccess" :mode="state.monitorMode" :unauthorized="sessionExpired" />
-        <GxState v-else-if="route.path === '/recordings'">Routes require a local Galaxy connection. Open a local address from Home while connected to the comma's hotspot or local network.</GxState>
+        <LocalRecordingsPage v-else-if="isActive('/recordings') && authState.localAccess" :mode="state.monitorMode" :unauthorized="sessionExpired" :route-path="route.path" :go="go" />
+        <GxState v-else-if="isActive('/recordings')">Routes require a local Galaxy connection. Open a local address from Home while connected to the comma's hotspot or local network.</GxState>
         <CamerasPage v-else-if="route.path === '/cameras'" :mode="state.monitorMode" :go="go" :unauthorized="sessionExpired" />
         <SentryEventsPage v-else-if="['/cameras/events', '/cameras/sentry-settings'].includes(route.path)" :mode="state.monitorMode" :unauthorized="sessionExpired" :go="go" />
         <PipPage v-else-if="route.path === '/cameras/pip'" :mode="state.monitorMode" :unauthorized="sessionExpired" :go="go" />

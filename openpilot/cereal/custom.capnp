@@ -1162,6 +1162,19 @@ struct LearningControlEvidence {
   appliedProfileSequence @41 :UInt64;
   appliedProfileObservedMonoTime @42 :UInt64;
   appliedProfileValidUntilMonoTime @43 :UInt64;
+  effectTrace @44 :FullEffectTrace;
+  effectPrepareMonoTime @45 :UInt64; # Exact MONOTONIC owner tick, not carControl publication.
+  struct FullEffectTrace {
+    version @0 :UInt16;
+    envelope @1 :AutomaticRuntimeProfile.FullSurfaceEnvelope;
+    controlMonoTime @2 :UInt64;
+    previousMonoTime @3 :UInt64;
+    qualified @4 :Bool;
+    before @5 :List(StageValue);
+    target @6 :List(StageValue);
+    applied @7 :List(StageValue);
+    appliedFullProfileSha256 @8 :Text;
+  }
   struct NamedValue {
     name @0 :Text;
     union { number @1 :Float64; text @2 :Text; boolean @3 :Bool; }
@@ -1201,12 +1214,39 @@ struct AutomaticRuntimeProfile {
   candidateLoss @11 :Float64;
   cohortImprovements @12 :List(CohortImprovement);
   replay @13 :ReplayValidation;
+  fullSurface @14 :FullSurfaceEnvelope;
+  struct FullSurfaceEnvelope {
+    version @0 :UInt16;
+    manifestSha256 @1 :Text;
+    fullOriginalAnchor @2 :Text;
+    trialAnchor @3 :Text;
+    contextKey @4 :Text;
+    cpSha256 @5 :Text;
+    controllerRevision @6 :Text;
+    sourceEpoch @7 :Text;
+    resetGeneration @8 :Text;
+    selectedBaselineRevision @9 :Text;
+    priorFullProfileSha256 @10 :Text;
+    fullProfileSha256 @11 :Text;
+    priorCoordinates @12 :List(Coordinate);
+    coordinates @13 :List(Coordinate);
+    trialNames @14 :List(Text);
+    persistentSourceEpoch @15 :Text;
+    operation @16 :Text;
+    historyFullProfileSha256 @17 :Text;
+    restoreTransactionSha256 @18 :Text;
+    struct Coordinate {
+      name @0 :Text;
+      value @1 :Float64;
+    }
+  }
   struct ReplayValidation {
     baselineRevision @0 :Text;
     physicalModelRevision @1 :Text;
     noSaturationRegression @2 :Bool;
     noSlewRegression @3 :Bool;
     worstCohortImprovement @4 :Float64;
+    nativeBaselineValues @5 :List(Float64);
   }
   struct Parameter {
     name @0 :Text;
@@ -1234,6 +1274,7 @@ struct AutomaticLearningSourceReceipt {
   cpSha256 @7 :Text;
   calibrationBasis @8 :List(Float64);
   calibrationGeneration @9 :Text;
+  persistentSourceEpoch @10 :Text;
 }
 
 struct LearningApplication {
@@ -1246,6 +1287,9 @@ struct LearningApplication {
   reason @6 :Text;
   baselineRevision @7 :Text;
   physicalModelRevision @8 :Text;
+  effectManifestSha256 @9 :Text;
+  effectOriginalAnchor @10 :Text;
+  effectAppliedProfileSha256 @11 :Text;
 }
 
 
@@ -1347,4 +1391,5 @@ struct LearningTorqueProjection {
   canBus @21 :UInt16;
   canData @22 :Data;
   reportedTorque @23 :Float64;
+  unlimitedRawPresent @24 :Bool;
 }

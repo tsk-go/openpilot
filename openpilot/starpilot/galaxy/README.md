@@ -37,7 +37,7 @@ it labels its sample System Monitor data and cannot edit a device.
 | --- | --- |
 | Home and Tools | Local status cards, navigation, theme, drawer, pinned tiles, and hash routes. |
 | System Monitor and Plots | Bounded local process/device and driving-message samples. Unavailable data stays unknown; leaving a page stops its polling. |
-| Logs and Routes | Current crash-report previews, closed local segment inventory, one-segment summary, and Quick road playback from a closed `qcamera.ts`. |
+| Logs and Routes | Crash-report previews and a shared route workspace for camera footage, driving UI replay, segment details, and scoped footage/replay/log downloads. |
 | Software & Updates | Read-only installed and updater status. Refresh rereads reported Params; it does not check, download, switch branches, install, roll back, or reboot. |
 | Driving and Device Preferences | Saved settings through typed owners shared with native controls, including SLC, lateral and longitudinal tuning, conditional modes, display, cameras, and sounds. |
 | Vehicle Controls | One saved manual vehicle choice for the next start, or Auto for normal detection. |
@@ -51,7 +51,7 @@ it labels its sample System Monitor data and cannot edit a device.
 The Vue router in `web/js/app.js` and the route handlers in `server.py` are the
 current route map. API groups include `/api/auth`, `/api/system/monitor`,
 `/api/software/status`, `/api/settings`, `/api/models`, `/api/maps`,
-`/api/sounds`, `/api/bluetooth`, `/api/vehicle-selection`, `/api/recordings`,
+`/api/sounds`, `/api/bluetooth`, `/api/vehicle-selection`, `/api/recordings`, `/api/replay`,
 `/api/sentry/events`, and `/api/flm`. An unknown API route returns an error;
 there is no arbitrary Params or shell-command endpoint. The retired
 `POST /api/companion` cross-origin bridge is no longer supported. Local hotspot
@@ -88,14 +88,34 @@ save response has an unknown outcome: refresh before repeating an action.
 
 Status endpoints distinguish missing, invalid, stale, or changed inputs from
 valid zero values. Crash and recording readers recheck file identity and skip
-active or symlinked sources. Quick road media is prepared from one closed
-segment in a bounded temporary cache, then served to the authenticated same
-origin; it is removed when Galaxy stops. Plots and System Monitor stop or retire
+active or symlinked sources. Camera footage is remuxed from closed segments in
+a bounded temporary cache. Combined footage and log archives are limited to
+512 MB; larger routes use individual segment downloads. Plots and System Monitor stop or retire
 requests when hidden, signed out, expired, or superseded. Sample rates and
 message ages describe observed data, not driving-control timing.
 
-Galaxy does not provide cloud drive history, full-resolution multi-camera
-recording playback, remote account setup, or updater actions. See
+Routes keep one selected segment across Footage and Replay with UI. Raw camera
+and log downloads use a complete selected-route inventory, bounded at 512 segments;
+the route list uses a smaller summary. Replay uses the existing parked-only owner,
+so native replay, browser preview, and export cannot run competing renderers.
+
+Replay exports render camera and UI together at normal speed, then stream-copy
+into a validated MP4. Segment exports end at the engine's recorded segment boundary;
+route exports concatenate replayable recorded ranges and omit gaps. An export
+freezes the last preview's display settings for the same browser and route, or
+snapshots the current display settings when no preview exists. Closing or hiding
+Galaxy stops its preview but leaves its export running; explicit Cancel stops it.
+The browser receipt survives a page refresh within the same authenticated session while Galaxy remains running.
+Authority loss, source changes, time limits, or insufficient storage stop the job.
+
+Only one completed export is cached, for 30 minutes or until replaced/deleted.
+An active download holds the file against eviction. The owner reserves the larger
+of 5 GiB and 10% of storage, budgets for spool plus final MP4, and caps exports at
+32 GiB. Completed exports are private, authenticated, range-capable downloads;
+owner restart clears the cache. Device replay binaries must be rebuilt with the
+matching source. GPU rendering and the hardware encoder require device validation.
+
+Galaxy does not provide cloud drive history, remote account setup, or updater actions. See
 [model contracts](../models/README.md) for Laboratory runtime eligibility and
 [map operations](../maps/MAP_OPERATIONS.md) for offline-region ownership.
 

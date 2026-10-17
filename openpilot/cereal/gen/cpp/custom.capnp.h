@@ -407,10 +407,13 @@ enum class HighwayClass_d18274dcdc63c41d: uint16_t {
 };
 CAPNP_DECLARE_ENUM(HighwayClass, d18274dcdc63c41d);
 CAPNP_DECLARE_SCHEMA(f2447170bb68f358);
+CAPNP_DECLARE_SCHEMA(c9c9b325ca50aaf7);
 CAPNP_DECLARE_SCHEMA(ddd8eb0f1a3fb843);
 CAPNP_DECLARE_SCHEMA(e7b005eb931864bc);
 CAPNP_DECLARE_SCHEMA(bab0f51a74ffee6e);
 CAPNP_DECLARE_SCHEMA(ef38d302825641e3);
+CAPNP_DECLARE_SCHEMA(dc64b4c2a8d2325e);
+CAPNP_DECLARE_SCHEMA(db7a34fdbdd1d9f7);
 CAPNP_DECLARE_SCHEMA(c67bb160599bcae3);
 CAPNP_DECLARE_SCHEMA(f967f623f65d7dba);
 CAPNP_DECLARE_SCHEMA(ccffb4ab144bf131);
@@ -1370,11 +1373,27 @@ struct LearningControlEvidence {
   class Reader;
   class Builder;
   class Pipeline;
+  struct FullEffectTrace;
   struct NamedValue;
   struct StageValue;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(f2447170bb68f358, 13, 18)
+    CAPNP_DECLARE_STRUCT_HEADER(f2447170bb68f358, 14, 19)
+    #if !CAPNP_LITE
+    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    #endif  // !CAPNP_LITE
+  };
+};
+
+struct LearningControlEvidence::FullEffectTrace {
+  FullEffectTrace() = delete;
+
+  class Reader;
+  class Builder;
+  class Pipeline;
+
+  struct _capnpPrivate {
+    CAPNP_DECLARE_STRUCT_HEADER(c9c9b325ca50aaf7, 3, 5)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -1437,12 +1456,44 @@ struct AutomaticRuntimeProfile {
   class Reader;
   class Builder;
   class Pipeline;
+  struct FullSurfaceEnvelope;
   struct ReplayValidation;
   struct Parameter;
   struct CohortImprovement;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(ef38d302825641e3, 6, 8)
+    CAPNP_DECLARE_STRUCT_HEADER(ef38d302825641e3, 6, 9)
+    #if !CAPNP_LITE
+    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    #endif  // !CAPNP_LITE
+  };
+};
+
+struct AutomaticRuntimeProfile::FullSurfaceEnvelope {
+  FullSurfaceEnvelope() = delete;
+
+  class Reader;
+  class Builder;
+  class Pipeline;
+  struct Coordinate;
+
+  struct _capnpPrivate {
+    CAPNP_DECLARE_STRUCT_HEADER(dc64b4c2a8d2325e, 1, 18)
+    #if !CAPNP_LITE
+    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
+    #endif  // !CAPNP_LITE
+  };
+};
+
+struct AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate {
+  Coordinate() = delete;
+
+  class Reader;
+  class Builder;
+  class Pipeline;
+
+  struct _capnpPrivate {
+    CAPNP_DECLARE_STRUCT_HEADER(db7a34fdbdd1d9f7, 1, 1)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -1457,7 +1508,7 @@ struct AutomaticRuntimeProfile::ReplayValidation {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(c67bb160599bcae3, 2, 2)
+    CAPNP_DECLARE_STRUCT_HEADER(c67bb160599bcae3, 2, 3)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -1502,7 +1553,7 @@ struct AutomaticLearningSourceReceipt {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(9fe2d23e75805149, 3, 5)
+    CAPNP_DECLARE_STRUCT_HEADER(9fe2d23e75805149, 3, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -1517,7 +1568,7 @@ struct LearningApplication {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(82b6c8ea6a6efabd, 3, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(82b6c8ea6a6efabd, 3, 9)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -9646,6 +9697,11 @@ public:
 
   inline  ::uint64_t getAppliedProfileValidUntilMonoTime() const;
 
+  inline bool hasEffectTrace() const;
+  inline  ::cereal::LearningControlEvidence::FullEffectTrace::Reader getEffectTrace() const;
+
+  inline  ::uint64_t getEffectPrepareMonoTime() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -9882,6 +9938,16 @@ public:
   inline  ::uint64_t getAppliedProfileValidUntilMonoTime();
   inline void setAppliedProfileValidUntilMonoTime( ::uint64_t value);
 
+  inline bool hasEffectTrace();
+  inline  ::cereal::LearningControlEvidence::FullEffectTrace::Builder getEffectTrace();
+  inline void setEffectTrace( ::cereal::LearningControlEvidence::FullEffectTrace::Reader value);
+  inline  ::cereal::LearningControlEvidence::FullEffectTrace::Builder initEffectTrace();
+  inline void adoptEffectTrace(::capnp::Orphan< ::cereal::LearningControlEvidence::FullEffectTrace>&& value);
+  inline ::capnp::Orphan< ::cereal::LearningControlEvidence::FullEffectTrace> disownEffectTrace();
+
+  inline  ::uint64_t getEffectPrepareMonoTime();
+  inline void setEffectPrepareMonoTime( ::uint64_t value);
+
 private:
   ::capnp::_::StructBuilder _builder;
   template <typename, ::capnp::Kind>
@@ -9900,6 +9966,149 @@ public:
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
       : _typeless(kj::mv(typeless)) {}
 
+  inline  ::cereal::LearningControlEvidence::FullEffectTrace::Pipeline getEffectTrace();
+private:
+  ::capnp::AnyPointer::Pipeline _typeless;
+  friend class ::capnp::PipelineHook;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+};
+#endif  // !CAPNP_LITE
+
+class LearningControlEvidence::FullEffectTrace::Reader {
+public:
+  typedef FullEffectTrace Reads;
+
+  Reader() = default;
+  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
+
+  inline ::capnp::MessageSize totalSize() const {
+    return _reader.totalSize().asPublic();
+  }
+
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const {
+    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
+  }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint16_t getVersion() const;
+
+  inline bool hasEnvelope() const;
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader getEnvelope() const;
+
+  inline  ::uint64_t getControlMonoTime() const;
+
+  inline  ::uint64_t getPreviousMonoTime() const;
+
+  inline bool getQualified() const;
+
+  inline bool hasBefore() const;
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader getBefore() const;
+
+  inline bool hasTarget() const;
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader getTarget() const;
+
+  inline bool hasApplied() const;
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader getApplied() const;
+
+  inline bool hasAppliedFullProfileSha256() const;
+  inline  ::capnp::Text::Reader getAppliedFullProfileSha256() const;
+
+private:
+  ::capnp::_::StructReader _reader;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::List;
+  friend class ::capnp::MessageBuilder;
+  friend class ::capnp::Orphanage;
+};
+
+class LearningControlEvidence::FullEffectTrace::Builder {
+public:
+  typedef FullEffectTrace Builds;
+
+  Builder() = delete;  // Deleted to discourage incorrect usage.
+                       // You can explicitly initialize to nullptr instead.
+  inline Builder(decltype(nullptr)) {}
+  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
+  inline operator Reader() const { return Reader(_builder.asReader()); }
+  inline Reader asReader() const { return *this; }
+
+  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const { return asReader().toString(); }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint16_t getVersion();
+  inline void setVersion( ::uint16_t value);
+
+  inline bool hasEnvelope();
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder getEnvelope();
+  inline void setEnvelope( ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader value);
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder initEnvelope();
+  inline void adoptEnvelope(::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>&& value);
+  inline ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope> disownEnvelope();
+
+  inline  ::uint64_t getControlMonoTime();
+  inline void setControlMonoTime( ::uint64_t value);
+
+  inline  ::uint64_t getPreviousMonoTime();
+  inline void setPreviousMonoTime( ::uint64_t value);
+
+  inline bool getQualified();
+  inline void setQualified(bool value);
+
+  inline bool hasBefore();
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder getBefore();
+  inline void setBefore( ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder initBefore(unsigned int size);
+  inline void adoptBefore(::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>> disownBefore();
+
+  inline bool hasTarget();
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder getTarget();
+  inline void setTarget( ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder initTarget(unsigned int size);
+  inline void adoptTarget(::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>> disownTarget();
+
+  inline bool hasApplied();
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder getApplied();
+  inline void setApplied( ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder initApplied(unsigned int size);
+  inline void adoptApplied(::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>> disownApplied();
+
+  inline bool hasAppliedFullProfileSha256();
+  inline  ::capnp::Text::Builder getAppliedFullProfileSha256();
+  inline void setAppliedFullProfileSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initAppliedFullProfileSha256(unsigned int size);
+  inline void adoptAppliedFullProfileSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownAppliedFullProfileSha256();
+
+private:
+  ::capnp::_::StructBuilder _builder;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  friend class ::capnp::Orphanage;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+};
+
+#if !CAPNP_LITE
+class LearningControlEvidence::FullEffectTrace::Pipeline {
+public:
+  typedef FullEffectTrace Pipelines;
+
+  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
+  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
+      : _typeless(kj::mv(typeless)) {}
+
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline getEnvelope();
 private:
   ::capnp::AnyPointer::Pipeline _typeless;
   friend class ::capnp::PipelineHook;
@@ -10313,6 +10522,9 @@ public:
   inline bool hasReplay() const;
   inline  ::cereal::AutomaticRuntimeProfile::ReplayValidation::Reader getReplay() const;
 
+  inline bool hasFullSurface() const;
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader getFullSurface() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -10418,6 +10630,13 @@ public:
   inline void adoptReplay(::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::ReplayValidation>&& value);
   inline ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::ReplayValidation> disownReplay();
 
+  inline bool hasFullSurface();
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder getFullSurface();
+  inline void setFullSurface( ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader value);
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder initFullSurface();
+  inline void adoptFullSurface(::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>&& value);
+  inline ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope> disownFullSurface();
+
 private:
   ::capnp::_::StructBuilder _builder;
   template <typename, ::capnp::Kind>
@@ -10437,6 +10656,350 @@ public:
       : _typeless(kj::mv(typeless)) {}
 
   inline  ::cereal::AutomaticRuntimeProfile::ReplayValidation::Pipeline getReplay();
+  inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline getFullSurface();
+private:
+  ::capnp::AnyPointer::Pipeline _typeless;
+  friend class ::capnp::PipelineHook;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+};
+#endif  // !CAPNP_LITE
+
+class AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader {
+public:
+  typedef FullSurfaceEnvelope Reads;
+
+  Reader() = default;
+  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
+
+  inline ::capnp::MessageSize totalSize() const {
+    return _reader.totalSize().asPublic();
+  }
+
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const {
+    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
+  }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint16_t getVersion() const;
+
+  inline bool hasManifestSha256() const;
+  inline  ::capnp::Text::Reader getManifestSha256() const;
+
+  inline bool hasFullOriginalAnchor() const;
+  inline  ::capnp::Text::Reader getFullOriginalAnchor() const;
+
+  inline bool hasTrialAnchor() const;
+  inline  ::capnp::Text::Reader getTrialAnchor() const;
+
+  inline bool hasContextKey() const;
+  inline  ::capnp::Text::Reader getContextKey() const;
+
+  inline bool hasCpSha256() const;
+  inline  ::capnp::Text::Reader getCpSha256() const;
+
+  inline bool hasControllerRevision() const;
+  inline  ::capnp::Text::Reader getControllerRevision() const;
+
+  inline bool hasSourceEpoch() const;
+  inline  ::capnp::Text::Reader getSourceEpoch() const;
+
+  inline bool hasResetGeneration() const;
+  inline  ::capnp::Text::Reader getResetGeneration() const;
+
+  inline bool hasSelectedBaselineRevision() const;
+  inline  ::capnp::Text::Reader getSelectedBaselineRevision() const;
+
+  inline bool hasPriorFullProfileSha256() const;
+  inline  ::capnp::Text::Reader getPriorFullProfileSha256() const;
+
+  inline bool hasFullProfileSha256() const;
+  inline  ::capnp::Text::Reader getFullProfileSha256() const;
+
+  inline bool hasPriorCoordinates() const;
+  inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader getPriorCoordinates() const;
+
+  inline bool hasCoordinates() const;
+  inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader getCoordinates() const;
+
+  inline bool hasTrialNames() const;
+  inline  ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Reader getTrialNames() const;
+
+  inline bool hasPersistentSourceEpoch() const;
+  inline  ::capnp::Text::Reader getPersistentSourceEpoch() const;
+
+  inline bool hasOperation() const;
+  inline  ::capnp::Text::Reader getOperation() const;
+
+  inline bool hasHistoryFullProfileSha256() const;
+  inline  ::capnp::Text::Reader getHistoryFullProfileSha256() const;
+
+  inline bool hasRestoreTransactionSha256() const;
+  inline  ::capnp::Text::Reader getRestoreTransactionSha256() const;
+
+private:
+  ::capnp::_::StructReader _reader;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::List;
+  friend class ::capnp::MessageBuilder;
+  friend class ::capnp::Orphanage;
+};
+
+class AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder {
+public:
+  typedef FullSurfaceEnvelope Builds;
+
+  Builder() = delete;  // Deleted to discourage incorrect usage.
+                       // You can explicitly initialize to nullptr instead.
+  inline Builder(decltype(nullptr)) {}
+  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
+  inline operator Reader() const { return Reader(_builder.asReader()); }
+  inline Reader asReader() const { return *this; }
+
+  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const { return asReader().toString(); }
+#endif  // !CAPNP_LITE
+
+  inline  ::uint16_t getVersion();
+  inline void setVersion( ::uint16_t value);
+
+  inline bool hasManifestSha256();
+  inline  ::capnp::Text::Builder getManifestSha256();
+  inline void setManifestSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initManifestSha256(unsigned int size);
+  inline void adoptManifestSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownManifestSha256();
+
+  inline bool hasFullOriginalAnchor();
+  inline  ::capnp::Text::Builder getFullOriginalAnchor();
+  inline void setFullOriginalAnchor( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initFullOriginalAnchor(unsigned int size);
+  inline void adoptFullOriginalAnchor(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownFullOriginalAnchor();
+
+  inline bool hasTrialAnchor();
+  inline  ::capnp::Text::Builder getTrialAnchor();
+  inline void setTrialAnchor( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initTrialAnchor(unsigned int size);
+  inline void adoptTrialAnchor(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownTrialAnchor();
+
+  inline bool hasContextKey();
+  inline  ::capnp::Text::Builder getContextKey();
+  inline void setContextKey( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initContextKey(unsigned int size);
+  inline void adoptContextKey(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownContextKey();
+
+  inline bool hasCpSha256();
+  inline  ::capnp::Text::Builder getCpSha256();
+  inline void setCpSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initCpSha256(unsigned int size);
+  inline void adoptCpSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownCpSha256();
+
+  inline bool hasControllerRevision();
+  inline  ::capnp::Text::Builder getControllerRevision();
+  inline void setControllerRevision( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initControllerRevision(unsigned int size);
+  inline void adoptControllerRevision(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownControllerRevision();
+
+  inline bool hasSourceEpoch();
+  inline  ::capnp::Text::Builder getSourceEpoch();
+  inline void setSourceEpoch( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initSourceEpoch(unsigned int size);
+  inline void adoptSourceEpoch(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownSourceEpoch();
+
+  inline bool hasResetGeneration();
+  inline  ::capnp::Text::Builder getResetGeneration();
+  inline void setResetGeneration( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initResetGeneration(unsigned int size);
+  inline void adoptResetGeneration(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownResetGeneration();
+
+  inline bool hasSelectedBaselineRevision();
+  inline  ::capnp::Text::Builder getSelectedBaselineRevision();
+  inline void setSelectedBaselineRevision( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initSelectedBaselineRevision(unsigned int size);
+  inline void adoptSelectedBaselineRevision(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownSelectedBaselineRevision();
+
+  inline bool hasPriorFullProfileSha256();
+  inline  ::capnp::Text::Builder getPriorFullProfileSha256();
+  inline void setPriorFullProfileSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initPriorFullProfileSha256(unsigned int size);
+  inline void adoptPriorFullProfileSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownPriorFullProfileSha256();
+
+  inline bool hasFullProfileSha256();
+  inline  ::capnp::Text::Builder getFullProfileSha256();
+  inline void setFullProfileSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initFullProfileSha256(unsigned int size);
+  inline void adoptFullProfileSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownFullProfileSha256();
+
+  inline bool hasPriorCoordinates();
+  inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder getPriorCoordinates();
+  inline void setPriorCoordinates( ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder initPriorCoordinates(unsigned int size);
+  inline void adoptPriorCoordinates(::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>> disownPriorCoordinates();
+
+  inline bool hasCoordinates();
+  inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder getCoordinates();
+  inline void setCoordinates( ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader value);
+  inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder initCoordinates(unsigned int size);
+  inline void adoptCoordinates(::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>> disownCoordinates();
+
+  inline bool hasTrialNames();
+  inline  ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Builder getTrialNames();
+  inline void setTrialNames( ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Reader value);
+  inline void setTrialNames(::kj::ArrayPtr<const  ::capnp::Text::Reader> value);
+  inline  ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Builder initTrialNames(unsigned int size);
+  inline void adoptTrialNames(::capnp::Orphan< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>&& value);
+  inline ::capnp::Orphan< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>> disownTrialNames();
+
+  inline bool hasPersistentSourceEpoch();
+  inline  ::capnp::Text::Builder getPersistentSourceEpoch();
+  inline void setPersistentSourceEpoch( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initPersistentSourceEpoch(unsigned int size);
+  inline void adoptPersistentSourceEpoch(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownPersistentSourceEpoch();
+
+  inline bool hasOperation();
+  inline  ::capnp::Text::Builder getOperation();
+  inline void setOperation( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initOperation(unsigned int size);
+  inline void adoptOperation(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownOperation();
+
+  inline bool hasHistoryFullProfileSha256();
+  inline  ::capnp::Text::Builder getHistoryFullProfileSha256();
+  inline void setHistoryFullProfileSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initHistoryFullProfileSha256(unsigned int size);
+  inline void adoptHistoryFullProfileSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownHistoryFullProfileSha256();
+
+  inline bool hasRestoreTransactionSha256();
+  inline  ::capnp::Text::Builder getRestoreTransactionSha256();
+  inline void setRestoreTransactionSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initRestoreTransactionSha256(unsigned int size);
+  inline void adoptRestoreTransactionSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownRestoreTransactionSha256();
+
+private:
+  ::capnp::_::StructBuilder _builder;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  friend class ::capnp::Orphanage;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+};
+
+#if !CAPNP_LITE
+class AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline {
+public:
+  typedef FullSurfaceEnvelope Pipelines;
+
+  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
+  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
+      : _typeless(kj::mv(typeless)) {}
+
+private:
+  ::capnp::AnyPointer::Pipeline _typeless;
+  friend class ::capnp::PipelineHook;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+};
+#endif  // !CAPNP_LITE
+
+class AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Reader {
+public:
+  typedef Coordinate Reads;
+
+  Reader() = default;
+  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
+
+  inline ::capnp::MessageSize totalSize() const {
+    return _reader.totalSize().asPublic();
+  }
+
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const {
+    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
+  }
+#endif  // !CAPNP_LITE
+
+  inline bool hasName() const;
+  inline  ::capnp::Text::Reader getName() const;
+
+  inline double getValue() const;
+
+private:
+  ::capnp::_::StructReader _reader;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::List;
+  friend class ::capnp::MessageBuilder;
+  friend class ::capnp::Orphanage;
+};
+
+class AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder {
+public:
+  typedef Coordinate Builds;
+
+  Builder() = delete;  // Deleted to discourage incorrect usage.
+                       // You can explicitly initialize to nullptr instead.
+  inline Builder(decltype(nullptr)) {}
+  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
+  inline operator Reader() const { return Reader(_builder.asReader()); }
+  inline Reader asReader() const { return *this; }
+
+  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
+#if !CAPNP_LITE
+  inline ::kj::StringTree toString() const { return asReader().toString(); }
+#endif  // !CAPNP_LITE
+
+  inline bool hasName();
+  inline  ::capnp::Text::Builder getName();
+  inline void setName( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initName(unsigned int size);
+  inline void adoptName(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownName();
+
+  inline double getValue();
+  inline void setValue(double value);
+
+private:
+  ::capnp::_::StructBuilder _builder;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::ToDynamic_;
+  friend class ::capnp::Orphanage;
+  template <typename, ::capnp::Kind>
+  friend struct ::capnp::_::PointerHelpers;
+};
+
+#if !CAPNP_LITE
+class AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Pipeline {
+public:
+  typedef Coordinate Pipelines;
+
+  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
+  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
+      : _typeless(kj::mv(typeless)) {}
+
 private:
   ::capnp::AnyPointer::Pipeline _typeless;
   friend class ::capnp::PipelineHook;
@@ -10473,6 +11036,9 @@ public:
   inline bool getNoSlewRegression() const;
 
   inline double getWorstCohortImprovement() const;
+
+  inline bool hasNativeBaselineValues() const;
+  inline  ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Reader getNativeBaselineValues() const;
 
 private:
   ::capnp::_::StructReader _reader;
@@ -10524,6 +11090,14 @@ public:
 
   inline double getWorstCohortImprovement();
   inline void setWorstCohortImprovement(double value);
+
+  inline bool hasNativeBaselineValues();
+  inline  ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Builder getNativeBaselineValues();
+  inline void setNativeBaselineValues( ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Reader value);
+  inline void setNativeBaselineValues(::kj::ArrayPtr<const double> value);
+  inline  ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Builder initNativeBaselineValues(unsigned int size);
+  inline void adoptNativeBaselineValues(::capnp::Orphan< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>&& value);
+  inline ::capnp::Orphan< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>> disownNativeBaselineValues();
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -10795,6 +11369,9 @@ public:
   inline bool hasCalibrationGeneration() const;
   inline  ::capnp::Text::Reader getCalibrationGeneration() const;
 
+  inline bool hasPersistentSourceEpoch() const;
+  inline  ::capnp::Text::Reader getPersistentSourceEpoch() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -10874,6 +11451,13 @@ public:
   inline void adoptCalibrationGeneration(::capnp::Orphan< ::capnp::Text>&& value);
   inline ::capnp::Orphan< ::capnp::Text> disownCalibrationGeneration();
 
+  inline bool hasPersistentSourceEpoch();
+  inline  ::capnp::Text::Builder getPersistentSourceEpoch();
+  inline void setPersistentSourceEpoch( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initPersistentSourceEpoch(unsigned int size);
+  inline void adoptPersistentSourceEpoch(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownPersistentSourceEpoch();
+
 private:
   ::capnp::_::StructBuilder _builder;
   template <typename, ::capnp::Kind>
@@ -10940,6 +11524,15 @@ public:
 
   inline bool hasPhysicalModelRevision() const;
   inline  ::capnp::Text::Reader getPhysicalModelRevision() const;
+
+  inline bool hasEffectManifestSha256() const;
+  inline  ::capnp::Text::Reader getEffectManifestSha256() const;
+
+  inline bool hasEffectOriginalAnchor() const;
+  inline  ::capnp::Text::Reader getEffectOriginalAnchor() const;
+
+  inline bool hasEffectAppliedProfileSha256() const;
+  inline  ::capnp::Text::Reader getEffectAppliedProfileSha256() const;
 
 private:
   ::capnp::_::StructReader _reader;
@@ -11020,6 +11613,27 @@ public:
   inline  ::capnp::Text::Builder initPhysicalModelRevision(unsigned int size);
   inline void adoptPhysicalModelRevision(::capnp::Orphan< ::capnp::Text>&& value);
   inline ::capnp::Orphan< ::capnp::Text> disownPhysicalModelRevision();
+
+  inline bool hasEffectManifestSha256();
+  inline  ::capnp::Text::Builder getEffectManifestSha256();
+  inline void setEffectManifestSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initEffectManifestSha256(unsigned int size);
+  inline void adoptEffectManifestSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownEffectManifestSha256();
+
+  inline bool hasEffectOriginalAnchor();
+  inline  ::capnp::Text::Builder getEffectOriginalAnchor();
+  inline void setEffectOriginalAnchor( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initEffectOriginalAnchor(unsigned int size);
+  inline void adoptEffectOriginalAnchor(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownEffectOriginalAnchor();
+
+  inline bool hasEffectAppliedProfileSha256();
+  inline  ::capnp::Text::Builder getEffectAppliedProfileSha256();
+  inline void setEffectAppliedProfileSha256( ::capnp::Text::Reader value);
+  inline  ::capnp::Text::Builder initEffectAppliedProfileSha256(unsigned int size);
+  inline void adoptEffectAppliedProfileSha256(::capnp::Orphan< ::capnp::Text>&& value);
+  inline ::capnp::Orphan< ::capnp::Text> disownEffectAppliedProfileSha256();
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -11764,6 +12378,8 @@ public:
 
   inline double getReportedTorque() const;
 
+  inline bool getUnlimitedRawPresent() const;
+
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -11905,6 +12521,9 @@ public:
 
   inline double getReportedTorque();
   inline void setReportedTorque(double value);
+
+  inline bool getUnlimitedRawPresent();
+  inline void setUnlimitedRawPresent(bool value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -25044,6 +25663,290 @@ inline void LearningControlEvidence::Builder::setAppliedProfileValidUntilMonoTim
       ::capnp::bounded<12>() * ::capnp::ELEMENTS, value);
 }
 
+inline bool LearningControlEvidence::Reader::hasEffectTrace() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningControlEvidence::Builder::hasEffectTrace() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS).isNull();
+}
+inline  ::cereal::LearningControlEvidence::FullEffectTrace::Reader LearningControlEvidence::Reader::getEffectTrace() const {
+  return ::capnp::_::PointerHelpers< ::cereal::LearningControlEvidence::FullEffectTrace>::get(_reader.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS));
+}
+inline  ::cereal::LearningControlEvidence::FullEffectTrace::Builder LearningControlEvidence::Builder::getEffectTrace() {
+  return ::capnp::_::PointerHelpers< ::cereal::LearningControlEvidence::FullEffectTrace>::get(_builder.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS));
+}
+#if !CAPNP_LITE
+inline  ::cereal::LearningControlEvidence::FullEffectTrace::Pipeline LearningControlEvidence::Pipeline::getEffectTrace() {
+  return  ::cereal::LearningControlEvidence::FullEffectTrace::Pipeline(_typeless.getPointerField(18));
+}
+#endif  // !CAPNP_LITE
+inline void LearningControlEvidence::Builder::setEffectTrace( ::cereal::LearningControlEvidence::FullEffectTrace::Reader value) {
+  ::capnp::_::PointerHelpers< ::cereal::LearningControlEvidence::FullEffectTrace>::set(_builder.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS), value);
+}
+inline  ::cereal::LearningControlEvidence::FullEffectTrace::Builder LearningControlEvidence::Builder::initEffectTrace() {
+  return ::capnp::_::PointerHelpers< ::cereal::LearningControlEvidence::FullEffectTrace>::init(_builder.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS));
+}
+inline void LearningControlEvidence::Builder::adoptEffectTrace(
+    ::capnp::Orphan< ::cereal::LearningControlEvidence::FullEffectTrace>&& value) {
+  ::capnp::_::PointerHelpers< ::cereal::LearningControlEvidence::FullEffectTrace>::adopt(_builder.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::cereal::LearningControlEvidence::FullEffectTrace> LearningControlEvidence::Builder::disownEffectTrace() {
+  return ::capnp::_::PointerHelpers< ::cereal::LearningControlEvidence::FullEffectTrace>::disown(_builder.getPointerField(
+      ::capnp::bounded<18>() * ::capnp::POINTERS));
+}
+
+inline  ::uint64_t LearningControlEvidence::Reader::getEffectPrepareMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<13>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t LearningControlEvidence::Builder::getEffectPrepareMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<13>() * ::capnp::ELEMENTS);
+}
+inline void LearningControlEvidence::Builder::setEffectPrepareMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<13>() * ::capnp::ELEMENTS, value);
+}
+
+inline  ::uint16_t LearningControlEvidence::FullEffectTrace::Reader::getVersion() const {
+  return _reader.getDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint16_t LearningControlEvidence::FullEffectTrace::Builder::getVersion() {
+  return _builder.getDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setVersion( ::uint16_t value) {
+  _builder.setDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Reader::hasEnvelope() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningControlEvidence::FullEffectTrace::Builder::hasEnvelope() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader LearningControlEvidence::FullEffectTrace::Reader::getEnvelope() const {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::get(_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder LearningControlEvidence::FullEffectTrace::Builder::getEnvelope() {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::get(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+#if !CAPNP_LITE
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline LearningControlEvidence::FullEffectTrace::Pipeline::getEnvelope() {
+  return  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline(_typeless.getPointerField(0));
+}
+#endif  // !CAPNP_LITE
+inline void LearningControlEvidence::FullEffectTrace::Builder::setEnvelope( ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader value) {
+  ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::set(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), value);
+}
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder LearningControlEvidence::FullEffectTrace::Builder::initEnvelope() {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::init(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::adoptEnvelope(
+    ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>&& value) {
+  ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::adopt(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope> LearningControlEvidence::FullEffectTrace::Builder::disownEnvelope() {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::disown(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+
+inline  ::uint64_t LearningControlEvidence::FullEffectTrace::Reader::getControlMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t LearningControlEvidence::FullEffectTrace::Builder::getControlMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setControlMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<1>() * ::capnp::ELEMENTS, value);
+}
+
+inline  ::uint64_t LearningControlEvidence::FullEffectTrace::Reader::getPreviousMonoTime() const {
+  return _reader.getDataField< ::uint64_t>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint64_t LearningControlEvidence::FullEffectTrace::Builder::getPreviousMonoTime() {
+  return _builder.getDataField< ::uint64_t>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setPreviousMonoTime( ::uint64_t value) {
+  _builder.setDataField< ::uint64_t>(
+      ::capnp::bounded<2>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Reader::getQualified() const {
+  return _reader.getDataField<bool>(
+      ::capnp::bounded<16>() * ::capnp::ELEMENTS);
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Builder::getQualified() {
+  return _builder.getDataField<bool>(
+      ::capnp::bounded<16>() * ::capnp::ELEMENTS);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setQualified(bool value) {
+  _builder.setDataField<bool>(
+      ::capnp::bounded<16>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Reader::hasBefore() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningControlEvidence::FullEffectTrace::Builder::hasBefore() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader LearningControlEvidence::FullEffectTrace::Reader::getBefore() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder LearningControlEvidence::FullEffectTrace::Builder::getBefore() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS));
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setBefore( ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder LearningControlEvidence::FullEffectTrace::Builder::initBefore(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS), size);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::adoptBefore(
+    ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>> LearningControlEvidence::FullEffectTrace::Builder::disownBefore() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS));
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Reader::hasTarget() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningControlEvidence::FullEffectTrace::Builder::hasTarget() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader LearningControlEvidence::FullEffectTrace::Reader::getTarget() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder LearningControlEvidence::FullEffectTrace::Builder::getTarget() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setTarget( ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder LearningControlEvidence::FullEffectTrace::Builder::initTarget(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), size);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::adoptTarget(
+    ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>> LearningControlEvidence::FullEffectTrace::Builder::disownTarget() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Reader::hasApplied() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningControlEvidence::FullEffectTrace::Builder::hasApplied() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader LearningControlEvidence::FullEffectTrace::Reader::getApplied() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder LearningControlEvidence::FullEffectTrace::Builder::getApplied() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setApplied( ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>::Builder LearningControlEvidence::FullEffectTrace::Builder::initApplied(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS), size);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::adoptApplied(
+    ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>> LearningControlEvidence::FullEffectTrace::Builder::disownApplied() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::LearningControlEvidence::StageValue,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+
+inline bool LearningControlEvidence::FullEffectTrace::Reader::hasAppliedFullProfileSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningControlEvidence::FullEffectTrace::Builder::hasAppliedFullProfileSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader LearningControlEvidence::FullEffectTrace::Reader::getAppliedFullProfileSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder LearningControlEvidence::FullEffectTrace::Builder::getAppliedFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS));
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::setAppliedFullProfileSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder LearningControlEvidence::FullEffectTrace::Builder::initAppliedFullProfileSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS), size);
+}
+inline void LearningControlEvidence::FullEffectTrace::Builder::adoptAppliedFullProfileSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> LearningControlEvidence::FullEffectTrace::Builder::disownAppliedFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS));
+}
+
 inline  ::cereal::LearningControlEvidence::NamedValue::Which LearningControlEvidence::NamedValue::Reader::which() const {
   return _reader.getDataField<Which>(
       ::capnp::bounded<4>() * ::capnp::ELEMENTS);
@@ -25869,6 +26772,723 @@ inline ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::ReplayValidation> Aut
       ::capnp::bounded<7>() * ::capnp::POINTERS));
 }
 
+inline bool AutomaticRuntimeProfile::Reader::hasFullSurface() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::Builder::hasFullSurface() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS).isNull();
+}
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader AutomaticRuntimeProfile::Reader::getFullSurface() const {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::get(_reader.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder AutomaticRuntimeProfile::Builder::getFullSurface() {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::get(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+#if !CAPNP_LITE
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline AutomaticRuntimeProfile::Pipeline::getFullSurface() {
+  return  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Pipeline(_typeless.getPointerField(8));
+}
+#endif  // !CAPNP_LITE
+inline void AutomaticRuntimeProfile::Builder::setFullSurface( ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader value) {
+  ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::set(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), value);
+}
+inline  ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder AutomaticRuntimeProfile::Builder::initFullSurface() {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::init(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::Builder::adoptFullSurface(
+    ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>&& value) {
+  ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::adopt(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope> AutomaticRuntimeProfile::Builder::disownFullSurface() {
+  return ::capnp::_::PointerHelpers< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope>::disown(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+
+inline  ::uint16_t AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getVersion() const {
+  return _reader.getDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+
+inline  ::uint16_t AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getVersion() {
+  return _builder.getDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setVersion( ::uint16_t value) {
+  _builder.setDataField< ::uint16_t>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasManifestSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasManifestSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getManifestSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getManifestSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setManifestSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initManifestSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptManifestSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownManifestSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasFullOriginalAnchor() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasFullOriginalAnchor() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getFullOriginalAnchor() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getFullOriginalAnchor() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setFullOriginalAnchor( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initFullOriginalAnchor(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptFullOriginalAnchor(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownFullOriginalAnchor() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<1>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasTrialAnchor() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasTrialAnchor() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getTrialAnchor() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getTrialAnchor() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setTrialAnchor( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initTrialAnchor(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptTrialAnchor(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownTrialAnchor() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasContextKey() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasContextKey() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getContextKey() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getContextKey() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setContextKey( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initContextKey(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptContextKey(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownContextKey() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<3>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasCpSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasCpSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getCpSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getCpSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setCpSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initCpSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptCpSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownCpSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<4>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasControllerRevision() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasControllerRevision() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getControllerRevision() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getControllerRevision() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setControllerRevision( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initControllerRevision(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptControllerRevision(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownControllerRevision() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasSourceEpoch() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasSourceEpoch() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getSourceEpoch() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getSourceEpoch() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setSourceEpoch( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initSourceEpoch(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptSourceEpoch(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownSourceEpoch() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasResetGeneration() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasResetGeneration() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getResetGeneration() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getResetGeneration() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setResetGeneration( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initResetGeneration(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptResetGeneration(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownResetGeneration() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasSelectedBaselineRevision() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasSelectedBaselineRevision() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getSelectedBaselineRevision() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getSelectedBaselineRevision() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setSelectedBaselineRevision( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initSelectedBaselineRevision(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptSelectedBaselineRevision(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownSelectedBaselineRevision() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasPriorFullProfileSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasPriorFullProfileSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getPriorFullProfileSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getPriorFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setPriorFullProfileSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initPriorFullProfileSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptPriorFullProfileSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownPriorFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<9>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasFullProfileSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasFullProfileSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getFullProfileSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setFullProfileSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initFullProfileSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptFullProfileSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<10>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasPriorCoordinates() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasPriorCoordinates() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getPriorCoordinates() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getPriorCoordinates() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setPriorCoordinates( ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initPriorCoordinates(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptPriorCoordinates(
+    ::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownPriorCoordinates() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
+      ::capnp::bounded<11>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasCoordinates() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasCoordinates() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getCoordinates() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getCoordinates() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setCoordinates( ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initCoordinates(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptCoordinates(
+    ::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownCoordinates() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::cereal::AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
+      ::capnp::bounded<12>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasTrialNames() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasTrialNames() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getTrialNames() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::get(_reader.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getTrialNames() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::get(_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setTrialNames( ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::set(_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS), value);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setTrialNames(::kj::ArrayPtr<const  ::capnp::Text::Reader> value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::set(_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initTrialNames(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::init(_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptTrialNames(
+    ::capnp::Orphan< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownTrialNames() {
+  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::Text,  ::capnp::Kind::BLOB>>::disown(_builder.getPointerField(
+      ::capnp::bounded<13>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasPersistentSourceEpoch() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasPersistentSourceEpoch() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getPersistentSourceEpoch() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getPersistentSourceEpoch() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setPersistentSourceEpoch( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initPersistentSourceEpoch(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptPersistentSourceEpoch(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownPersistentSourceEpoch() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<14>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasOperation() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasOperation() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getOperation() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getOperation() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setOperation( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initOperation(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptOperation(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownOperation() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<15>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasHistoryFullProfileSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasHistoryFullProfileSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getHistoryFullProfileSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getHistoryFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setHistoryFullProfileSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initHistoryFullProfileSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptHistoryFullProfileSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownHistoryFullProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<16>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::hasRestoreTransactionSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::hasRestoreTransactionSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Reader::getRestoreTransactionSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::getRestoreTransactionSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::setRestoreTransactionSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::initRestoreTransactionSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::adoptRestoreTransactionSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Builder::disownRestoreTransactionSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<17>() * ::capnp::POINTERS));
+}
+
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Reader::hasName() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::hasName() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Reader::getName() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::getName() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::setName( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::initName(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::adoptName(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::disownName() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<0>() * ::capnp::POINTERS));
+}
+
+inline double AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Reader::getValue() const {
+  return _reader.getDataField<double>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+
+inline double AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::getValue() {
+  return _builder.getDataField<double>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
+}
+inline void AutomaticRuntimeProfile::FullSurfaceEnvelope::Coordinate::Builder::setValue(double value) {
+  _builder.setDataField<double>(
+      ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
+}
+
 inline bool AutomaticRuntimeProfile::ReplayValidation::Reader::hasBaselineRevision() const {
   return !_reader.getPointerField(
       ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
@@ -25977,6 +27597,44 @@ inline double AutomaticRuntimeProfile::ReplayValidation::Builder::getWorstCohort
 inline void AutomaticRuntimeProfile::ReplayValidation::Builder::setWorstCohortImprovement(double value) {
   _builder.setDataField<double>(
       ::capnp::bounded<1>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool AutomaticRuntimeProfile::ReplayValidation::Reader::hasNativeBaselineValues() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticRuntimeProfile::ReplayValidation::Builder::hasNativeBaselineValues() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Reader AutomaticRuntimeProfile::ReplayValidation::Reader::getNativeBaselineValues() const {
+  return ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::get(_reader.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+inline  ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Builder AutomaticRuntimeProfile::ReplayValidation::Builder::getNativeBaselineValues() {
+  return ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::get(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
+}
+inline void AutomaticRuntimeProfile::ReplayValidation::Builder::setNativeBaselineValues( ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::set(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), value);
+}
+inline void AutomaticRuntimeProfile::ReplayValidation::Builder::setNativeBaselineValues(::kj::ArrayPtr<const double> value) {
+  ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::set(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>::Builder AutomaticRuntimeProfile::ReplayValidation::Builder::initNativeBaselineValues(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::init(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticRuntimeProfile::ReplayValidation::Builder::adoptNativeBaselineValues(
+    ::capnp::Orphan< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::adopt(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>> AutomaticRuntimeProfile::ReplayValidation::Builder::disownNativeBaselineValues() {
+  return ::capnp::_::PointerHelpers< ::capnp::List<double,  ::capnp::Kind::PRIMITIVE>>::disown(_builder.getPointerField(
+      ::capnp::bounded<2>() * ::capnp::POINTERS));
 }
 
 inline bool AutomaticRuntimeProfile::Parameter::Reader::hasName() const {
@@ -26409,6 +28067,40 @@ inline ::capnp::Orphan< ::capnp::Text> AutomaticLearningSourceReceipt::Builder::
       ::capnp::bounded<4>() * ::capnp::POINTERS));
 }
 
+inline bool AutomaticLearningSourceReceipt::Reader::hasPersistentSourceEpoch() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS).isNull();
+}
+inline bool AutomaticLearningSourceReceipt::Builder::hasPersistentSourceEpoch() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader AutomaticLearningSourceReceipt::Reader::getPersistentSourceEpoch() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder AutomaticLearningSourceReceipt::Builder::getPersistentSourceEpoch() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+inline void AutomaticLearningSourceReceipt::Builder::setPersistentSourceEpoch( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder AutomaticLearningSourceReceipt::Builder::initPersistentSourceEpoch(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS), size);
+}
+inline void AutomaticLearningSourceReceipt::Builder::adoptPersistentSourceEpoch(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> AutomaticLearningSourceReceipt::Builder::disownPersistentSourceEpoch() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+
 inline  ::uint16_t LearningApplication::Reader::getVersion() const {
   return _reader.getDataField< ::uint16_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS);
@@ -26657,6 +28349,108 @@ inline void LearningApplication::Builder::adoptPhysicalModelRevision(
 inline ::capnp::Orphan< ::capnp::Text> LearningApplication::Builder::disownPhysicalModelRevision() {
   return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
       ::capnp::bounded<5>() * ::capnp::POINTERS));
+}
+
+inline bool LearningApplication::Reader::hasEffectManifestSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningApplication::Builder::hasEffectManifestSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader LearningApplication::Reader::getEffectManifestSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder LearningApplication::Builder::getEffectManifestSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+inline void LearningApplication::Builder::setEffectManifestSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder LearningApplication::Builder::initEffectManifestSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), size);
+}
+inline void LearningApplication::Builder::adoptEffectManifestSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> LearningApplication::Builder::disownEffectManifestSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<6>() * ::capnp::POINTERS));
+}
+
+inline bool LearningApplication::Reader::hasEffectOriginalAnchor() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningApplication::Builder::hasEffectOriginalAnchor() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader LearningApplication::Reader::getEffectOriginalAnchor() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder LearningApplication::Builder::getEffectOriginalAnchor() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS));
+}
+inline void LearningApplication::Builder::setEffectOriginalAnchor( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder LearningApplication::Builder::initEffectOriginalAnchor(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS), size);
+}
+inline void LearningApplication::Builder::adoptEffectOriginalAnchor(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> LearningApplication::Builder::disownEffectOriginalAnchor() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<7>() * ::capnp::POINTERS));
+}
+
+inline bool LearningApplication::Reader::hasEffectAppliedProfileSha256() const {
+  return !_reader.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS).isNull();
+}
+inline bool LearningApplication::Builder::hasEffectAppliedProfileSha256() {
+  return !_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS).isNull();
+}
+inline  ::capnp::Text::Reader LearningApplication::Reader::getEffectAppliedProfileSha256() const {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_reader.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+inline  ::capnp::Text::Builder LearningApplication::Builder::getEffectAppliedProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::get(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
+}
+inline void LearningApplication::Builder::setEffectAppliedProfileSha256( ::capnp::Text::Reader value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::set(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), value);
+}
+inline  ::capnp::Text::Builder LearningApplication::Builder::initEffectAppliedProfileSha256(unsigned int size) {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::init(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), size);
+}
+inline void LearningApplication::Builder::adoptEffectAppliedProfileSha256(
+    ::capnp::Orphan< ::capnp::Text>&& value) {
+  ::capnp::_::PointerHelpers< ::capnp::Text>::adopt(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS), kj::mv(value));
+}
+inline ::capnp::Orphan< ::capnp::Text> LearningApplication::Builder::disownEffectAppliedProfileSha256() {
+  return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
+      ::capnp::bounded<8>() * ::capnp::POINTERS));
 }
 
 inline  ::uint16_t FordLearningEvidence::Reader::getVersion() const {
@@ -28539,6 +30333,20 @@ inline double LearningTorqueProjection::Builder::getReportedTorque() {
 inline void LearningTorqueProjection::Builder::setReportedTorque(double value) {
   _builder.setDataField<double>(
       ::capnp::bounded<10>() * ::capnp::ELEMENTS, value);
+}
+
+inline bool LearningTorqueProjection::Reader::getUnlimitedRawPresent() const {
+  return _reader.getDataField<bool>(
+      ::capnp::bounded<17>() * ::capnp::ELEMENTS);
+}
+
+inline bool LearningTorqueProjection::Builder::getUnlimitedRawPresent() {
+  return _builder.getDataField<bool>(
+      ::capnp::bounded<17>() * ::capnp::ELEMENTS);
+}
+inline void LearningTorqueProjection::Builder::setUnlimitedRawPresent(bool value) {
+  _builder.setDataField<bool>(
+      ::capnp::bounded<17>() * ::capnp::ELEMENTS, value);
 }
 
 }  // namespace

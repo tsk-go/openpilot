@@ -84,6 +84,22 @@ class TestControllerFeature(unittest.TestCase):
     self.assertIsNone(self.params.get('ForceAutoTuneOff'))
     self.assertIsNone(self.params.get(DOCUMENT_KEY))
 
+  def test_stock_pid_torque_uses_same_scoped_learning_preference_only(self):
+    self.cp = interfaces[HONDA.HONDA_CIVIC].get_non_essential_params(HONDA.HONDA_CIVIC)
+    self.assertEqual(self.cp.lateralTuning.which(), 'pid')
+    original = self.cp.as_reader().as_builder().to_bytes()
+    self.assertIsNone(self.row())  # No torque-only controller/manual editor.
+    learning = self.require_row('ForceAutoTuneOff')
+    self.assertEqual((learning.label, learning.value), ('Use StarPilot Auto Learn', 'On'))
+    self.assertTrue(learning.available)
+    self.assertEqual(_projection(learning, 'torque')['choices'], ['Off', 'On'])
+    self.assertTrue(self.owner.apply(required_change(learning)))
+    self.assertFalse(read_preference(self.params, self.cp).enabled)
+    self.assertIsNone(self.params.get('ForceAutoTuneOff'))
+    self.assertIsNone(self.params.get(DOCUMENT_KEY))
+    self.assertEqual(self.cp.as_reader().as_builder().to_bytes(), original)
+    self.assertFalse(self.owner.apply(required_change(learning)))  # Original expected bytes are stale.
+
   def test_learning_capability_rejects_unknown_angle_and_passive_cp(self):
     original = self.cp.as_reader().as_builder()
     for failure in ('unknown', 'brand', 'angle', 'passive', 'dashcam', 'not_car', 'nonfinite'):
@@ -150,7 +166,7 @@ class TestControllerFeature(unittest.TestCase):
     learning = self.require_row('ForceAutoTuneOff')
     self.assertTrue(learning.available)
     self.assertEqual(learning.value, 'On')
-    self.assertIn('currently unavailable', learning.reason)
+    self.assertEqual(learning.reason, 'StarPilot’s FLM tuning will attempt to automatically correct torque profiles as you drive.')
     self.assertTrue(self.owner.apply(required_change(learning)))  # Explicit Off for Ioniq.
     self.assertFalse(read_preference(self.params, self.cp).enabled)
     self.assertIsNone(self.params.get('ForceAutoTuneOff'))

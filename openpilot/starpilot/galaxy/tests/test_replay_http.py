@@ -34,9 +34,14 @@ class ReplayHTTPTest(unittest.TestCase):
     self.evicted = False
     self.media_ready = True
     self.replay_state = 'playing'
+    self.export_receipt = None
 
     def replay(payload):
       self.calls.append(payload)
+      if payload['op'] == 'export-file':
+        self.entered.set()
+        self.release.wait(2)
+        return {'ok': True, 'result': self.export_receipt}
       if payload['op'] == 'media':
         if self.evicted:
           return {'ok': True, 'result': {'available': False, 'code': 'media_evicted'}}
@@ -67,7 +72,7 @@ class ReplayHTTPTest(unittest.TestCase):
     self.server.server_close()
     self.temp.cleanup()
 
-  def request(self, path, payload=None, cookie=None, origin=True, local=True):
+  def request(self, path, payload=None, cookie=None, origin=True, local=True, method=None, extra_headers=None):
     headers = {} if local else {'Forwarded': 'for=203.0.113.8'}
     if cookie:
       headers['Cookie'] = cookie
@@ -75,9 +80,10 @@ class ReplayHTTPTest(unittest.TestCase):
       headers['Content-Type'] = 'application/json'
       if origin:
         headers['Origin'] = f'http://127.0.0.1:{self.server.server_port}'
+    headers.update(extra_headers or {})
     connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
     try:
-      connection.request('GET' if payload is None else 'POST', path, None if payload is None else json.dumps(payload), headers)
+      connection.request(method or ('GET' if payload is None else 'POST'), path, None if payload is None else json.dumps(payload), headers)
       response = connection.getresponse()
       return response.status, response.read(), dict(response.getheaders())
     finally:
@@ -94,6 +100,8 @@ class ReplayHTTPTest(unittest.TestCase):
     for path in ('/api/replay/catalog', f'/api/replay/status?clientId={CLIENT}',
                  '/api/replay/detail?routeId=00000042--abcdef1234',
                  f'/api/replay/media?sessionId={SESSION}&clientId={CLIENT}&epoch=1&sequence=0',
+                 f'/api/replay/export-download?exportId={SESSION}&clientId={CLIENT}',
+                 '/api/recordings/detail?routeId=00000042--abcdef1234',
                  '/api/recordings/local', '/api/recordings/segment-summary?segmentName=00000042--abcdef1234--0',
                  '/api/recordings/logs/00000042--abcdef1234', '/api/recordings/files/00000042--abcdef1234--0/rlog.zst',
                  '/api/recordings/media/00000042--abcdef1234--0',
@@ -102,7 +110,8 @@ class ReplayHTTPTest(unittest.TestCase):
         status, body, _ = self.request(path, cookie=cookie, local=False)
         self.assertEqual(status, 403)
         self.assertEqual(json.loads(body)['code'], 'local_only')
-    for path in ('/api/replay/start', '/api/replay/control', '/api/replay/stop', '/api/recordings/action', '/api/recordings/delete-videos'):
+    for path in ('/api/replay/start', '/api/replay/control', '/api/replay/stop', '/api/replay/export-start',
+                 '/api/recordings/action', '/api/recordings/delete-videos'):
       with self.subTest(path=path):
         status, body, _ = self.request(path, {'clientId': CLIENT}, cookie, local=False)
         self.assertEqual(status, 403)
@@ -132,6 +141,51 @@ class ReplayHTTPTest(unittest.TestCase):
     self.assertEqual(len(self.calls), count, 'Galaxy cannot ask the owner for a native viewer')
     self.assertEqual(self.request('/api/replay/start', {**payload, 'op': 'shell'}, first)[0], 400)
     self.assertEqual(self.request('/api/replay/media?sessionId=../x&clientId=' + CLIENT + '&epoch=1&sequence=0', cookie=first)[0], 400)
+
+  def test_export_scope_and_authenticated_private_download(self):
+    folder = self.root / 'exports' / SESSION
+    folder.mkdir(parents=True, mode=0o700)
+    folder.parent.chmod(0o700)
+    output = folder / 'replay.mp4'
+    output.write_bytes(b'exported-video-with-ui')
+    output.chmod(0o600)
+    self.export_receipt = {'id': SESSION, 'bytes': output.stat().st_size, 'filename': 'route-replay.mp4'}
+    path = f'/api/replay/export-download?exportId={SESSION}&clientId={CLIENT}'
+    self.assertEqual(self.request(path)[0], 401)
+    cookie = self.login()
+    payload = {'clientId': CLIENT, 'routeId': '00000042--abcdef1234', 'requestId': '4' * 32,
+               'expectedOwnerId': OWNER, 'segment': 0}
+    self.assertEqual(self.request('/api/replay/export-start', payload, cookie, origin=False)[0], 403)
+    self.assertEqual(self.request('/api/replay/export-start', payload, cookie)[0], 200)
+    self.assertEqual(self.calls[-1]['op'], 'export-start')
+    self.assertEqual(self.calls[-1]['segment'], 0)
+    self.assertNotEqual(self.calls[-1]['clientId'], CLIENT)
+    status, body, headers = self.request(path, cookie=cookie, extra_headers={'Range': 'bytes=2-7'})
+    self.assertEqual((status, body), (206, b'ported'))
+    self.assertEqual(headers['Content-Disposition'], 'attachment; filename="route-replay.mp4"')
+    self.assertEqual(headers['Cache-Control'], 'no-store')
+    status, body, headers = self.request(path, cookie=cookie, method='HEAD')
+    self.assertEqual((status, body), (200, b''))
+    self.assertEqual(int(headers['Content-Length']), output.stat().st_size)
+    self.assertEqual(self.request(path, cookie=cookie, extra_headers={'Range': 'bytes=500-'})[0], 416)
+    output.unlink()
+    output.symlink_to(self.root / 'access' / 'secret')
+    self.assertEqual(self.request(path, cookie=cookie)[0], 503)
+
+  def test_logout_during_export_receipt_withholds_download(self):
+    cookie = self.login()
+    self.export_receipt = {'id': SESSION, 'bytes': 1, 'filename': 'replay.mp4'}
+    self.release.clear()
+    responses = []
+    pending = threading.Thread(target=lambda: responses.append(self.request(
+      f'/api/replay/export-download?exportId={SESSION}&clientId={CLIENT}', cookie=cookie)))
+    pending.start()
+    self.assertTrue(self.entered.wait(2))
+    self.request('/api/auth/logout', {}, cookie)
+    self.release.set()
+    pending.join(2)
+    self.assertEqual(responses[0][0], 401)
+    self.assertNotIn(b'exported-video', responses[0][1])
 
   def test_selected_segment_reaches_shared_owner(self):
     cookie = self.login()

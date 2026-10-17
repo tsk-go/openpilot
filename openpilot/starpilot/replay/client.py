@@ -13,6 +13,7 @@ from openpilot.starpilot.storage import starpilot_storage_root
 
 MAX_REQUEST = 4096
 MAX_RESPONSE = 262144
+MAX_WORKER_STATUS = 65536
 
 
 def replay_root() -> Path:

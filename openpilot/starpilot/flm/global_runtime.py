@@ -47,13 +47,14 @@ class GlobalRuntime:
     self.health_services = ('carState', 'modelV2', 'vehicleParameters', 'lateralDelay', 'driverMonitoringState', 'extrinsicsCalibration')
     try:
       self.descriptor = selected_descriptor(cp, ci, controller)
-      if self.descriptor is not None and self.descriptor.domain != 'torque':
+      if self.descriptor is not None and self.descriptor.domain not in ('torque', 'torque_pid'):
         self.descriptor = None
       self.initial_values = baseline_values(controller) if self.descriptor is not None else ()
       self.baseline_revision = baseline_revision(self.descriptor, self.initial_values) if self.descriptor is not None else ''
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
       self.descriptor, self.initial_values, self.baseline_revision = None, (), ''
     self.source = self.profile = self.validation = self.stage = self.frame = None
+    self.native_refined = False
     from openpilot.starpilot.flm.learned_lifecycle import SettingsLeaseCache
 
     self.settings_cache = SettingsLeaseCache(self.descriptor.cp_sha256 if self.descriptor is not None else '')
@@ -61,9 +62,12 @@ class GlobalRuntime:
     self.identity_source_epoch = ''
     self.generation = 0
     self.owner = self.torque_owner = self.centre_source = None
+    self.effect_owner = self.effect_envelope = None
+    self.effect_full_hash = ''
     self.coefficient = 0.0
     self.session = ''
     self.outer_sequence = -1
+    self._runtime_admission_cache = None
     self.last_now = 0
     self.used = False
     self.eligible = False
@@ -94,6 +98,10 @@ class GlobalRuntime:
 
       self.observation = TorqueObservation()
       controller.automatic_flm_observation = self.observation
+    if self.descriptor is not None and self.descriptor.domain == 'torque_pid':
+      from openpilot.starpilot.flm.pid_stages import PidObservation
+      self.observation = PidObservation()
+      controller.automatic_flm_observation = self.observation
     if self.descriptor is not None:
       controller.automatic_flm_adapter = self
       if self.descriptor.domain == 'torque':
@@ -103,6 +111,11 @@ class GlobalRuntime:
         controller.response_adapter = self
 
   def _neutral(self, reason):
+    self.controller.automatic_flm_effects = None
+    if self.effect_owner is not None:
+      self.effect_owner.source = None
+      self.effect_owner.trace = None
+      self.effect_owner.applied_full = dict.fromkeys(self.effect_owner.applied_full, 0.)
     self.coefficient = 0.0
     if self.owner is not None:
       self.owner.applied = (0.0,) * len(self.owner.parameters)
@@ -115,6 +128,7 @@ class GlobalRuntime:
   def prepare(self, sm, *, now_ns, active, healthy, controller=None, manual_current=False, native_required=False, native_witness=None):
     """Bounded current source/admission checks; invoked immediately before LaC."""
     self.used, self.stage, self.frame, self.eligible = False, None, None, False
+    self.controller.automatic_flm_effects = None
     self.source = None
     # Capture a fresh V2 generation and calibration interruption before ANY
     # unrelated adapter/native/vehicle health gate can return.
@@ -125,7 +139,7 @@ class GlobalRuntime:
           sm.seen[SERVICE] and sm.alive[SERVICE] and sm.valid[SERVICE] and sm.freq_ok[SERVICE] and
           0 <= now_ns - int(sm.recv_time[SERVICE] * 1e9) <= SOURCE_LEASE_NS):
         envelope = sm[SERVICE]
-        if envelope.learning.sourceReceipt.version == 2:
+        if envelope.learning.sourceReceipt.version in (2, 3):
           early_source = read_source_receipt(SimpleNamespace(valid=True, autoSteeringLearning=envelope),
             now_ns=now_ns, cp_sha256=self.descriptor.cp_sha256)
           if early_source is not None and not tracker.generation:
@@ -162,12 +176,19 @@ class GlobalRuntime:
     try:
       current_values = baseline_values(self.controller)
       if current_values != self.initial_values:
+        from openpilot.starpilot.flm.native_baseline import accepts_refinement
+        receipt = getattr(self.controller, 'native_learning_refinement', None)
+        trusted = accepts_refinement(self.controller, receipt, before=self.initial_values, after=current_values, now_ns=now_ns)
         self.initial_values = current_values
-        self.baseline_revision = baseline_revision(self.descriptor, current_values)
-        self.identity_source_epoch = ''
-        self.profile = self.validation = self.torque_owner = self.owner = self.centre_source = None
-        self.snapshot_ns = 0
-        self._neutral('baseline_changed')
+        if trusted:
+          self.native_refined = True
+          self._neutral('native_baseline_pending_probe')
+        else:
+          self.baseline_revision = baseline_revision(self.descriptor, current_values)
+          self.identity_source_epoch = ''
+          self.profile = self.validation = self.torque_owner = self.owner = self.centre_source = None
+          self.snapshot_ns = 0
+          self._neutral('baseline_changed')
     except (AttributeError, TypeError, ValueError, OverflowError):
       self._neutral('baseline_unavailable')
       return
@@ -226,6 +247,8 @@ class GlobalRuntime:
         self.identity = identity
         self.generation += 1
         self.owner = self.torque_owner = self.centre_source = None
+        self.effect_owner = self.effect_envelope = None
+        self.effect_full_hash = ''
         self.profile = self.validation = None
         self.snapshot_ns = self.snapshot_sequence = 0
         self.session, self.outer_sequence = '', -1
@@ -234,7 +257,7 @@ class GlobalRuntime:
       self.eligible = bool(source.enabled and not source.manual and not self.live_manual and active and healthy)
       if not source.enabled or source.manual or self.live_manual or not active:
         raise ValueError('manual_or_off_or_inactive')
-      admission = read_runtime_admission(event)
+      admission = self._current_runtime_admission(sm,event)
       if admission is None:
         raise ValueError('collecting')
       profile, validation = admission
@@ -242,10 +265,15 @@ class GlobalRuntime:
         if self.validation is not None:
           self.replaced_native_model_revision = self.validation.physical_model_revision
         self.owner = self.torque_owner = self.centre_source = None
+        self.effect_owner = self.effect_envelope = None
+        self.effect_full_hash = ''
       if self.native_required and validation.physical_model_revision == self.replaced_native_model_revision:
         raise ValueError('native_identity_replaced')
       if validation.physical_model_revision == self.replaced_vm_model_revision:
         raise ValueError('vehicle_model_material_change')
+      if ((validation.native_baseline_values or self.native_refined) and
+          validation.native_baseline_values != current_values):
+        raise ValueError('native_baseline_pending_probe')
       if profile.identity != self.identity or validation.baseline_revision != self.baseline_revision:
         raise ValueError('profile_baseline_identity')
       outer = envelope.learning
@@ -258,11 +286,19 @@ class GlobalRuntime:
         raise ValueError('changed_or_reordered_admission')
       if session != self.session:
         self.owner = self.torque_owner = self.centre_source = None
+        self.effect_owner = self.effect_envelope = None
+        self.effect_full_hash = ''
       self.session, self.outer_sequence = session, sequence
       self.profile, self.validation = profile, validation
       if self.native_required:
         self.profile_native_identity = self.native_identity
-      if self.descriptor.domain == 'torque':
+      if self.descriptor.domain in ('torque', 'torque_pid') and profile.policy in ('event_effect_coordinate_v2', 'event_effect_restore_v1'):
+        self._prepare_effect(profile, validation, source, now_ns=now_ns, active=active, healthy=healthy)
+      elif self.descriptor.domain == 'torque_pid':
+        raise ValueError('PID requires qualified full-surface effect policy')
+      elif self.descriptor.domain == 'torque':
+        self.effect_owner = self.effect_envelope = None
+        self.effect_full_hash = ''
         names = [p.name.split('.') for p in profile.parameters]
         if len(names) != 2 or any(len(row) != 4 for row in names) or names[0][0] != 'centre' and (names[0][2] != 'left' or names[1][2] != 'right'):
           raise ValueError('torque_objective')
@@ -296,6 +332,74 @@ class GlobalRuntime:
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
       self._neutral('unavailable')
 
+  def _current_runtime_admission(self, sm, event):
+    # SubMaster alone owns recv_frame: a new delivery ALWAYS changes this key.
+    # Keep the original immutable reader alive so Python ID reuse cannot hit it.
+    # All current source/native/configuration/lease checks still run outside
+    # this parse-only cache on every Controls iteration.
+    try:
+      from capnp.lib.capnp import _DynamicStructReader
+      reader = sm[SERVICE]
+      frame = sm.recv_frame[SERVICE]
+      if type(frame) is not int or frame < 0 or not isinstance(reader, _DynamicStructReader):
+        raise ValueError('no owned immutable SubMaster delivery')
+      key = (frame, int(sm.logMonoTime[SERVICE]), float(sm.recv_time[SERVICE]))
+      cached = self._runtime_admission_cache
+      if cached is not None and cached[0] == key and cached[1] is reader:
+        return cached[2]
+      result = read_runtime_admission(event)
+      self._runtime_admission_cache = (key, reader, result)
+      return result
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+      self._runtime_admission_cache = None
+      return read_runtime_admission(event)
+
+
+  def _prepare_effect(self, profile, validation, source, *, now_ns, active, healthy):
+    from openpilot.starpilot.flm.canonical_surface_adapter import GROUPS, full_profile_sha256, NAMES
+    from openpilot.starpilot.flm.full_surface_profile import FullSurfaceEnvelope
+    from openpilot.starpilot.flm.event_objective import EffectObjective
+    from openpilot.starpilot.flm.selected_effects import EffectOwner
+
+    envelope = profile.effect_envelope
+    if not isinstance(envelope, FullSurfaceEnvelope):
+      raise ValueError('missing typed full30 envelope')
+    if self.descriptor.domain == 'torque_pid':
+      from openpilot.starpilot.flm.pid_stages import coordinates_supported
+      if not coordinates_supported(dict(envelope.coordinates)):
+        raise ValueError('PID profile requires an unavailable physical stage')
+    from openpilot.starpilot.flm.effect_admission_cache import admit_context
+    group = next((g for g, names in GROUPS.items() if set(envelope.trial_names).issubset(names)), None)
+    if group is None:
+      raise ValueError('unsupported canonical effect group')
+    objective = EffectObjective(group, envelope.trial_names, envelope.trial_anchor, source.source_epoch)
+    current_hash = self.effect_full_hash or full_profile_sha256(self.baseline_revision, dict.fromkeys(NAMES, 0.))
+    # A byte-identical accepted envelope may renew its live profile lease. A new
+    # proposal must compare-and-swap the exact previously accepted target.
+    renewing = envelope == self.effect_envelope
+    context = {'cp_sha256': self.descriptor.cp_sha256, 'controller_revision': self.descriptor.controller_revision,
+      'source_epoch': source.source_epoch, 'reset_generation': source.reset, 'selected_baseline_revision': self.baseline_revision,
+      'context_key': source.source_epoch, 'persistent_source_epoch': source.persistent_source_epoch,
+      'current_full_profile_sha256': envelope.prior_full_profile_sha256 if renewing else current_hash}
+    admit_context(envelope,profile=profile,**context)
+    previous = self.effect_owner
+    if (previous is None or previous.objective != objective or
+        previous.physical_model_revision != validation.physical_model_revision or not renewing):
+      owner = EffectOwner(self.identity, objective, selected_baseline_revision=self.baseline_revision,
+        physical_model_revision=validation.physical_model_revision, original_anchor=envelope.replay_anchor(),
+        applied_full=None if previous is None else previous.applied_full,
+        restore_envelope=envelope if profile.policy == 'event_effect_restore_v1' else None)
+    else:
+      owner = previous
+    owner.prepare(Admission(profile, now_ns, source.enabled, source.manual, healthy, validation),
+      active=active, current_context=context)
+    if not owner.owner.current_admission_valid:
+      raise ValueError('effect proof not currently admitted')
+    self.torque_owner = self.centre_source = None
+    self.effect_owner, self.effect_envelope = owner, envelope
+    self.effect_full_hash = envelope.full_profile_sha256
+    self.controller.automatic_flm_effects = owner
+
   def response_parameters(self):
     return (Parameter('response', self.descriptor.stage_revision, -0.03, 0.03, 0.03, 0.005, 1e-5 if self.descriptor.domain == 'curvature' else 0.01),)
 
@@ -314,7 +418,7 @@ class GlobalRuntime:
 
       self.snapshot = ()
       if self.identity and self.descriptor.domain != 'ford_curvature' and (not self.snapshot_ns or self.now_ns - self.snapshot_ns >= 1_000_000_000):
-        if self.descriptor.domain == 'torque':
+        if self.descriptor.domain in ('torque', 'torque_pid'):
           self.snapshot = capture_snapshot(self.controller, vm).values
         else:
           self.snapshot = ()
@@ -383,6 +487,8 @@ class GlobalRuntime:
 
   @property
   def applied_coordinates(self):
+    if self.effect_owner is not None and self.controller.automatic_flm_effects is self.effect_owner:
+      return self.effect_owner.applied_coordinates
     if self.centre_source is not None:
       return self.centre_source.owner.owner.applied
     return self.torque_owner.owner.applied if self.torque_owner is not None else (0.0, 0.0)
@@ -457,8 +563,14 @@ class GlobalRuntime:
     )
     if self.descriptor is None:
       return
-    coordinates = (self.coefficient,) if self.descriptor.domain != 'torque' else (self.applied_coordinates)
-    applied = bool(self.used and self.stage_effect and self.reason == 'qualified' and any(coordinates) and self.active and self.healthy)
+    if self.controller.automatic_flm_effects is self.effect_owner and self.effect_owner is not None:
+      self.used = self.used or self.effect_owner.used
+      self.stage_effect = self.stage_effect or self.effect_owner.changed
+    coordinates = (self.coefficient,) if self.descriptor.domain not in ('torque', 'torque_pid') else self.applied_coordinates
+    effect = self.effect_owner if self.controller.automatic_flm_effects is self.effect_owner else None
+    trace = effect.trace if effect is not None else None
+    has_effect = any(effect.applied_full.values()) if effect is not None else any(coordinates)
+    applied = bool(self.used and self.stage_effect and self.reason == 'qualified' and has_effect and self.active and self.healthy)
     self.outcome = ApplicationOutcome(
       self.identity,
       self.profile.sequence if self.profile is not None else 0,
@@ -468,6 +580,9 @@ class GlobalRuntime:
       'actual_stage_used' if applied else self.reason,
       self.baseline_revision,
       self.validation.physical_model_revision if self.validation is not None else '',
+      trace.envelope.manifest_sha256 if trace is not None else '',
+      trace.envelope.full_original_anchor if trace is not None else '',
+      trace.applied_full_profile_sha256 if trace is not None else '',
     )
 
     if (
@@ -496,7 +611,7 @@ class GlobalRuntime:
     if self.descriptor is None or self.frame is None or self.source is None or not self.identity:
       return None
     cs, vm, params, log, desired, curvature_limited, delay, requested, values, p, i, d, raw_command = self.frame
-    if self.descriptor.domain == 'torque':
+    if self.descriptor.domain in ('torque', 'torque_pid'):
       # Exact policy-specific normalized counterfactual trace is mandatory.
       trace = self.observation.finish_frame(
         self.controller, log, selected_command=raw_command, prior_policy_output=self.prior_policy_output, prior_policy_ff=self.prior_policy_ff
@@ -504,16 +619,22 @@ class GlobalRuntime:
       if trace is None:
         return None
       schema, stage_values, coordinates = trace
+      if self.controller.automatic_flm_effects is not None:
+        # Legacy FF coordinate space remains exact neutral; full30 is explicit.
+        coordinates = (0.0, 0.0)
       if self.centre_raw:
         stage_values = tuple(stage_values) + self.centre_raw
-      stage_values = tuple(stage_values) + (
-        ('actual_delta_ff', self.torque_result[0]),
-        ('actual_delta_threshold', self.torque_result[1]),
-        ('centre_threshold_delta', self.centre_result[0]),
-        ('centre_extra_deadband_deg', self.centre_result[1]),
-        ('centre_parameter_left', self.applied_coordinates[0] if self.centre_source is not None else 0.0),
-        ('centre_parameter_right', self.applied_coordinates[1] if self.centre_source is not None else 0.0),
-      )
+      if self.descriptor.domain == 'torque_pid':
+        stage_values = tuple(stage_values) + (('actual_delta_ff', self.observation.learned_ff - self.observation.stage.baseline_ff),)
+      else:
+        stage_values = tuple(stage_values) + (
+          ('actual_delta_ff', self.torque_result[0]),
+          ('actual_delta_threshold', self.torque_result[1]),
+          ('centre_threshold_delta', self.centre_result[0]),
+          ('centre_extra_deadband_deg', self.centre_result[1]),
+          ('centre_parameter_left', self.applied_coordinates[0] if self.centre_source is not None else 0.0),
+          ('centre_parameter_right', self.applied_coordinates[1] if self.centre_source is not None else 0.0),
+        )
       if self.centre_source is not None:
         coordinates = (0.0, 0.0)
       # Raw basis is identified by schema; separate learner actual replay turns
@@ -652,7 +773,7 @@ class GlobalRuntime:
       replay_inputs=self.replay_inputs,
       snapshot_sequence=self.snapshot_sequence,
       turn_assist=self.descriptor.turn_assist,
-      applied_parameter_names=tuple(p.name for p in self.profile.parameters) if current_profile else (),
+      applied_parameter_names=tuple(p.name for p in self.profile.parameters) if current_profile and self.controller.automatic_flm_effects is None else (),
       native_required=self.native_required,
       native_observed_ns=native_observed,
       native_expires_ns=native_expires,
@@ -661,4 +782,6 @@ class GlobalRuntime:
       applied_profile_sequence=self.profile.sequence if current_profile else 0,
       applied_profile_observed_ns=self.profile.observed_ns if current_profile else 0,
       applied_profile_expires_ns=self.profile.expires_ns if current_profile else 0,
+      effect_trace=self.effect_owner.trace if self.controller.automatic_flm_effects is self.effect_owner and self.effect_owner is not None else None,
+      effect_prepare_ns=self.now_ns,
     )

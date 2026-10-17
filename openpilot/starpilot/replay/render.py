@@ -15,6 +15,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, cast
 
+from openpilot.starpilot.replay.client import MAX_WORKER_STATUS
 from openpilot.starpilot.replay.frames import ReplayFramePublisher, SESSION
 from openpilot.starpilot.replay.media import MediaMux, MediaStore
 
@@ -160,14 +161,17 @@ def seed_display(session_dir: Path):
 
 
 class Engine:
-  def __init__(self, route_id: str, data_dir: Path, *, wide: bool, cabin: bool, start_segment: int | None = None):
+  def __init__(self, route_id: str, data_dir: Path, *, wide: bool, cabin: bool, start_segment: int | None = None,
+               preload_seek: bool = False):
     from openpilot.common.basedir import BASEDIR
     command = [str(Path(BASEDIR) / 'openpilot/tools/replay/replay'), '--machine', '--data_dir', str(data_dir),
-               '--no-loop', '--cache', '2']
+               '--no-loop', '--cache', '3']
     if wide:
       command.append('--wide-road')
     if cabin:
       command.append('--cabin')
+    if preload_seek:
+      command.append('--preload-seek')
     if start_segment is not None:
       command.extend(['--start-segment', str(start_segment)])
     command.append(route_id)
@@ -187,10 +191,10 @@ class Engine:
   def _read(self):
     try:
       while not self.closed.is_set():
-        line = self.process.stdout.readline(65537)
+        line = self.process.stdout.readline(MAX_WORKER_STATUS + 1)
         if not line:
           break
-        if len(line) > 65536 or not line.endswith('\n'):
+        if len(line) > MAX_WORKER_STATUS or not line.endswith('\n'):
           raise ValueError('Invalid replay engine status')
         value = json.loads(line)
         if value.get('event') == 'status':
@@ -574,14 +578,20 @@ class Compositor:
     self.resources.close()
 
 
-def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: str, emit, start_segment: int | None = None):
+def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: str, emit,
+        start_segment: int | None = None, export_budget: int = 0):
   session_dir = validate_context(session_dir)
+  from openpilot.common.hardware import HARDWARE
+  from openpilot.common.realtime import set_core_affinity
+  if target == 'native' and HARDWARE.get_device_type() in ('tici', 'tizi', 'mici'):
+    # Leave the isolated UI/GPU CPUs before the engine and renderer start threads.
+    set_core_affinity([0, 1, 2, 3, 4, 5])
   os.environ['STARPILOT_PROJECTION_READ_ONLY'] = '1'
   os.environ['BIG'] = '1' if profile == 'large' else '0'
   os.environ['SCALE'] = '1'
   values = seed_display(session_dir)
-  from openpilot.starpilot.replay.catalog import ReplayCatalog
-  detail = ReplayCatalog(data_dir).detail(route_id)
+  from openpilot.starpilot.galaxy.route_inventory import RouteInventory
+  detail = RouteInventory(data_dir).detail(route_id)
   if not detail.get('playable'):
     raise ValueError(detail.get('reason') or 'Recorded route is unavailable')
   sources = {name for segment in detail['segments'] for name in segment['sourceFiles']}
@@ -592,8 +602,7 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
   width, height = SIZES[target][profile]
   began = time.monotonic()
   with ExitStack() as resources:
-    # Route preparation and decoding must not inherit the projection renderer's idle scheduling.
-    engine = Engine(route_id, data_dir, wide=wide, cabin=cabin, start_segment=start_segment)
+    engine = Engine(route_id, data_dir, wide=wide, cabin=cabin, start_segment=start_segment, preload_seek=target == 'native')
     resources.callback(engine.close)
     core = Compositor(profile, width, height, nv12=target == 'web', wide=wide, cabin=cabin)
     resources.callback(core.close)
@@ -620,18 +629,26 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
     media = None
     encoder = None
     mux = None
+    exporter = None
+    if export_budget:
+      from openpilot.starpilot.replay.export import ExportVideo, MAX_EXPORT_BYTES, export_ranges
+      if target != 'web' or not 0 < export_budget <= MAX_EXPORT_BYTES:
+        raise ValueError('Invalid replay export budget')
     if target == 'native':
-      publisher = ReplayFramePublisher(session_dir / 'frame', session_dir.name, profile, width, height)
+      # Keep frames in RAM to avoid disk writeback stalls.
+      publisher = ReplayFramePublisher(Path(os.environ['SP_REPLAY_CLOCK_PATH']).with_name('frame'), session_dir.name, profile, width, height)
       resources.callback(publisher.close)
     else:
       from openpilot.starpilot.system.android_auto.hw_encoder import HardwareH264Encoder
-      encoder = HardwareH264Encoder(width, height, bitrate_kbps=4000)
+      from openpilot.starpilot.replay.export import BITRATE_KBPS
+      encoder = HardwareH264Encoder(width, height, bitrate_kbps=BITRATE_KBPS)
       if not encoder.supports_nv12:
         raise RuntimeError('Replay requires the existing NV12 hardware encoder ABI')
       resources.callback(encoder.close)
-      media = MediaStore(session_dir, session_dir.name, width, height)
+      media = None if export_budget else MediaStore(session_dir, session_dir.name, width, height)
       resources.callback(lambda: mux.close() if mux is not None else None)
     last_emit = last_draw = 0.0
+    last_camera_frame = None
     published_at = 0.0
     published_epoch = 0
     clock_epoch = 0
@@ -649,6 +666,9 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
         raise RuntimeError(engine.error or (engine.status or {}).get('error') or 'Replay engine exited unexpectedly')
       if status:
         core.wall_minus_mono_ns = parse_wall_offset(status.get('wallMinusMonoNs'))
+        if export_budget and exporter is None and status.get('segmentRanges'):
+          exporter = ExportVideo(session_dir, width, height, export_ranges(status, start_segment), export_budget)
+          resources.callback(exporter.close)
       sample = core.update()
       if sample is not None and sample.epoch is not None:
         clock_epoch = max(clock_epoch, sample.epoch)
@@ -663,6 +683,11 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
           if epoch == sample.epoch:
             if publisher is not None:
               publisher.publish(pixels, epoch=epoch, position=position, captured_ns=captured_ns)
+            elif export_budget:
+              if exporter is not None:
+                packet, keyframe = encoder.encode_nv12(pixels, keyframe=not exporter.seen or epoch != published_epoch or exporter.frames % 10 == 0)
+                exporter.frame(packet, position=position, keyframe=keyframe)
+                published_epoch, published_at = epoch, captured_ns / 1e9
             else:
               new_epoch = epoch != media.epoch
               pts_us, keyframe = timeline.next(epoch, captured_ns)
@@ -690,6 +715,12 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
         media.publish(fragment, position=position, keyframe=keyframe)
         published_epoch, published_at = epoch, captured_ns / 1e9
         acknowledged = status.get('lastRequestId')
+      if exporter is not None and status and exporter.advance(engine, status, core.readback.pending):
+        final = {**status, 'error': None, 'frameReady': False, 'mediaReady': False, 'exportProgress': 1.}
+        emit({**final, 'exportState': 'finalizing'})
+        exporter.finalize()
+        emit({**final, 'exportState': 'ready'})
+        return
       clients = (core.camera.client, core.camera._target_client, core.pip_stream._client)
       primed_clients.intersection_update(client for client in clients if client is not None)
       needs_prime = (not published_epoch or core.camera.frame is None or core.camera._switching or
@@ -705,14 +736,23 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
         if engine.command({'op': 'seek', 'position': status['position'], 'requestId': status.get('lastRequestId') or '0' * 32}, reprime=True):
           core.ui.replay_needs_reprime = False
           valid = False
+      camera_frame = None
       interval = FRAME_INTERVAL
+      client = core.camera.client
+      if (target == 'native' and valid and sample is not None and status is not None and
+          client is not None and core._primary_matches()):
+        # Follow camera frames instead of sampling them on a second timer.
+        camera_frame = (sample.epoch, core.camera.stream_type, client.frame_id, client.timestamp_sof)
+        interval = 0 if status.get('rate', 1) <= 1 else FRAME_INTERVAL
       if (valid and status is not None and sample is not None and sample.now_ns is not None and
+          (camera_frame is None or camera_frame != last_camera_frame) and
           not core.readback.pending and now - last_draw >= interval):
         origin = status.get('routeStartNs')
         if type(origin) is not int:
           raise RuntimeError('Replay engine did not expose its route clock origin')
         position = min(status['end'], max(status['start'], (sample.now_ns - origin) / 1e9))
         if core.draw(sample.epoch, position, time.monotonic_ns()):
+          last_camera_frame = camera_frame
           # Keep the frame cadence after delivery jitter, without accumulating a catch-up queue.
           last_draw = max(last_draw + interval, now - interval)
       if status and now - last_emit >= .1:
@@ -728,6 +768,8 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
           value['lastRequestId'] = acknowledged
         if 'seekRanges' in status:
           value['seekRanges'] = status['seekRanges']
+        if 'segmentRanges' in status:
+          value['segmentRanges'] = status['segmentRanges']
         warnings = [*detail.get('warnings', []), *status.get('sourceWarnings', [])]
         if recorded_wall_clock(sample, core.wall_minus_mono_ns) is None:
           warnings.append('Recorded wall-clock time is unavailable; clock and arrival time are hidden.')
@@ -740,8 +782,10 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
           warnings.append('Recorded longitudinal plan unavailable; throttle feedback is neutral.')
         value['sourceWarnings'] = list(dict.fromkeys(str(warning)[:160] for warning in warnings))[:32]
         value.update(frameReady=ready, mediaReady=bool(ready and media is not None),
-                     framePath=str(session_dir / 'frame') if publisher is not None else None,
+                     framePath=str(publisher.path) if publisher is not None else None,
                      media=media.summary() if ready and media is not None else None)
+        if export_budget:
+          value.update(exportState='rendering', exportProgress=exporter.progress if exporter is not None else 0.)
         emit(value)
         last_emit = now
         if status['state'] == 'failed':
@@ -763,6 +807,7 @@ def main():
   parser.add_argument('--target', choices=SIZES, required=True)
   parser.add_argument('--profile', choices=('large', 'compact'), required=True)
   parser.add_argument('--start-segment', type=int)
+  parser.add_argument('--export-budget', type=int, default=0)
   args = parser.parse_args()
   # Keep native library traces and UI diagnostics off the JSON protocol descriptor.
   protocol = os.fdopen(os.dup(sys.stdout.fileno()), 'w', buffering=1)
@@ -771,7 +816,7 @@ def main():
   def emit(value):
     print(json.dumps(value, allow_nan=False, separators=(',', ':')), file=protocol, flush=True)
   try:
-    run(args.session_dir, args.route_id, args.data_dir, args.target, args.profile, emit, args.start_segment)
+    run(args.session_dir, args.route_id, args.data_dir, args.target, args.profile, emit, args.start_segment, args.export_budget)
   except Exception as error:
     emit({'event': 'status', 'state': 'failed', 'position': 0, 'start': 0, 'end': 0, 'rate': 1,
           'paused': True, 'epoch': 0, 'lastRequestId': None, 'error': str(error)[:240],

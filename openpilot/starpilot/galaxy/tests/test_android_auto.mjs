@@ -18,7 +18,8 @@ assert.equal(validPromptInput({ kind: "passkey" }, "1234567"), false)
 assert.equal(validPromptInput(prompt, ""), true)
 assert.match(AndroidAutoPage.template, /Check that this code matches your car/)
 assert.match(AndroidAutoPage.template, /Cancel Search \/ Pairing/)
-assert.match(AndroidAutoPage.template, /Wired USB setup is unavailable/)
+assert.match(AndroidAutoPage.template, /:row="wiredRow"[^>]*:disabled="wiredDisabled"/)
+assert.match(AndroidAutoPage.template, /A direct USB cable from the comma to the car is supported as Wired USB Connection/)
 assert.doesNotMatch(AndroidAutoPage.template, /v-html|autoaccept/i)
 const app = readFileSync(new URL("../web/js/app.js", import.meta.url), "utf8")
 assert.match(app, /AndroidAutoPage v-else-if="route\.path === '\/android-auto'"/)
@@ -159,6 +160,24 @@ function page(selectedSetup = setup) {
   for (const [key, method] of Object.entries(AndroidAutoPage.methods)) vm[key] = method.bind(vm)
   return vm
 }
+// Wired setup is available, while the existing parked/session/ownership gates remain enforced.
+const wiredSetup = page()
+wiredSetup.runtime = { connection: "wireless", running: false }
+assert.equal(wiredSetup.wiredDisabled, false)
+for (const field of ["enabled", "parked"]) {
+  const blocked = page({ ...setup, [field]: false })
+  assert.equal(blocked.wiredDisabled, true, field)
+}
+wiredSetup.pairing = { active: true }
+assert.equal(wiredSetup.wiredDisabled, true, "pairing owns the connection")
+wiredSetup.pairing = null
+wiredSetup.runtime.running = true
+assert.equal(wiredSetup.wiredDisabled, true, "a running session cannot change connection")
+wiredSetup.runtime = { connection: "wireless", running: false, wired_blocked: "USB is busy" }
+assert.equal(wiredSetup.wiredDisabled, true, "another USB owner blocks enabling wired mode")
+wiredSetup.runtime.connection = "wired"
+assert.equal(wiredSetup.wiredDisabled, false, "the existing wired connection can still be disabled")
+
 const uploadPage = page({ ...setup, enabled: false })
 const uploadCalls = []
 uploadPage.feed = {

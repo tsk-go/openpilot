@@ -572,7 +572,8 @@ class SettingsGateway:
         return False
       fresh = self.context.sample() if live else ctx
       return bool(fresh.parked and not fresh.editing_saved_vehicle and fresh.cp_raw == ctx.cp_raw)
-    return DeveloperSettingsOwner(self.params, authorized)
+    return DeveloperSettingsOwner(self.params, authorized,
+                                  panda_wake=self._owner(ctx, live=live, session_valid=session_valid).panda_wake)
 
   def _state(self, page: str, ctx: AuthorityContext):
     if page == "developer":

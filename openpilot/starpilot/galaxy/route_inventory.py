@@ -1,4 +1,4 @@
-"""Bounded, local replay inventory and read leases; never decode or alter sources."""
+"""Bounded local route inventory and read leases shared by Galaxy and replay; never decode or alter sources."""
 
 from __future__ import annotations
 
@@ -73,8 +73,8 @@ def _sources(fd: int) -> dict[str, tuple[int, int, int, int]]:
       if entry.name not in FILES:
         continue
       info = entry.stat(follow_symlinks=False)
-      if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
-        raise CatalogError('route_unavailable', 'A route source is empty or is not a regular file')
+      if not stat.S_ISREG(info.st_mode):
+        raise CatalogError('route_unavailable', 'A route source is not a regular file')
       if _identity(info) != _identity(os.stat(entry.name, dir_fd=fd, follow_symlinks=False)):
         raise CatalogError('route_changed', 'The route changed while it was being inspected')
       sources[entry.name] = _identity(info)
@@ -108,7 +108,7 @@ def _segment(name: str) -> dict:
           'fileTime': None, 'provider': None, 'logFiles': [], 'logBytes': {}, 'startTime': None, 'endTime': None}
 
 
-class ReplayCatalog:
+class RouteInventory:
   def __init__(self, root: Path | None = None):
     self.root = Path(root) if root is not None else Path(Paths.log_root())
     self.library = RecordingLibrary(DriveHistory(self.root))
@@ -127,9 +127,10 @@ class ReplayCatalog:
     route = {'routeId': route_id, 'displayName': route_id, 'source': 'local', 'segmentCount': len(names),
              'fileTime': None, 'provider': None, 'segments': [_segment(name) for name in names],
              'startTime': None, 'endTime': None, 'availability': 'unavailable', 'playable': False,
-             'reason': None, 'warnings': []}
+             'reason': None, 'warnings': [], 'videoBytes': dict.fromkeys(('fcamera', 'dcamera', 'ecamera', 'qcamera'), 0)}
     opened = []
     error = None
+    content_error = None
     numbers = [segment['number'] for segment in route['segments']]
     if len(names) > MAX_ROUTE_SEGMENTS:
       error = CatalogError('scan_incomplete', 'This route exceeds the 512-segment replay limit')
@@ -148,8 +149,14 @@ class ReplayCatalog:
           if not _same_directory(fd, root_fd, segment['segmentName']):
             raise CatalogError('route_changed', 'A route segment changed')
           sources = _sources(fd)
+          if any(identity[2] == 0 for identity in sources.values()):
+            content_error = CatalogError('route_unavailable', 'A route source is empty; replay is unavailable')
           for name, identity in sources.items():
+            if identity[2] == 0:
+              continue
             segment['files'][FILES[name]] = True
+            if FILES[name] in route['videoBytes']:
+              route['videoBytes'][FILES[name]] += identity[2]
             if name.startswith(('rlog.', 'qlog.')):
               segment['logBytes'][name] = identity[2]
           segment['sourceFiles'] = sorted(sources)
@@ -173,9 +180,8 @@ class ReplayCatalog:
       route['displayName'] = display_name(route['displayName'])
     except ValueError:
       route['displayName'] = route_id
-    for segment in route['segments']:
-      segment.pop('logFiles', None)
-      segment.pop('logBytes', None)
+    route['inventoryComplete'] = error is None
+    error = error or content_error
     route['fileTime'] = min((segment['fileTime'] for segment in route['segments'] if segment['fileTime'] is not None), default=None)
     providers = {segment['provider'] for segment in route['segments']}
     route['provider'] = next(iter(providers)) if len(providers) == 1 else None
@@ -253,7 +259,7 @@ class ReplayCatalog:
 
 class SourceLease:
   """Shared directory locks protect sources from cooperating deletion paths."""
-  def __init__(self, catalog: ReplayCatalog, route_id: str):
+  def __init__(self, catalog: RouteInventory, route_id: str):
     self.catalog, self.route_id = catalog, route_id
     self.root_fd, self.opened = -1, []
     try:

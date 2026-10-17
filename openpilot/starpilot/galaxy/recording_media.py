@@ -122,9 +122,8 @@ class VerifiedRoute:
       raise ValueError('Invalid recording route')
     self.name, self.camera, self.sources = name, camera, []
     try:
-      inventory = DriveHistory(root).snapshot()
-      route = next((route for route in inventory['routes'] if route['routeId'] == name), None)
-      if inventory['scanIncomplete'] or route is None:
+      route = DriveHistory(root).detail(name)
+      if not route['inventoryComplete']:
         raise RecordingMediaMissing
       for segment in route['segments']:
         if segment['files'][camera]:

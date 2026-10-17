@@ -197,6 +197,45 @@ def test_straddle_during_seeking_requests_one_renderer_reprime():
   assert not ui.replay_sample.valid
 
 
+@pytest.mark.parametrize('paused', (False, True))
+@pytest.mark.parametrize('refresh', ('current', 'unread', 'partial', 'missing', 'future', 'invalid'))
+@pytest.mark.parametrize('service', ('carControl', 'narrowRoadEncodeIdx'))
+def test_seek_primer_received_after_a_straddle_avoids_reseeking(paused, refresh, service):
+  from openpilot.tools.replay.display_clock import ClockSample
+  from openpilot.starpilot.ui.tests.test_runtime_snapshot import NOW
+  old = ClockSample(NOW, None, NOW, epoch=1, valid=True)
+  seeking = ClockSample(None, None, NOW, epoch=2, paused=paused)
+  ready = ClockSample(NOW, NOW + 2_000_000_000, NOW, epoch=2, paused=paused, valid=True)
+  ui = replay_owner(old)
+  ui.sm.sock[service] = object()
+  ui.sm.static_freq_services.add(service)
+  ui.sm.put(service, NS(latActive=True))
+  ui.replay_clock.sample.side_effect = [old, seeking, ready, ready]
+  receives = 0
+
+  def receive(_):
+    nonlocal receives
+    receives += 1
+    ui.sm.frame += 1
+    ui.sm.updated = dict.fromkeys(ui.sm.sock, False)
+    if receives == 1 and refresh != 'unread' or receives == 2 and refresh != 'missing':
+      ui.sm.put(service, NS(latActive=True), frame=ui.sm.frame)
+      ui.sm.valid[service] = refresh != 'invalid'
+      stamp = ready.boot_ns if service == 'narrowRoadEncodeIdx' else ready.now_ns
+      assert stamp is not None
+      ui.sm.logMonoTime[service] = stamp + (refresh == 'future')
+    if receives == 1 and refresh == 'partial':
+      ui.sm.put('selfdriveState', NS(enabled=True), frame=ui.sm.frame)
+
+  ui.sm.update = receive
+  ui.update()
+  assert ui.replay_needs_reprime and not ui.sm.seen[service]
+  ui.update()
+  assert ui.replay_sample.valid
+  assert ui.replay_needs_reprime == (refresh not in ('current', 'unread'))
+  assert not ui.sm.seen['selfdriveState']
+
+
 def test_missing_clock_heartbeat_does_not_discard_same_epoch_paused_data():
   from openpilot.tools.replay.display_clock import ClockSample
   from openpilot.starpilot.ui.tests.test_runtime_snapshot import NOW

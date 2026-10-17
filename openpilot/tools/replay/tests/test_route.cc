@@ -2,6 +2,7 @@
 #include "common/hardware/hw.h"
 #include "tools/replay/replay.h"
 #include "tools/replay/route.h"
+#include "tools/replay/filereader.h"
 #include <filesystem>
 #include <fstream>
 #include <fcntl.h>
@@ -102,6 +103,24 @@ void test_machine_camera_time() {
   CHECK(raw.getRoot<cereal::Event>().getNarrowRoadEncodeIdx().getTimestampSof() == 10000000000ULL);
 }
 
+void test_bounded_file_reader() {
+  char path[] = "/tmp/replay-reader-XXXXXX";
+  unique_fd fd(mkstemp(path));
+  REQUIRE(fd >= 0);
+  const std::string data(128 * 1024 + 17, '\0');
+  REQUIRE(write(fd, data.data(), data.size()) == data.size());
+  CHECK(FileReader(false, data.size()).read(path) == data);
+  CHECK(FileReader(false, data.size() - 1).read(path).empty());
+  CHECK(FileReader(false).read(path) == data);
+  std::atomic<bool> abort = true;
+  CHECK(FileReader(false, data.size()).read(path, &abort).empty());
+  REQUIRE(unlink(path) == 0);
+#ifdef __linux__
+  CHECK(FileReader(false, data.size()).read("/proc/self/fd/" + std::to_string(int(fd))) == data);
+#endif
+  CHECK(FileReader(false, data.size()).read(path).empty());
+}
+
 class ThrowingVideoDecoder : public VideoDecoder {
 public:
   bool open(AVCodecParameters *, bool) override { return true; }
@@ -179,6 +198,7 @@ int main(int argc, char **argv) {
     test_replay_recorder_only_service();
     test_local_sources();
     test_machine_camera_time();
+    test_bounded_file_reader();
     test_decoder_exception_is_a_failed_frame();
     if (argc == 3 || argc == 4) {
       REQUIRE(argc == 3 || std::string(argv[3]) == "--hardware");

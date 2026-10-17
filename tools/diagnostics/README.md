@@ -110,6 +110,8 @@ Replay compatibility checks:
   openpilot/starpilot/galaxy/tests/test_replay_http.py
 node openpilot/starpilot/galaxy/tests/test_replay.mjs
 node openpilot/starpilot/galaxy/tests/test_replay_media.mjs
+node openpilot/starpilot/galaxy/tests/test_replay_export.mjs
+node openpilot/starpilot/galaxy/tests/test_record_history.mjs
 ```
 
 ## Offline longitudinal trace

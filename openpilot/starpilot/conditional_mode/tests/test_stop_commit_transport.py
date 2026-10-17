@@ -118,7 +118,7 @@ class TestStopCommitTransport(unittest.TestCase):
   def sample(self, *, invalid=False, lead=False, horizon=20., manual=ManualIntent.NONE, alive=True, gas=False,
              unavailable=None, traffic_verdict=None, traffic_owner_present=None, cp=CP, standstill=False,
              model_should_stop=True, enabled=True, ego_speed=None, raw_speed=0.,
-             model_position=None, model_velocity=None):
+             model_position=None, model_velocity=None, forcing=False, stop_sign=False):
     now = MONO + self.tick * 50_000_000
     self.tick += 1
     payloads = serialized_scene(stamp=BOOT+now-MONO-2_000_000, horizon=horizon, speed=4.27,
@@ -158,13 +158,13 @@ class TestStopCommitTransport(unittest.TestCase):
       sm.alive[unavailable] = False
     context = ConditionalOwnerContext(
       traffic_mode=ObservedBool(False, now-2_000_000),
-      stop_sign_confirmed=ObservedBool(False, now-2_000_000),
-      forcing_stop=ObservedBool(False, now-2_000_000),
+      stop_sign_confirmed=ObservedBool(stop_sign, now-2_000_000),
+      forcing_stop=ObservedBool(forcing, now-2_000_000),
       dashboard_stop_sign=ObservedBool(False, now-2_000_000),
       slc_experimental=ObservedBool(False, now-2_000_000),
       previous_experimental=ObservedBool(False, now-2_000_000),
       red_light=ObservedBool(False, now-2_000_000),
-      plan_forcing_stop=ObservedBool(False, now-2_000_000),
+      plan_forcing_stop=ObservedBool(forcing, now-2_000_000),
       plan_should_stop=ObservedBool(False, now-2_000_000),
       pedal_override=ObservedBool(gas, now-2_000_000), plan_allow_throttle=ObservedBool(True, now-2_000_000))
     if traffic_owner_present is not None:
@@ -231,8 +231,8 @@ class TestStopCommitTransport(unittest.TestCase):
     cases = ((RED_97_X, RED_97_V, False, 0., 0.),
              (CLEAR_97_X, CLEAR_97_V, True, 0., 0.),
              (material_tail, CLEAR_97_V, False, 0., 0.),
-             (CLEAR_97_X, CLEAR_97_V, False, .02, 0.),
-             (CLEAR_97_X, CLEAR_97_V, False, 0., .01))
+             (CLEAR_97_X, CLEAR_97_V, False, .06, 0.),
+             (CLEAR_97_X, CLEAR_97_V, False, 0., .06))
     for position, velocity, should_stop, speed, raw in cases:
       for _ in range(16):
         _, result = self.sample(standstill=True, ego_speed=speed, raw_speed=raw,
@@ -255,6 +255,33 @@ class TestStopCommitTransport(unittest.TestCase):
         self.assertFalse(result.experimental)
     self.assertTrue(released)
     self.assertFalse(self.host.projector.stop_detector.committed)
+
+  def test_departing_lead_stationary_prefix_retains_model_clear_release_guards(self):
+    self.prime()
+    # Establish the actual moving lead detector before reaching the light.
+    for _ in range(20):
+      self.sample(lead=True, horizon=70., model_should_stop=True)
+    self.assertTrue(self.host.projector.lead_detector.tracked)
+    short = tuple(value * 53.9 / CLEAR_97_X[-1] for value in CLEAR_97_X)
+    for position, stopping, unavailable, forcing in ((CLEAR_97_X, True, None, False), (short, False, None, False),
+                                                    (CLEAR_97_X, False, 'modelV2', False)):
+      for _ in range(14):
+        self.sample(lead=True, standstill=True, ego_speed=0., model_should_stop=stopping,
+                    model_position=position, model_velocity=CLEAR_97_V, unavailable=unavailable, forcing=forcing)
+        with self.subTest(stopping=stopping, unavailable=unavailable, forcing=forcing, endpoint=position[-1]):
+          self.assertTrue(self.host.projector.stop_detector.committed)
+    for tick in range(16):
+      proposal, _ = self.sample(lead=True, standstill=True, ego_speed=0., model_should_stop=False,
+                                model_position=CLEAR_97_X, model_velocity=CLEAR_97_V)
+      self.assertIsNone(proposal.projected.model_horizon_m)
+      if tick < 10:
+        self.assertTrue(self.host.projector.stop_detector.committed)
+    self.assertFalse(self.host.projector.stop_detector.committed)
+
+    for _ in range(16):
+      proposal, _ = self.sample(lead=True, standstill=True, ego_speed=0., model_should_stop=False,
+                                model_position=CLEAR_97_X, model_velocity=CLEAR_97_V, forcing=True)
+      self.assertTrue(proposal.projected.scene.standstill_stop_hold)
 
   def test_fresh_invalid_geometry_and_unknown_lead_tracking_preserve_actual_transport(self):
     self.prime()

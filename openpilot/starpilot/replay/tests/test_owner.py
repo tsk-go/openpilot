@@ -185,6 +185,8 @@ def test_explicit_actions_retries_and_no_takeover(owner):
   assert start(value)['sessionId'] == first['sessionId']
   wait_for(lambda: value.status['state'] == 'paused')
   assert len(children) == 1
+  frame_path = Path('/dev/shm') / ('msgq_replay-' + first['sessionId'][:24]) / 'frame'
+  assert value.dispatch({'op': 'status', 'clientId': CLIENT})['framePath'] == str(frame_path)
   command = control(value, 'pause', 'paused', False)
   accepted = value.dispatch(command)
   wait_for(lambda: value.pending is None)
@@ -201,6 +203,7 @@ def test_explicit_actions_retries_and_no_takeover(owner):
   wait_for(lambda: value.worker is None)
   assert children[0].poll() is not None and catalog.released == 1
   assert not list((value.root / 'sessions').iterdir())
+  assert not frame_path.parent.exists()
 
 
 def test_live_revocation_kills_only_fixture_and_releases_sources(owner):
@@ -423,7 +426,7 @@ def test_gap_seek_is_rejected_without_losing_owned_viewer(owner):
 
 def test_real_machine_uses_owner_created_clock_and_cleans_it(tmp_path, monkeypatch):
   from openpilot.common.basedir import BASEDIR
-  from openpilot.starpilot.replay.catalog import ReplayCatalog
+  from openpilot.starpilot.galaxy.route_inventory import RouteInventory
   from openpilot.tools.replay.display_clock import DisplayClockReader
   from openpilot.tools.replay.tests.test_machine import segment
 
@@ -460,7 +463,7 @@ def test_real_machine_uses_owner_created_clock_and_cleans_it(tmp_path, monkeypat
     children.append(child)
     return child
 
-  value = ReplayOwner(ReplayCatalog(routes), root=tmp_path / 'replay', authority=lambda: True, spawn=spawn)
+  value = ReplayOwner(RouteInventory(routes), root=tmp_path / 'replay', authority=lambda: True, spawn=spawn)
   try:
     started = start(value)
     wait_for(lambda: value.status['state'] == 'paused')
@@ -556,3 +559,18 @@ def test_media_batch_keeps_owner_and_authority_checks(owner):
   allowed[0] = False
   with pytest.raises(Rejected, match='not offroad'):
     value.dispatch(request)
+
+
+def test_complete_segment_mapping_fits_worker_protocol(owner, tmp_path):
+  from openpilot.starpilot.replay.client import MAX_WORKER_STATUS
+  value, _, _, _ = owner
+  value.status['target'] = 'web'
+  ranges = [[i * 60.123456789, (i + 1) * 60.123456789] for i in range(512)]
+  status = {**value._idle(), 'event': 'status', 'state': 'paused', 'end': ranges[-1][1],
+            'seekRanges': ranges, 'segmentRanges': [[i * 2, *row] for i, row in enumerate(ranges)]}
+  encoded = encode(status, MAX_WORKER_STATUS)
+  assert len(encoded) > 16384
+  value._observe(parse(encoded[4:], MAX_WORKER_STATUS), tmp_path)
+  assert value.status['segmentRanges'][-1][0] == 1022
+  with pytest.raises(Rejected):
+    value._observe({**status, 'segmentRanges': [[0, 0, 1]]}, tmp_path)

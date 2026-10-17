@@ -19,7 +19,6 @@ from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.ui.conditional_status import ConditionalDisplay
 from openpilot.starpilot.ui.traffic_status import TrafficDisplay
 from openpilot.starpilot.ui.developer_preview import OnroadVisualPreview
-from openpilot.starpilot.ui.wheel_feedback import WheelFeedback
 from openpilot.starpilot.ui.navigation_state import NavigationDisplay
 from openpilot.starpilot.ui.live_developer_sidebar import DeveloperMetric
 
@@ -206,7 +205,7 @@ class OnroadState:
   model_confidence: float | None = None
   lead_indicator_source_fresh: bool = False
   customization: dict = field(default_factory=default_document)
-  wheel_feedback: WheelFeedback = field(default_factory=WheelFeedback)
+  wheel_acceleration: float | None = None
   torque_source_available: bool = True
   torque_drive_frame: int | None = None
   experimental_action_token: str = ""

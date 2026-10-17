@@ -186,6 +186,11 @@ jobs:
     - name: Build openpilot
       id: build
       run: scons
+    - name: Provide H.264 encoder for Android Auto integration tests
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      run: |
+        uv pip install --python .venv/bin/python --only-binary av av==19.0.1
+        .venv/bin/python -c "import av; assert 'libx264' in av.codecs_available"
     - name: Run unit tests
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       timeout-minutes: ${{ contains(runner.name, 'nsc') && 2 || 20 }}

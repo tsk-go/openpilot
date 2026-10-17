@@ -73,7 +73,7 @@ class ReplayHTTP:
         raise ValueError('Duplicate replay query')
       args = {key: value[0] for key, value in query.items()}
       operation = path.removeprefix('/api/replay/')
-      expected = {'catalog': set(), 'status': {'clientId'}, 'detail': {'routeId'},
+      expected = {'catalog': set(), 'status': {'clientId'}, 'detail': {'routeId'}, 'export-download': {'exportId', 'clientId'},
                   'media': {'sessionId', 'clientId', 'epoch', 'sequence'}}.get(operation)
       if expected is None:
         handler.json(404, {'error': 'Replay endpoint unavailable'})
@@ -82,7 +82,9 @@ class ReplayHTTP:
         raise ValueError('Invalid replay query')
       if 'clientId' in args:
         args['clientId'] = self.actor(identity, args['clientId'])
-      if operation == 'media':
+      if operation == 'export-download':
+        self.download(handler, identity, args)
+      elif operation == 'media':
         for key in ('epoch', 'sequence'):
           if not re.fullmatch(r'0|[1-9][0-9]{0,9}', args[key]):
             raise ValueError('Invalid replay media identity')
@@ -109,7 +111,7 @@ class ReplayHTTP:
       if urlsplit(handler.path).query or type(payload) is not dict or 'clientId' not in payload or 'op' in payload:
         raise ValueError('Invalid replay action')
       operation = path.removeprefix('/api/replay/')
-      if operation not in {'start', 'control', 'stop'}:
+      if operation not in {'start', 'control', 'stop', 'export-start'}:
         raise ValueError('Invalid replay action')
       if operation == 'start' and payload.get('target') != 'web':
         raise ValueError('Galaxy replay requires its web viewer')
@@ -122,6 +124,33 @@ class ReplayHTTP:
       handler.json(error.status, {'error': error.message, 'code': error.code})
     except (OSError, RuntimeError, ImportError):
       handler.json(503, {'error': 'Replay is unavailable. Refresh before trying again.', 'code': 'owner_unavailable'})
+
+  def clear_route(self, handler, identity, route_id):
+    try:
+      self.call(handler, identity, {'op': 'export-clear', 'routeId': route_id})
+    except ReplayHTTPError as error:
+      if error.code not in {'owner_unavailable', 'unavailable'}:
+        raise
+
+  def download(self, handler, identity, args):
+    from openpilot.starpilot.galaxy.recording_http import send_recording
+    from openpilot.starpilot.galaxy.recording_media import MediaLease
+    from openpilot.starpilot.replay.client import replay_root
+    from openpilot.starpilot.replay.export import ExportSource, MAX_EXPORT_BYTES
+    if ID.fullmatch(args['exportId']) is None:
+      raise ValueError('Invalid replay export')
+    receipt = self.call(handler, identity, {'op': 'export-file', **args})
+    if (receipt.get('id') != args['exportId'] or type(receipt.get('bytes')) is not int or
+        not 0 < receipt['bytes'] <= MAX_EXPORT_BYTES or type(receipt.get('filename')) is not str or
+        re.fullmatch(r'[a-zA-Z0-9_-]+\.mp4', receipt['filename']) is None):
+      raise ValueError('Invalid replay export receipt')
+    source = ExportSource(self.root if self.root is not None else replay_root(), args['exportId'], receipt['bytes'])
+    try:
+      lease = MediaLease(source, os.dup(source.fd))
+    except BaseException:
+      source.close()
+      raise
+    send_recording(handler, lease, filename=receipt['filename'])
 
   def read_media(self, value, args):
     if (value.get('epoch') != args['epoch'] or value.get('sequence') != args['sequence'] or

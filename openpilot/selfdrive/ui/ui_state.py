@@ -95,6 +95,7 @@ class UIState:
     self.replay_sample = None
     self._replay_state_epoch = None
     self.replay_needs_reprime = False
+    self._replay_reprime_services: set[str] = set()
     self.projection_read_only = os.environ.get("STARPILOT_PROJECTION_READ_ONLY") == "1"
     params = Params()
     self.params = ProjectionParams(params) if self.projection_read_only else params
@@ -207,15 +208,26 @@ class UIState:
       if before.epoch is not None and before.epoch != cache_epoch:
         self._reset_replay_state()
         self._replay_state_epoch = before.epoch
+        self.replay_needs_reprime = False
+        self._replay_reprime_services = set()
       self.sm.update(0)
       sample = self.replay_clock.sample()
       if sample.epoch is not None and sample.epoch != before.epoch:
         # A seek straddled this receive. Keep only its eligible new primer, and
         # withhold this mixed frame until the next coherent clock sample.
+        self._replay_reprime_services = {name for name in self.sm.sock if self.sm.updated[name]}
         self._reset_replay_state(retain_sample=sample)
         self.replay_needs_reprime = not sample.valid
         self._replay_state_epoch = sample.epoch
         sample = replace(sample, now_ns=None, boot_ns=None, valid=False)
+      if sample.valid and getattr(self, "replay_needs_reprime", False):
+        # A later receive can restore the primer without another decoder seek.
+        for name in self._replay_reprime_services.copy():
+          target = sample.boot_ns if name in BOOT_TIME_SERVICES else sample.now_ns
+          stamp = self.sm.logMonoTime[name]
+          if self.sm.seen[name] and self.sm.valid[name] and type(target) is int and type(stamp) is int and 0 < stamp <= target:
+            self._replay_reprime_services.remove(name)
+        self.replay_needs_reprime = bool(self._replay_reprime_services)
       self.replay_sample = sample
       self.sm.replay_sample = sample
       self._update_replay_alive(sample)

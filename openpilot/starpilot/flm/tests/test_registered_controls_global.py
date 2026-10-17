@@ -25,6 +25,7 @@ from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.selfdrive.controls.controlsd import Controls
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
+from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.starpilot.flm.learning_wire import result_message, write_source_receipt
 from openpilot.starpilot.flm.runtime_adapter_registry import read_source
 from openpilot.starpilot.lateral.controller_selection import DOCUMENT_KEY, policy_for, replace_mode
@@ -227,7 +228,8 @@ def test_registered_configuration_paths_disabled_and_insufficient_confidence():
         before = baseline.CP.as_builder().to_bytes()
         assert type(baseline.LaC) is type(candidate.LaC)
         actual_torque = isinstance(candidate.LaC, LatControlTorque)
-        eligible = actual_torque and not (cp.notCar or cp.passive or cp.dashcamOnly)
+        actual_pid_torque = type(candidate.LaC) is LatControlPID and str(cp.steerControlType) == 'torque' and cp.lateralTuning.which() == 'pid'
+        eligible = (actual_torque or actual_pid_torque) and not (cp.notCar or cp.passive or cp.dashcamOnly)
         assert (candidate.global_learning.descriptor is not None) is eligible
         original = candidate.LaC.torque_params.to_dict() if actual_torque else None
         updates = 0
