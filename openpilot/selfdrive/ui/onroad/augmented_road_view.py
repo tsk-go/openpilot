@@ -138,6 +138,12 @@ class AugmentedRoadView(CameraView):
     else:
       target = NARROW_ROAD_CAM
 
+    if self._switching and self._target_stream_type != target:
+      # A conditional-mode or speed change can revoke a switch before its
+      # first frame arrives. Never complete that now-unwanted camera view.
+      self._target_client = None
+      self._target_stream_type = None
+      self._switching = False
     if self.stream_type != target:
       self.switch_stream(target)
 

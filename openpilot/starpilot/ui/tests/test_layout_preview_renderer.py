@@ -100,7 +100,7 @@ class LayoutPreviewRendererTests(unittest.TestCase):
         self.assertFalse(state.camera_available)
         self.assertEqual((state.lateral_active, state.longitudinal_active), axes)
         self.assertEqual(state.alert.size, "none")
-        self.assertEqual(state.wheel_feedback.brake_pressed, name == "braking")
+        self.assertEqual(state.wheel_acceleration, -2.0 if name == "braking" else 0.0)
         self.assertTrue(state.appearance.show_speed_limit_sign)
         if state.lateral_active:
           self.assertGreater(state.torque_utilization, 0.5)

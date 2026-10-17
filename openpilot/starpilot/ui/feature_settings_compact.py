@@ -11,7 +11,7 @@ from typing import Protocol
 from openpilot.starpilot.ui.vehicle_bool import VEHICLE_BOOL_KEYS, confirmation_question as vehicle_question
 from openpilot.starpilot.ui.feature_settings_state import (
   FeaturePage, FeatureRow, FeatureSettingsRequest, FeatureSettingsState,
-  FEATURE_CONFIRM_ACTIONS, CONDITIONAL_CONFIRM_ACTIONS, is_long_confirm_action, row_change,
+  FEATURE_CONFIRM_ACTIONS, CONDITIONAL_CONFIRM_ACTIONS, is_long_confirm_action, row_change, value_text, value_reason,
 )
 from openpilot.starpilot.ui.lane_change_feature import KEYS as LANE_CHANGE_KEYS, RESET as LANE_CHANGE_RESET
 from openpilot.starpilot.ui.long_profile_feature import long_confirm_question
@@ -63,9 +63,9 @@ class FeatureSettingsCompact:
       elif row.available:
         cards.extend(self._editable(row, refresh, page))
       else:
-        detail = (row.value + " " + row.unit).strip()
-        if row.reason:
-          detail += " · " + row.reason
+        detail = value_text(row) if row.key == "LaneCenteringStrength" else (row.value + " " + row.unit).strip()
+        if value_reason(row):
+          detail += " · " + value_reason(row)
         cards.append(GreyBigButton(row.label.lower(), detail.lower()))
     page._scroller.items.clear()
     page._scroller.add_widgets(cards)
@@ -76,9 +76,9 @@ class FeatureSettingsCompact:
     for direction in directions:
       label = row.label.lower() + (" set " + row.repair_value.lower() if row.repair_value else
                                    " −" if direction < 0 else " +" if row.step else "")
-      detail = (row.value + " " + row.unit).strip()
-      if row.reason:
-        detail += " · " + row.reason
+      detail = value_text(row) if row.key == "LaneCenteringStrength" else (row.value + " " + row.unit).strip()
+      if value_reason(row):
+        detail += " · " + value_reason(row)
       button = BigButton(label, detail)
 
       def clicked(source=row, direction=direction) -> None:

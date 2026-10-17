@@ -68,8 +68,8 @@ class GmAolCardIntent(AolCardIntent):
             not self.pause_lateral and not self.pause_longitudinal else 0)
 
   def _arm_from_full_engagement(self, CS, *, source_ns):
-    if not self._main_cycle_required:
-      super()._arm_from_full_engagement(CS, source_ns=source_ns)
+    self._main_cycle_required = False
+    super()._arm_from_full_engagement(CS, source_ns=source_ns)
 
   def observe_calibration(self, CS, *, events=None, standard_enabled=False):
     from openpilot.cereal import log

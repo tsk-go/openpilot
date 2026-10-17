@@ -70,7 +70,8 @@ def test_no_controller_evidence_is_distinct_from_adapter_rejection():
 
 
 def test_cleared_manual_block_does_not_leave_a_stale_status_reason():
-  reason, factory_calls = publication(source(), sources=[replace(source(), manual=True), source()])
+  resumed = replace(source(), source_epoch='c' * 64)
+  reason, factory_calls = publication(resumed, sources=[replace(source(), manual=True), resumed, resumed])
   assert reason == 'no_current_controller_evidence'
   assert factory_calls == 0
 

@@ -21,7 +21,7 @@ def exercise(*, control_offset=10_000_000, callback_offset=20_000_000,
     controller_mode='starpilot', policy='ioniq6', baseline_revision='baseline',
     controller_revision='controller', turn_assist=False)
   control_socket, output_socket = object(), object()
-  adapter = mock.Mock()
+  adapter = mock.Mock(event_collection=False, raw_storage=False)
   adapter.prepare_control.return_value = evidence
   collector = mock.Mock(adapter=adapter)
   receipt_clock = [NOW]
@@ -52,7 +52,10 @@ def exercise(*, control_offset=10_000_000, callback_offset=20_000_000,
         mock.Mock(), mock.Mock(return_value=adapter), mock.Mock(), source_reader,
         lambda _: (KEY,), lambda _: KEY, mock.Mock(), mock.Mock(), fitter,
         mock.Mock(), clock=lambda: receipt_clock[0])
-  source_reader.assert_called_once_with(NOW)  # No opportunistic epoch replacement.
+  output_receipt = max(30_000_000, callback_offset + 10_000_000) if output_offset is None else output_offset
+  expired_at = next((value for value in (callback_offset, output_receipt) if value > 500_000_000), None)
+  expected = [mock.call(NOW)] + ([mock.call(NOW + expired_at)] if expired_at is not None else [])
+  assert source_reader.call_args_list == expected  # Reread returns the same expired receipt; no renewal.
   fitter.close.assert_called_once_with('learner_parent_exit')
   return collector, fitter, evidence, output_value
 
@@ -72,8 +75,8 @@ def test_fresh_callback_clock_preserves_admission_rejections(changes):
   collector, fitter, _, _ = exercise(**changes)
   collector.control.assert_not_called()
   collector.output.assert_not_called()
-  assert any(call.args == ('controller_source_receipt_mismatch',)
-             for call in fitter.cancel.call_args_list)
+  reason = 'settings_receipt_expired' if changes.get('callback_offset', 0) > 500_000_000 else 'controller_source_receipt_mismatch'
+  assert any(call.args == (reason,) for call in fitter.cancel.call_args_list)
 
 
 def test_output_after_frozen_source_expiry_does_not_enter_collector():

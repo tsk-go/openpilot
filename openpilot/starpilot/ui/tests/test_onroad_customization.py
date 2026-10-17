@@ -1,5 +1,6 @@
 
 from unittest.mock import Mock, call as mock_call
+from pathlib import Path
 from openpilot.starpilot.ui.presentation import BitmapFonts
 import json
 from dataclasses import replace
@@ -222,7 +223,7 @@ def test_resized_wheel_draw_and_touch_share_large_bounds():
   document["layouts"]["large"]["steering_wheel"].update(x=1300, y=100, size=240)
   state = road(document, experimental_available=True)
   assert validate_document(document) == document
-  wheel = SteeringWheelWidget.__new__(SteeringWheelWidget)
+  wheel = SteeringWheelWidget(Path('/unused'))
   wheel._texture = Mock()
   with patch.object(rl, "draw_circle") as circle, patch.object(rl, "draw_texture_pro") as texture:
     wheel.render(rl.Rectangle(30, 30, 1800, 1020), state)
@@ -298,7 +299,7 @@ def test_large_draw_origins_and_wheel_input_move_together():
     assert (rect.x, rect.y, rect.width, rect.height) == (188, 95, 320, 210)
   CurrentSpeedHud(Mock(spec=BitmapFonts, **vars(fonts))).render(content, state)
   assert fonts.draw.call_args_list[-2].args[3:5] == (965, 112)
-  wheel = SteeringWheelWidget.__new__(SteeringWheelWidget)
+  wheel = SteeringWheelWidget(Path('/unused'))
   wheel._texture = Mock()
   with patch.object(rl, "draw_circle") as circle, patch.object(rl, "draw_texture_pro"):
     wheel.render(content, state)
@@ -385,7 +386,7 @@ def test_frozen_default_draw_geometry_and_neutral_colors():
   CurrentSpeedHud(Mock(spec=BitmapFonts, **vars(fonts))).render(content, state)
   assert fonts.draw.call_args_list[-2].args[3:5] == (925, 72)
   assert fonts.draw.call_args_list[-1].args[3:5] == pytest.approx((925, 215.2))
-  wheel = SteeringWheelWidget.__new__(SteeringWheelWidget)
+  wheel = SteeringWheelWidget(Path('/unused'))
   wheel._texture = Mock()
   with patch.object(rl, "draw_circle") as circle, patch.object(rl, "draw_texture_pro"):
     wheel.render(content, state)

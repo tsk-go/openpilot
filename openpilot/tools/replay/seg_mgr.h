@@ -35,6 +35,10 @@ public:
     auto it = segments_.lower_bound(seg_num);
     return it == segments_.begin() ? -1 : std::prev(it)->first;
   }
+  int nextSegment(int seg_num) const {
+    auto it = segments_.upper_bound(seg_num);
+    return it == segments_.end() ? -1 : it->first;
+  }
   void setPlayable(const std::set<int> &numbers, int64_t boot_offset) {
     std::lock_guard lock(mutex_);
     for (auto it = segments_.begin(); it != segments_.end();) {

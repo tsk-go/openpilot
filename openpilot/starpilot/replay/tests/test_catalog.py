@@ -14,18 +14,18 @@ from unittest.mock import patch
 
 from openpilot.starpilot.galaxy.drive_history import DriveHistory, SegmentInUse
 from openpilot.starpilot.galaxy.recording_library import RecordingLibrary
-from openpilot.starpilot.replay import catalog
-from openpilot.starpilot.replay.catalog import CatalogError, ReplayCatalog
+from openpilot.starpilot.galaxy import route_inventory as catalog
+from openpilot.starpilot.galaxy.route_inventory import CatalogError, RouteInventory
 
 ROUTE = '00000042--abcdef1234'
 
 
-class ReplayCatalogTest(unittest.TestCase):
+class RouteInventoryTest(unittest.TestCase):
   def setUp(self):
     self.temp = tempfile.TemporaryDirectory()
     self.addCleanup(self.temp.cleanup)
     self.root = Path(self.temp.name)
-    self.catalog = ReplayCatalog(self.root)
+    self.catalog = RouteInventory(self.root)
 
   def segment(self, number=0, *files, route=ROUTE):
     path = self.root / f'{route}--{number}'
@@ -74,6 +74,7 @@ class ReplayCatalogTest(unittest.TestCase):
     self.assertEqual(DriveHistory(self.root).snapshot()['routes'][0]['segmentCount'], 1)
     route = self.catalog.detail(ROUTE)
     self.assertFalse(route['playable'])
+    self.assertFalse(route['inventoryComplete'])
     self.assertEqual(route['reasonCode'], 'in_progress')
     self.assertEqual(route['segmentCount'], 2)
     with self.assertRaises(CatalogError) as error:
@@ -84,7 +85,20 @@ class ReplayCatalogTest(unittest.TestCase):
   def test_empty_tail_cannot_be_assumed_closed(self):
     self.segment()
     (self.root / (ROUTE + '--1')).mkdir()
-    self.assertFalse(self.catalog.detail(ROUTE)['playable'])
+    route = self.catalog.detail(ROUTE)
+    self.assertFalse(route['playable'])
+    self.assertFalse(route['inventoryComplete'])
+    with self.assertRaises(CatalogError):
+      self.catalog.lease(ROUTE)
+
+  def test_empty_only_sources_are_complete_but_not_replayable(self):
+    segment = self.segment(0, 'rlog.zst')
+    (segment / 'rlog.zst').write_bytes(b'')
+    route = self.catalog.detail(ROUTE)
+    self.assertTrue(route['inventoryComplete'])
+    self.assertFalse(route['playable'])
+    self.assertEqual(route['segments'][0]['sourceFiles'], ['rlog.zst'])
+    self.assertFalse(any(route['segments'][0]['files'].values()))
     with self.assertRaises(CatalogError):
       self.catalog.lease(ROUTE)
 
@@ -145,17 +159,22 @@ class ReplayCatalogTest(unittest.TestCase):
     segment = self.segment()
     source = segment / 'rlog.zst'
     source.write_bytes(b'')
-    self.assertFalse(self.catalog.detail(ROUTE)['playable'])
+    route = self.catalog.detail(ROUTE)
+    self.assertFalse(route['playable'])
+    self.assertTrue(route['inventoryComplete'])
+    self.assertFalse(route['segments'][0]['files']['rlog'])
     source.unlink()
     source.symlink_to(segment / 'fcamera.hevc')
-    self.assertFalse(self.catalog.detail(ROUTE)['playable'])
+    route = self.catalog.detail(ROUTE)
+    self.assertFalse(route['playable'])
+    self.assertFalse(route['inventoryComplete'])
     source.unlink()
     os.mkfifo(source)
     self.assertFalse(self.catalog.detail(ROUTE)['playable'])
     link = self.root / 'root-link'
     link.symlink_to(self.root, target_is_directory=True)
     with self.assertRaises(CatalogError):
-      ReplayCatalog(link).catalog()
+      RouteInventory(link).catalog()
 
   def test_lease_detects_file_replacement_late_tail_and_directory_replacement(self):
     segment = self.segment()

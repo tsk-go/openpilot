@@ -27,6 +27,7 @@ def corolla():
 class LearnedFrame:
   def __init__(self, now_ns, *, factor=2.0, offset=0.1, friction=0.1, version=1, valid=True):
     self.logMonoTime = {'lateralTorqueParameters': now_ns}
+    self.recv_time = {'lateralTorqueParameters': now_ns / 1e9}
     self.checked = True
     self.state = SimpleNamespace(useParams=True, valid=valid, version=version, latAccelFactorFiltered=factor,
                                  latAccelOffsetFiltered=offset, frictionCoefficientFiltered=friction)

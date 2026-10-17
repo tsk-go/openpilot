@@ -109,6 +109,15 @@ class DriveHistory:
   def delete_videos(self, name: object) -> dict:
     return delete_segment_videos(self.root, name)
 
+  def detail(self, route_id: object) -> dict:
+    from openpilot.starpilot.galaxy.route_inventory import CatalogError, RouteInventory
+    try:
+      return RouteInventory(self.root).detail(route_id)
+    except CatalogError as error:
+      if error.code == 'invalid_route':
+        raise ValueError('Invalid route identifier') from error
+      raise DriveHistoryUnavailable(str(error)) from error
+
   def snapshot(self) -> dict:
     result: dict = {'schemaVersion': 1, 'source': 'local', 'partialHistory': True,
                     'scanIncomplete': False, 'routes': []}

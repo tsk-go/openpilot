@@ -137,7 +137,8 @@ def test_actual_controller_checkpoint_reconstructs_the_fixed_custom_baseline():
         evidence = runtime.capture_evidence(control_ns=now + 1, state_ns=int(controls.sm.logMonoTime['selfdriveState']),
                                             active=True, limited=False)
         assert evidence is not None and evidence.replay_snapshot
-        adapter = from_evidence(controls.CP, evidence)
+        source = read_source(controls.CP, controls.params, now_ns=now, calibration=(0., 0., 0.), vehicle_session='fixture-drive')
+        adapter = from_evidence(controls.CP, evidence, source=source)
         assert adapter is not None
         assert adapter.baseline_revision == runtime.baseline_revision
         assert adapter.identity == runtime.identity

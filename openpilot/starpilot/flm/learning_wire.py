@@ -32,6 +32,37 @@ def _read_named_values(values, bound):
   return tuple(result)
 
 
+def _write_effect_trace(trace):
+  from openpilot.starpilot.flm.effect_trace import FullEffectTrace
+  if not isinstance(trace, FullEffectTrace):
+    raise ValueError('typed full effect trace')
+  trace.validate()
+  full = trace.envelope
+  envelope = {'version':full.version, **{wire:getattr(full,field) for wire,field in _FULL_FIELDS},
+    'priorCoordinates':[{'name':n,'value':v} for n,v in full.prior_coordinates],
+    'coordinates':[{'name':n,'value':v} for n,v in full.coordinates], 'trialNames':full.trial_names}
+  return {'version':1, 'envelope':envelope, 'controlMonoTime':trace.control_ns,
+    'previousMonoTime':trace.previous_ns, 'qualified':trace.qualified,
+    'before':[{'name':n,'value':v} for n,v in trace.before],
+    'target':[{'name':n,'value':v} for n,v in trace.target],
+    'applied':[{'name':n,'value':v} for n,v in trace.applied],
+    'appliedFullProfileSha256':trace.applied_full_profile_sha256}
+
+
+def _read_effect_trace(row):
+  from openpilot.starpilot.flm.effect_trace import FullEffectTrace
+  if row.version == 0:
+    return None
+  if row.version != 1 or any(len(getattr(row,n)) != 30 for n in ('before','target','applied')):
+    raise ValueError('full effect trace version/bounds')
+  envelope=_read_full_surface(row.envelope)
+  if envelope is None:
+    raise ValueError('effect trace original envelope')
+  values=[tuple((str(v.name),float(v.value)) for v in getattr(row,n)) for n in ('before','target','applied')]
+  return FullEffectTrace(1,envelope,int(row.controlMonoTime),int(row.previousMonoTime),bool(row.qualified),
+    *values,str(row.appliedFullProfileSha256)).validate()
+
+
 def write_control(parent, evidence):
   if (
     not isinstance(evidence, ControlEvidence)
@@ -75,6 +106,7 @@ def write_control(parent, evidence):
     'appliedProfileSequence': evidence.applied_profile_sequence,
     'appliedProfileObservedMonoTime': evidence.applied_profile_observed_ns,
     'appliedProfileValidUntilMonoTime': evidence.applied_profile_expires_ns,
+    'effectPrepareMonoTime': evidence.effect_prepare_ns,
     **{
       name: getattr(evidence, field)
       for name, field in (
@@ -91,6 +123,9 @@ def write_control(parent, evidence):
       )
     },
   }
+
+  if evidence.effect_trace is not None:
+    parent.learningEvidence.effectTrace = _write_effect_trace(evidence.effect_trace)
 
 
 def read_control(event):
@@ -150,6 +185,8 @@ def read_control(event):
     int(row.appliedProfileSequence),
     int(row.appliedProfileObservedMonoTime),
     int(row.appliedProfileValidUntilMonoTime),
+    _read_effect_trace(row.effectTrace),
+    int(row.effectPrepareMonoTime),
   )
 
 
@@ -206,6 +243,41 @@ def read_applied(event):
   )
 
 
+_FULL_FIELDS = (
+  ('manifestSha256', 'manifest_sha256'), ('fullOriginalAnchor', 'full_original_anchor'),
+  ('trialAnchor', 'trial_anchor'), ('contextKey', 'context_key'), ('cpSha256', 'cp_sha256'),
+  ('controllerRevision', 'controller_revision'), ('sourceEpoch', 'source_epoch'),
+  ('resetGeneration', 'reset_generation'), ('selectedBaselineRevision', 'selected_baseline_revision'),
+  ('priorFullProfileSha256', 'prior_full_profile_sha256'), ('fullProfileSha256', 'full_profile_sha256'),
+  ('persistentSourceEpoch', 'persistent_source_epoch'),
+  ('operation', 'operation'), ('historyFullProfileSha256', 'history_full_profile_sha256'),
+  ('restoreTransactionSha256', 'restore_transaction_sha256'),
+)
+
+
+def _write_full_surface(profile):
+  full = profile.effect_envelope
+  full.validate(profile)
+  return {'version': full.version, **{wire: getattr(full, field) for wire, field in _FULL_FIELDS},
+          'priorCoordinates': [{'name': name, 'value': value} for name, value in full.prior_coordinates],
+          'coordinates': [{'name': name, 'value': value} for name, value in full.coordinates],
+          'trialNames': full.trial_names}
+
+
+def _read_full_surface(row):
+  from openpilot.starpilot.flm.full_surface_profile import FullSurfaceEnvelope
+  try:
+    if row.version not in (1, 2) or len(row.priorCoordinates) != 30 or len(row.coordinates) != 30 or not 1 <= len(row.trialNames) <= 4:
+      return None
+    values = {field: str(getattr(row, wire)) for wire, field in _FULL_FIELDS}
+    values.update(version=int(row.version), prior_coordinates=tuple((str(point.name), float(point.value)) for point in row.priorCoordinates),
+                  coordinates=tuple((str(point.name), float(point.value)) for point in row.coordinates),
+                  trial_names=tuple(str(name) for name in row.trialNames))
+    return FullSurfaceEnvelope(**values).validate()
+  except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+    return None
+
+
 def result_message(result, session, sequence, now_ns, *, replay_validation=None):
   event = messaging.new_message('autoSteeringLearning')
   value = event.autoSteeringLearning.learning
@@ -235,7 +307,7 @@ def result_message(result, session, sequence, now_ns, *, replay_validation=None)
     # Profile's original observation/expiry is copied, never renewed by a4Hz
     # publication. Outer collecting metadata cannot extend its500ms lease.
     value.runtimeProfile = {
-      'version': VERSION,
+      'version': 2 if profile.effect_envelope is not None else VERSION,
       'identity': profile.identity,
       'sequence': profile.sequence,
       'observedMonoTime': profile.observed_ns,
@@ -265,8 +337,16 @@ def result_message(result, session, sequence, now_ns, *, replay_validation=None)
         'noSaturationRegression': replay_validation.no_saturation_regression,
         'noSlewRegression': replay_validation.no_slew_regression,
         'worstCohortImprovement': replay_validation.worst_cohort_improvement,
+        'nativeBaselineValues': replay_validation.native_baseline_values,
       },
     }
+
+    if profile.policy in ('event_effect_coordinate_v2', 'event_effect_restore_v1'):
+      if profile.effect_envelope is None:
+        raise ValueError('explicit full surface envelope required')
+      value.runtimeProfile.fullSurface = _write_full_surface(profile)
+    elif profile.effect_envelope is not None:
+      raise ValueError('full surface envelope on legacy policy')
 
   elif result is not None:
     value.status = 'rejected' if result.status == 'rejected' else 'collecting'
@@ -283,7 +363,7 @@ def read_profile(event):
     return None
   row = value.runtimeProfile
   if (
-    row.version != VERSION
+    row.version not in (VERSION, 2)
     or not identity(str(row.identity))
     or not 1 <= len(row.parameters) == len(row.coefficients) <= MAX_FIELDS
     or not 4 <= len(row.trainIds) <= MAX_IDS
@@ -298,7 +378,11 @@ def read_profile(event):
   )
   if any(not finite(p.excitation_floor) or p.excitation_floor <= 0 for p in parameters):
     return None
-  return Profile(
+  effect = _read_full_surface(row.fullSurface) if row.version == 2 else None
+  if ((row.version == 2) != (str(row.policy) in ('event_effect_coordinate_v2', 'event_effect_restore_v1')) or
+      row.version == 2 and effect is None or row.version == VERSION and row.fullSurface.version != 0):
+    return None
+  profile = Profile(
     str(row.identity),
     int(row.sequence),
     int(row.observedMonoTime),
@@ -311,7 +395,14 @@ def read_profile(event):
     float(row.candidateLoss),
     tuple((str(v.name), float(v.lowerBound)) for v in row.cohortImprovements),
     str(row.policy),
+    effect,
   )
+  try:
+    if effect is not None:
+      effect.validate(profile)
+  except (AttributeError, TypeError, ValueError, OverflowError):
+    return None
+  return profile
 
 
 def read_runtime_admission(event):
@@ -326,6 +417,7 @@ def read_runtime_admission(event):
     bool(row.noSaturationRegression),
     bool(row.noSlewRegression),
     float(row.worstCohortImprovement),
+    tuple(float(value) for value in row.nativeBaselineValues) if len(row.nativeBaselineValues) <= 32 else (float('nan'),),
   )
   return (profile, validation) if replay_accepts(validation, profile) else None
 
@@ -341,7 +433,7 @@ def write_source_receipt(event, source):
   if source.enabled and (not identity(source.source_epoch) or not source.reset):
     raise ValueError('enabled source receipt identity')
   event.autoSteeringLearning.learning.sourceReceipt = {
-    'version': 2 if source.calibration_generation else VERSION,
+    'version': 3 if source.calibration_generation and getattr(source, 'persistent_source_epoch', '') else 2 if source.calibration_generation else VERSION,
     'enabled': source.enabled,
     'manual': source.manual,
     'resetGeneration': source.reset,
@@ -351,12 +443,13 @@ def write_source_receipt(event, source):
     'cpSha256': source.cp_sha256,
     'calibrationBasis': source.calibration,
     'calibrationGeneration': source.calibration_generation,
+    'persistentSourceEpoch': getattr(source, 'persistent_source_epoch', ''),
   }
 
 
 def _read_native_source_receipt(row, now_ns, cp_sha256, source_type):
   version = row.version
-  if version not in (VERSION, 2):
+  if version not in (VERSION, 2, 3):
     return None
   cp = str(row.cpSha256)
   if cp != cp_sha256 or not identity(cp):
@@ -391,10 +484,16 @@ def _read_native_source_receipt(row, now_ns, cp_sha256, source_type):
   manual = bool(row.manual)
   if not enabled:
     epoch = str(row.sourceEpoch)
-  generation = str(row.calibrationGeneration) if version == 2 else ''
-  if version == 2 and not _calibration_generation(generation):
+  generation = str(row.calibrationGeneration) if version in (2, 3) else ''
+  if version in (2, 3) and not _calibration_generation(generation):
     return None
-  return source_type(enabled, manual, reset, epoch, observed, expires, cp, tuple(calibration), generation)
+  persistent_epoch = str(row.persistentSourceEpoch) if version == 3 else ''
+  if version == 3 and not identity(persistent_epoch):
+    return None
+  return source_type(
+    enabled, manual, reset, epoch, observed, expires, cp, calibration=tuple(calibration),
+    calibration_generation=generation, persistent_source_epoch=persistent_epoch,
+  )
 
 
 def _calibration_generation(value):
@@ -411,7 +510,7 @@ def read_source_receipt(event, *, now_ns, cp_sha256):
       and type(now_ns) is int and type(cp_sha256) is str):
     return _read_native_source_receipt(row, now_ns, cp_sha256, SourceState)
   version = row.version
-  if version == 2:
+  if version in (2, 3):
     return _read_native_source_receipt(row, now_ns, cp_sha256, SourceState)
   if (
     version != VERSION

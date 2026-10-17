@@ -15,7 +15,6 @@ from openpilot.starpilot.ui.feature_settings_state import (
   value_buttons, value_editor_rect, value_done_rect,
 )
 from openpilot.starpilot.ui.presentation import FontRole, Profile
-from openpilot.starpilot.ui.runtime_app import SOUND_PRESETS, SYSTEM_PRESETS
 
 
 def fake_fonts():
@@ -148,6 +147,7 @@ class FeatureVisualTests(unittest.TestCase):
         self.assertEqual(target.row, row)
 
   def test_disabled_display_summaries_mute_labels_values_and_explain_the_master(self):
+    from openpilot.starpilot.ui.runtime_app import SYSTEM_PRESETS
     self.drawing()
     reason = "Saved; custom display is off"
     rows = tuple(FeatureRow(key, label, value, unit=unit, available=True, reason=reason, page=key, presets=SYSTEM_PRESETS[key])
@@ -174,6 +174,7 @@ class FeatureVisualTests(unittest.TestCase):
             self.assertLess(label.args[4] + 33, explanations[index].args[4] + 6)
 
   def test_sound_value_and_legal_presets_share_drawn_touch_bounds(self):
+    from openpilot.starpilot.ui.runtime_app import SOUND_PRESETS
     self.drawing()
     for expanded in (True, False):
       for key, minimum in (("WarningSoftVolume", 25), ("EngageVolume", 0)):
@@ -353,14 +354,14 @@ class FeatureVisualTests(unittest.TestCase):
         self.assertEqual(view.feature_pull(sign * raw, True), sign * expected)
         self.assertEqual(view.feature_pull(sign * raw, False), sign * min(expected, 18))
 
-  def test_edge_reveal_uses_scroll_authority_and_fixed_clip(self):
+  def test_edge_reveal_feathers_inside_body_with_scroll_authority(self):
     self.drawing()
     rows = (FeatureRow("", "Heading", ""),) * 7
-    for expanded in (True, False):
+    for expanded, subtitle in ((True, ""), (False, ""), (True, "Description"), (False, "Description")):
       left = 520 if expanded else 20
       for scroll, drag, can_page in ((0, -37.5, True), (5, 37.5, True), (0, -80, True), (5, 80, True),
                                      (0, -300, True), (5, 300, True), (0, 80, False), (5, -80, False), (0, 20, True), (0, 0, False)):
-        with self.subTest(expanded=expanded, scroll=scroll, drag=drag):
+        with self.subTest(expanded=expanded, subtitle=subtitle, scroll=scroll, drag=drag):
           rl.draw_rectangle_rec.reset_mock()
           rl.draw_rectangle_gradient_ex.reset_mock()
           rl.draw_line_ex.reset_mock()
@@ -370,13 +371,15 @@ class FeatureVisualTests(unittest.TestCase):
           for name in ("draw_rectangle_gradient_ex", "draw_line_ex", "begin_scissor_mode", "draw_rectangle_rec"):
             draws.attach_mock(getattr(rl, name), name)
           fonts = fake_fonts()
+          state = FeatureSettingsState(rows=rows, scroll=scroll, sidebar_expanded=expanded, subtitle=subtitle)
+          row_top = feature_row_top(state)
           with patch.object(view, "feature_scroll", wraps=feature_scroll) as paging, patch.object(view, "draw_settings_header"):
-            view.FeatureSettingsView(fonts).render(FeatureSettingsState(rows=rows, scroll=scroll, sidebar_expanded=expanded), drag)
+            view.FeatureSettingsView(fonts).render(state, drag)
           if drag:
             paging.assert_called_once_with(scroll, 1 if drag < 0 else -1, len(rows))
           else:
             paging.assert_not_called()
-          self.assertEqual(rl.begin_scissor_mode.call_args.args, (left + 25, FEATURE_ROW_TOP, 2100 - left, 5 * FEATURE_ROW_HEIGHT))
+          self.assertEqual(rl.begin_scissor_mode.call_args.args, (left + 25, row_top, 2100 - left, 5 * FEATURE_ROW_HEIGHT))
           pull = view.feature_pull(drag, can_page)
           self.assertEqual(rl.rl_push_matrix.call_count, int(bool(pull)))
           self.assertEqual(rl.rl_pop_matrix.call_count, int(bool(pull)))
@@ -387,31 +390,49 @@ class FeatureVisualTests(unittest.TestCase):
           fills = rl.draw_rectangle_rec.call_args_list
           cue = can_page and abs(drag) > 36
           self.assertEqual(len(fills), int(bool(pull)))
-          self.assertEqual(rl.draw_rectangle_gradient_ex.call_count, int(cue))
+          self.assertEqual(rl.draw_rectangle_gradient_ex.call_count, 3 * int(cue))
           self.assertEqual(rl.draw_line_ex.call_count, 2 * int(cue))
           if pull:
             self.assertIs(fills[-1].args[1], geometry.PANEL_BG)
             rect = fills[-1].args[0]
-            self.assertEqual((rect.x, rect.y, rect.width, rect.height), (left + 25, FEATURE_ROW_TOP, 2100 - left, 5 * FEATURE_ROW_HEIGHT))
+            self.assertEqual((rect.x, rect.y, rect.width, rect.height), (left + 25, row_top, 2100 - left, 5 * FEATURE_ROW_HEIGHT))
           if cue:
-            gradient = rl.draw_rectangle_gradient_ex.call_args
-            gap = abs(view.feature_pull(drag, can_page))
+            gradient, top_fade, bottom_fade = rl.draw_rectangle_gradient_ex.call_args_list
+            gap = abs(pull)
             bounds = gradient.args[0]
-            gap_x = 2125 - gap if drag < 0 else left - 20
-            gap_right = 2160 if drag < 0 else left + 25 + gap
+            gap_x = 2125 - gap if drag < 0 else left + 25
             self.assertEqual((bounds.x, bounds.y, bounds.width, bounds.height),
-                             (gap_x, FEATURE_ROW_TOP, gap_right - gap_x, 5 * FEATURE_ROW_HEIGHT))
-            color_left, color_right = (geometry.PANEL_BG, view.EDGE_ACCENT) if drag < 0 else (view.EDGE_ACCENT, geometry.PANEL_BG)
-            self.assertEqual(gradient.args[1:], (color_left, color_left, color_right, color_right))
+                             (gap_x, row_top, gap, 5 * FEATURE_ROW_HEIGHT))
+            edge = rl.color_lerp(geometry.PANEL_BG, view.EDGE_ACCENT, gap / 60)
+            color_left, color_right = (geometry.PANEL_BG, edge) if drag < 0 else (edge, geometry.PANEL_BG)
+            for actual, expected in zip(gradient.args[1:], (color_left, color_left, color_right, color_right), strict=True):
+              self.assertEqual((actual.r, actual.g, actual.b, actual.a), (expected.r, expected.g, expected.b, expected.a))
+            for fade, y, colors in (
+              (top_fade, row_top, (geometry.PANEL_BG, view.EDGE_FADE_CLEAR, view.EDGE_FADE_CLEAR, geometry.PANEL_BG)),
+              (bottom_fade, row_top + 5 * FEATURE_ROW_HEIGHT - 96,
+               (view.EDGE_FADE_CLEAR, geometry.PANEL_BG, geometry.PANEL_BG, view.EDGE_FADE_CLEAR)),
+            ):
+              rect = fade.args[0]
+              self.assertEqual((rect.x, rect.y, rect.width, rect.height), (gap_x, y, gap, 96))
+              self.assertEqual(fade.args[1:], colors)
             self.assertEqual(rl.draw_line_ex.call_args.args[0].x, (2095 if drag < 0 else left + 55) + (8 if drag < 0 else -8))
             order = [call[0] for call in draws.mock_calls]
-            self.assertLess(order.index("draw_rectangle_gradient_ex"), order.index("draw_line_ex"))
-            self.assertLess(max(index for index, name in enumerate(order) if name == "draw_line_ex"),
-                            max(index for index, name in enumerate(order) if name == "begin_scissor_mode"))
             self.assertLess(max(index for index, name in enumerate(order) if name == "begin_scissor_mode"),
+                            order.index("draw_rectangle_gradient_ex"))
+            self.assertLess(max(index for index, name in enumerate(order) if name == "draw_rectangle_gradient_ex"),
+                            order.index("draw_line_ex"))
+            self.assertLess(max(index for index, name in enumerate(order) if name == "draw_line_ex"),
                             order.index("draw_rectangle_rec"))
           footer = [call for call in fonts.draw.call_args_list if call.args[0] in ("Previous", "Next")]
           self.assertEqual(len(footer), 2)
+
+  def test_edge_failure_restores_scissor_before_rows_move(self):
+    self.drawing()
+    with patch.object(rl, "draw_rectangle_gradient_ex", side_effect=RuntimeError("edge failed")):
+      with self.assertRaisesRegex(RuntimeError, "edge failed"):
+        view.FeatureSettingsView(fake_fonts()).render(FeatureSettingsState(rows=(FeatureRow("", "Heading", ""),) * 7), -80)
+    rl.rl_push_matrix.assert_not_called()
+    self.assertEqual(rl.end_scissor_mode.call_count, 2)
 
   def test_row_failure_restores_matrix_and_scissor(self):
     self.drawing()

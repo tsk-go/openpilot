@@ -11,7 +11,7 @@
 #include "opendbc/safety/modes/honda.h"
 #include "opendbc/safety/modes/toyota.h"
 #include "opendbc/safety/modes/tesla.h"
-#include "opendbc/safety/modes/volvo_c1.h"
+#include "opendbc/safety/modes/volvo_dispatch.h"
 #include "opendbc/safety/modes/tesla_hw1.h"
 #include "opendbc/safety/modes/tesla_preap.h"
 #include "opendbc/safety/modes/gm.h"
@@ -484,7 +484,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
     {SAFETY_RIVIAN, &rivian_hooks},
     {SAFETY_TESLA, &tesla_hooks},
     {SAFETY_TESLA_PREAP, &tesla_preap_hooks},
-    {SAFETY_VOLVO, &volvo_c1_hooks},
+    {SAFETY_VOLVO, &volvo_dispatch_hooks},
     {SAFETY_HYUNDAI_CANFD, &hyundai_canfd_hooks},
 #ifdef ALLOW_DEBUG
     {SAFETY_MG, &mg_hooks},
@@ -548,7 +548,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   int hook_config_count = sizeof(safety_hook_registry) / sizeof(safety_hook_config);
   for (int i = 0; i < hook_config_count; i++) {
     if (safety_hook_registry[i].id == mode) {
-      if ((mode == SAFETY_VOLVO) && (param != 2U)) {
+      if ((mode == SAFETY_VOLVO) && (param > 2U)) {
         current_hooks = &nooutput_hooks;
         current_safety_mode = SAFETY_NOOUTPUT;
         current_safety_param = 0;

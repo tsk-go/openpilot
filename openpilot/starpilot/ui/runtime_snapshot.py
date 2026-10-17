@@ -28,7 +28,7 @@ from openpilot.starpilot.parked_evidence import ParkedEvidence, RESUME_SKEW_NS, 
 from openpilot.starpilot.ui.conditional_status import ConditionalDisplayProjector, ConditionalPerceptionProjector, configured_choice
 from openpilot.starpilot.ui.traffic_status import TrafficDisplayProjector
 from openpilot.starpilot.controllers.mode_actions import SwitchbackStatusOwner
-from openpilot.starpilot.ui.wheel_feedback import observe_wheel_feedback
+from openpilot.starpilot.ui.wheel_feedback import observe_wheel_acceleration
 from openpilot.starpilot.ui.torque_feedback import observe_torque_feedback
 from openpilot.starpilot.ui.live_developer_sidebar import DeveloperMetrics
 
@@ -636,7 +636,7 @@ class RuntimeSnapshotAdapter:
                          torque_utilization=torque.utilization if torque.utilization is not None else 0.0,
                          torque_source_available=torque.utilization is not None,
                          torque_drive_frame=after if started else None, drive_frame=after if started else None, observed_ns=now_ns,
-                         wheel_feedback=observe_wheel_feedback(display_car, display_control),
+                         wheel_acceleration=observe_wheel_acceleration(display_car),
                          lateral_active=display_lat_active, longitudinal_active=display_long_active,
                          longitudinal_overridden=longitudinal_overridden,
                          stock_cruise_active=stock_cruise,
@@ -688,6 +688,8 @@ class RuntimeSnapshotAdapter:
                            HomeMode.EXPERIMENTAL if experimental else HomeMode.CHILL),
                      experimental_enabled=experimental, experimental_available=bool(ui.has_longitudinal_control),
                      stats=None, paired=bool(ui.prime_state.is_paired()), network=network, network_strength=strength,
+                     temperature_c=device.maxTempC if device is not None else None, metric=bool(ui.is_metric),
+                     temperature_high=device is not None and device.thermalStatus != log.DeviceState.ThermalStatus.ok,
                      vehicle_online=panda_connected, connection=connection,
                      recording_audio=bool(ui.recording_audio), bluetooth=bluetooth,
                      gpu_present=gpu_present, gpu_active=gpu_active, branch=_text(params, "GitBranch"),

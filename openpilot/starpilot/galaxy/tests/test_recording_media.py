@@ -64,6 +64,7 @@ class RecordingMediaTest(unittest.TestCase):
         make_h264(segment / 'qcamera.ts')
         for camera in ('fcamera', 'dcamera', 'ecamera'):
           (segment / f'{camera}.hevc').write_bytes(fixture.read_bytes())
+        (segment / 'qlog.zst').touch()
       media = RecordingMedia(root)
       try:
         for camera in ('qcamera', 'fcamera', 'dcamera', 'ecamera'):

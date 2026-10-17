@@ -63,14 +63,30 @@ void SegmentManager::manageSegmentCache() {
     if (cur == segments_.end()) continue;
 
     // Calculate the range of segments to load
-    const int previous = flags_ & REPLAY_FLAG_LOCAL_MACHINE ? int(prefer_previous_) : segment_cache_limit_ / 2;
+    const bool local = flags_ & REPLAY_FLAG_LOCAL_MACHINE;
+    const int previous = local
+        ? std::max(int(prefer_previous_), (segment_cache_limit_ - 1) / 2) : segment_cache_limit_ / 2;
     auto begin = std::prev(cur, std::min<int>(previous, std::distance(segments_.begin(), cur)));
     auto end = std::next(begin, std::min<int>(segment_cache_limit_, std::distance(begin, segments_.end())));
-    begin = std::prev(end, std::min<int>(segment_cache_limit_, std::distance(segments_.begin(), end)));
+    if (local && segment_cache_limit_ > 2) {
+      // Extra local slots must not load unrelated segments at route edges.
+      end = std::next(cur, std::min<int>(segment_cache_limit_ - previous, std::distance(cur, segments_.end())));
+    } else {
+      begin = std::prev(end, std::min<int>(segment_cache_limit_, std::distance(segments_.begin(), end)));
+    }
 
+    // Load required history before starting unrelated future work.
+    const bool seeking = local && prefer_previous_;
+    auto load_begin = seeking ? std::prev(cur, std::min<int>(1, std::distance(segments_.begin(), cur))) : begin;
+    auto load_end = seeking ? std::next(cur) : end;
     lock.unlock();
 
-    loadSegmentsInRange(begin, cur, end);
+    loadSegmentsInRange(load_begin, cur, load_end);
+    if (seeking && (flags_ & REPLAY_FLAG_PRELOAD_SEEK) && segment_cache_limit_ >= 3 &&
+        cur->second && cur->second->getState() == Segment::LoadState::Loaded &&
+        load_begin->second && load_begin->second->getState() == Segment::LoadState::Loaded) {
+      loadSegmentsInRange(begin, cur, end);
+    }
     for (auto it = begin; it != end; ++it) {
       if ((flags_ & REPLAY_FLAG_LOCAL_MACHINE) && it->second && it->second->getState() == Segment::LoadState::Failed && onFailure_) {
         onFailure_(it->first);

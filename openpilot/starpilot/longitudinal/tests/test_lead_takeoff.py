@@ -23,6 +23,19 @@ def test_confirmed_departure_releases_stopped_plan_in_normal_acc():
   assert policy.step(True, frame(7), 0., True) == (.35, False)
 
 
+def test_departing_lead_breakaway_holds_profile_ceiling_only_while_stationary():
+  departing = replace(frame().leads[0], distance=5., speed=1., acceleration=.5)
+  assert LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=2.), .2, False) == (2., False)
+  assert LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=1.2), .2, False) == (1.2, False)
+  rolling = LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=2., standstill=False, speed=.3), .2, False)
+  assert rolling[0] < 1. and rolling[1] is False
+  close = replace(departing, distance=3.6)
+  assert LeadTakeoff().step(True, frame(leads=(close,), acceleration_max=2., model_accel=.2), .2, False)[0] < 1.
+  braking = replace(departing, acceleration=-.5)
+  assert LeadTakeoff().step(True, frame(leads=(braking,), acceleration_max=2.), .2, False) == (.2, False)
+  assert LeadTakeoff().step(True, frame(leads=(departing,), acceleration_max=2., blocked=True), 0., True) == (0., True)
+
+
 def test_creep_confirmation_and_profile_cap_remain_effective():
   policy = LeadTakeoff()
   lead = replace(frame().leads[0], distance=6., speed=.3, acceleration=.1)
@@ -72,14 +85,24 @@ def test_default_off_is_exact_numeric_and_state_path():
     assert vars(policy) == vars(LeadTakeoff())
 
 
-@pytest.mark.parametrize('selected_cap', [None, .2])
-def test_native_planner_stopped_release_and_off_trajectory_equivalence(selected_cap):
+@pytest.mark.parametrize('family', ['hyundai', 'honda', 'toyota'])
+@pytest.mark.parametrize('selected_cap', [None, .2, 1.2, 2.])
+def test_native_planner_stopped_release_and_off_trajectory_equivalence(selected_cap, family):
   from opendbc.car.hyundai.interface import CarInterface
   from opendbc.car.hyundai.values import CAR
   from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
   from openpilot.starpilot.longitudinal.profile_runtime import SelectedProfileTuning
   from openpilot.starpilot.longitudinal.tests.test_conditional_handoff import Frame as NativeFrame
-  cp = CarInterface.get_non_essential_params(CAR.HYUNDAI_IONIQ_6)
+  if family == 'hyundai':
+    cp = CarInterface.get_non_essential_params(CAR.HYUNDAI_IONIQ_6)
+  elif family == 'honda':
+    from opendbc.car.honda.interface import CarInterface as Honda
+    from opendbc.car.honda.values import CAR as HondaCar
+    cp = Honda.get_non_essential_params(HondaCar.HONDA_CIVIC)
+  else:
+    from opendbc.car.toyota.interface import CarInterface as Toyota
+    from opendbc.car.toyota.values import CAR as ToyotaCar
+    cp = Toyota.get_non_essential_params(ToyotaCar.TOYOTA_COROLLA_TSS2)
   cp.openpilotLongitudinalControl = True
   native, off, enabled = (LongitudinalPlanner(cp) for _ in range(3))
   released = False
@@ -190,3 +213,40 @@ def test_takeoff_light_carrier_rejects_corrupt_stop_preferences(tmp_path):
     assert owner.sample(sm, cp, now_ns=sm.stamp+1_000_000, now_boot_ns=sm.stamp+2_001_000_000,
                         drive_id=STOP_DRIVE, follow_seconds=1.45, traffic_mode=False, takeoff_enabled=True) == StopPlan()
   assert path.read_bytes() == b'{'
+
+
+@pytest.mark.parametrize('standstill,speed,raw,expected', [
+  (True, -0.0008, 0., False), (True, .044, .044, False), (True, .06, .06, None),
+  (True, -0.0008, .02, None), (True, -.02, 0., None), (False, 0., 0., None)])
+def test_takeoff_metadata_accepts_recorded_standstill_speed_noise(standstill, speed, raw, expected):
+  from openpilot.starpilot.longitudinal.force_stop_runtime import standstill_takeoff_light
+  xs = [70. * index / 32 for index in range(33)]
+  xs[1:3] = [0.0005, 0.0002]
+  model = NS(position=NS(x=xs), action=NS(shouldStop=False))
+  assert standstill_takeoff_light(model, NS(standstill=standstill, vEgo=speed, vEgoRaw=raw)) is expected
+
+
+@pytest.mark.parametrize('stop,horizon,expected', [(False, 70., False), (True, 70., True), (False, 53.9, True)])
+def test_actual_takeoff_metadata_uses_fresh_prefix_without_force_stop_authority(tmp_path, stop, horizon, expected):
+  from openpilot.common.params import Params
+  from opendbc.car.honda.interface import CarInterface
+  from opendbc.car.honda.values import CAR
+  from openpilot.starpilot.longitudinal.force_stop_runtime import ForceStopRuntime
+  from openpilot.starpilot.longitudinal.tests.test_force_stop_runtime import Frame as StopFrame, DRIVE as STOP_DRIVE
+  params = Params(str(tmp_path))
+  params.put_bool('ForceStops', False, block=True)
+  cp = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  owner = ForceStopRuntime(params)
+  for tick in range(3):
+    sm = StopFrame(tick, horizon=horizon, stopped=True)
+    xs = list(sm['modelV2'].position.x)
+    xs[1:3] = [0.0005, 0.0002]
+    sm['modelV2'].position.x = xs
+    sm['modelV2'].action.shouldStop = stop
+    plan = owner.sample(sm, cp, now_ns=sm.stamp+1_000_000, now_boot_ns=sm.stamp+2_001_000_000,
+                        drive_id=STOP_DRIVE, follow_seconds=1.45, traffic_mode=False, takeoff_enabled=True)
+  assert plan.takeoff_light_observed and plan.takeoff_light is expected
+  assert not plan.forcing and not plan.should_stop and plan.obstacle_m is None and plan.speed_ceiling_mps is None
+  sm.valid['modelV2'] = False
+  assert owner.sample(sm, cp, now_ns=sm.stamp+1_000_000, now_boot_ns=sm.stamp+2_001_000_000,
+                      drive_id=STOP_DRIVE, follow_seconds=1.45, traffic_mode=False, takeoff_enabled=True) == StopPlan()

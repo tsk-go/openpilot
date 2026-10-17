@@ -298,6 +298,11 @@ void Replay::checkSeekProgress() {
   if (hasFlag(REPLAY_FLAG_LOCAL_MACHINE)) {
     const int previous = seg_mgr_->previousSegment(current_segment_);
     if (seeking_to_ >= 0 && previous >= 0 && !seg_mgr_->getEventData()->isSegmentLoaded(previous)) return;
+    if (seeking_to_ >= 0 && hasFlag(REPLAY_FLAG_PRELOAD_SEEK) && segmentCacheLimit() >= 3) {
+      // Finish the next cached segment before playback can reach its boundary.
+      const int next = seg_mgr_->nextSegment(current_segment_);
+      if (next == current_segment_ + 1 && !seg_mgr_->getEventData()->isSegmentLoaded(next)) return;
+    }
     interruptStream([]() { return true; });
     return;
   }

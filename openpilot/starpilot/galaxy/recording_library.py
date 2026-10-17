@@ -85,9 +85,8 @@ class RecordingLibrary:
     return raw_lease(VerifiedRecording(self.history.root, segment_name, filename))
 
   def open_archive(self, route_id, *, permitted):
-    inventory = self.history.snapshot()
-    route = next((route for route in inventory['routes'] if route['routeId'] == route_id), None)
-    if inventory['scanIncomplete'] or route is None:
+    route = self.history.detail(route_id)
+    if not route['inventoryComplete']:
       raise ValueError('Complete route inventory unavailable')
     source = LogArchive()
     deadline = time.monotonic() + 30
@@ -115,7 +114,7 @@ class RecordingLibrary:
       source.close()
       raise
 
-  def action(self, payload, *, permitted):
+  def action(self, payload, *, permitted, before_delete=None):
     if type(payload) is dict and payload.get('action') == 'delete-all':
       if set(payload) != {'action', 'confirmed', 'includePreserved'} or payload['confirmed'] is not True or \
          type(payload['includePreserved']) is not bool:
@@ -128,7 +127,7 @@ class RecordingLibrary:
       deleted = 0
       for route in self.describe(inventory)['routes']:
         if payload['includePreserved'] or not route['preserved']:
-          self.action({'action': 'delete', 'routeId': route['routeId'], 'confirmed': True}, permitted=permitted)
+          self.action({'action': 'delete', 'routeId': route['routeId'], 'confirmed': True}, permitted=permitted, before_delete=before_delete)
           deleted += 1
       return {'saved': True, 'deleted': deleted}
     if type(payload) is not dict or payload.get('action') not in {'rename', 'preserve', 'delete'}:
@@ -144,10 +143,8 @@ class RecordingLibrary:
     name = display_name(payload['name']) if action == 'rename' else None
     if not permitted():
       raise PermissionError('Turn off the vehicle before managing recordings')
-    # Use a complete scan so a route with an active or omitted segment cannot be partly deleted.
-    inventory = self.history.snapshot()
-    route = next((r for r in inventory['routes'] if r['routeId'] == payload['routeId']), None)
-    if inventory['scanIncomplete'] or route is None:
+    route = self.history.detail(payload['routeId'])
+    if not route.get('inventoryComplete'):
       raise ValueError('Recording inventory changed; refresh before trying again')
     root = os.open(self.history.root, DIR_FLAGS)
     opened = []
@@ -170,10 +167,17 @@ class RecordingLibrary:
         if not _same_directory(fd, root, segment_name) or any(n.endswith('.lock') for n in os.listdir(fd)):
           raise ValueError('Recording changed')
       if action == 'preserve' and payload['preserved']:
-        preserved = self.describe(inventory)
-        current = next(r for r in preserved['routes'] if r['routeId'] == payload['routeId'])
-        if sum(r['preserved'] for r in preserved['routes']) >= 5 and not current['preserved']:
+        from openpilot.starpilot.galaxy.route_inventory import CatalogError, RouteInventory
+        try:
+          preserved = RouteInventory(self.history.root).catalog()
+        except CatalogError as error:
+          raise ValueError('Recording inventory changed; refresh before trying again') from error
+        if preserved['scanIncomplete'] or any(not item.get('inventoryComplete') for item in preserved['routes']):
+          raise ValueError('Recording scan is incomplete; preservation limit cannot be checked')
+        if sum(r['preserved'] for r in preserved['routes']) >= 5 and not route.get('preserved'):
           raise ValueError('Maximum of 5 preserved routes reached')
+      if action == 'delete' and before_delete is not None:
+        before_delete(payload['routeId'])
       for segment_name, fd in opened:
         if (not permitted() or not _same_directory(root, None, self.history.root) or
             not _same_directory(fd, root, segment_name) or any(n.endswith('.lock') for n in os.listdir(fd))):

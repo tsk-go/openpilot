@@ -1,6 +1,6 @@
 """Shared actual-selected controller identities; physical fitting stays in learner."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
@@ -236,6 +236,9 @@ class SourceState:
   cp_sha256: str
   calibration: tuple[float, ...] = ()
   calibration_generation: str = ''
+  persistent_source_epoch: str = ''
+  # Optional-process-only selected configuration; never added to controls IPC.
+  manual_baseline: tuple[float, ...] = field(default=(), compare=False, repr=False)
 
 
 def read_source(cp, params, *, now_ns, cp_sha256=None, calibration=(), vehicle_session="", calibration_generation=''):
@@ -261,6 +264,7 @@ def read_source(cp, params, *, now_ns, cp_sha256=None, calibration=(), vehicle_s
       raise ValueError('reset generation')
     document = raw_by_key[DOCUMENT_KEY]
     manual = False
+    fixed_manual = ()
     if document is not None:
       profile = parse_document(document).get(str(cp.carFingerprint))
       if profile is not None:
@@ -268,6 +272,15 @@ def read_source(cp, params, *, now_ns, cp_sha256=None, calibration=(), vehicle_s
           tune = cp.lateralTuning.torque
           if profile.basis != (float(tune.latAccelFactor), float(tune.latAccelOffset), float(tune.friction)):
             raise ValueError('incompatible saved tuning basis')
+        if cp.lateralTuning.which() == 'torque':
+          from openpilot.starpilot.lateral.torque_settings import resolve_document
+          factor, friction, review = resolve_document({str(cp.carFingerprint): profile}, str(cp.carFingerprint),
+            (float(tune.latAccelFactor), float(tune.latAccelOffset), float(tune.friction)))
+          if review:
+            raise ValueError('manual baseline requires source review')
+          if (factor is not None or friction is not None) and not (profile.geometry is not None and profile.geometry.learning == 'force_auto'):
+            fixed_manual = (float(tune.latAccelFactor) if factor is None else factor, float(tune.latAccelOffset),
+                            float(tune.friction) if friction is None else friction)
         # Scalar and geometry choices are immutable baseline inputs. Automatic
         # FF residuals never write them; a manually owned FLM surface stays fixed.
         manual = profile.flm is not None
@@ -278,11 +291,14 @@ def read_source(cp, params, *, now_ns, cp_sha256=None, calibration=(), vehicle_s
       # epoch. They stay fixed baseline inputs, not automatic profile ownership.
       if cp.lateralTuning.which() == 'torque':
         tune = cp.lateralTuning.torque
-        interpret_legacy(
+        legacy = interpret_legacy(
           {key: raw_by_key[key] for key in LEGACY_KEYS},
           (float(tune.latAccelFactor), float(tune.latAccelOffset), float(tune.friction)),
           fingerprint=str(cp.carFingerprint),
         )
+        if legacy.factor is not None or legacy.friction is not None:
+          fixed_manual = (float(tune.latAccelFactor) if legacy.factor is None else legacy.factor, float(tune.latAccelOffset),
+                          float(tune.friction) if legacy.friction is None else legacy.friction)
     calibration = tuple(calibration)
     if len(calibration) != 3 or not all(math.isfinite(v) for v in calibration):
       raise ValueError("uncertain calibration")
@@ -300,8 +316,12 @@ def read_source(cp, params, *, now_ns, cp_sha256=None, calibration=(), vehicle_s
       raise ValueError('invalid calibration lifecycle')
     frame_identity = calibration if not calibration_generation else ('live_vehicle_frame_v2', calibration_generation)
     epoch = digest((tuple((key, None if raw is None else raw.hex()) for key, raw in snapshots), frame_identity, unit))
+    persistent_epoch = (digest(('persistent_vehicle_source_v1', cp_sha256,
+      tuple((key, None if raw is None else raw.hex()) for key, raw in snapshots), vin))
+      if is_valid_vin(vin) and vin != VIN_UNKNOWN and calibration_generation else '')
     return SourceState(bool(preference.valid and preference.enabled), manual, reset, epoch, now_ns,
-                       now_ns + SOURCE_LEASE_NS, cp_sha256, calibration, calibration_generation)
+                       now_ns + SOURCE_LEASE_NS, cp_sha256, calibration=calibration, calibration_generation=calibration_generation,
+                       persistent_source_epoch=persistent_epoch, manual_baseline=fixed_manual)
   except (AttributeError, UnicodeError, TypeError, ValueError, OSError, OverflowError):
     return SourceState(False, False, '', '', now_ns, now_ns + SOURCE_LEASE_NS, cp_sha256)
 
@@ -345,6 +365,11 @@ def selected_descriptor(cp, ci, controller):
     extension = getattr(controller, 'starpilot_extension', None)
     if extension is not None:
       policy += ':' + type(extension).__module__ + '.' + type(extension).__qualname__
+  elif (type(controller) is LatControlPID and str(cp.steerControlType) == 'torque' and cp.lateralTuning.which() == 'pid'):
+    domain, stage = 'torque_pid', 'pid-selected-stage-snapshot-v2'
+    forward = controller.get_steer_feedforward
+    function = getattr(forward, '__func__', forward)
+    conversion = function.__module__ + '.' + function.__qualname__
   elif isinstance(controller, (LatControlPID, LatControlAngle, LatControlCurvature)):
     return None  # Explicit non-torque disposition: preserve the selected baseline.
   else:
@@ -396,13 +421,14 @@ def adapter_for_ford(cp, context):
   return None  # Ford's downstream angle/curvature controller is excluded.
 
 
-def adapter_for_evidence(cp, evidence, key=None):
+def adapter_for_evidence(cp, evidence, key=None, *, source=None, event_replay_version=2, event_clipping_quality='recorded-debt-v1', event_restore_version=2):
   """Strict learner factory: consume actual descriptor, never read a mode default."""
   # Actual stage replay must be supplied by the family module; absent trace or
   # baseline reconstruction rejects the family rather than claiming validation.
   from openpilot.starpilot.flm.learner_factory import from_evidence
 
-  return from_evidence(cp, evidence, key)
+  return from_evidence(cp, evidence, key, source=source,
+    event_replay_version=event_replay_version, event_clipping_quality=event_clipping_quality, event_restore_version=event_restore_version)
 
 
 def collection_keys(evidence):
@@ -439,9 +465,14 @@ def physical_observer(sm, cp, collector, now_ns):
   from openpilot.starpilot.flm.fullrate_collector import PhysicalEvidence
   from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
+  def reject():
+    collector._physical_pose_queue = ()
+    collector._physical_pose_context = None
+    return None
+
   services = ('deviceMotion', 'extrinsicsCalibration', 'carState', 'lateralDelay', 'driverMonitoringState')
   if not sm.all_checks(list(services)):
-    return None
+    return reject()
   try:
     mono_before = time.monotonic_ns()
     boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
@@ -453,7 +484,7 @@ def physical_observer(sm, cp, collector, now_ns):
     elif abs(offset - cache) > 1_000_000 + (mono_after - mono_before) // 2:
       collector.split('physical_clock_discontinuity', reset=True)
       collector._physical_clock = offset
-      return None
+      return reject()
     dm, calibration, cs = sm['deviceMotion'], sm['extrinsicsCalibration'], sm['carState']
     pose_ns = int(dm.timestamp) - collector._physical_clock
     if (
@@ -466,17 +497,17 @@ def physical_observer(sm, cp, collector, now_ns):
       or not dm.orientationNED.valid
       or str(calibration.calStatus) != 'calibrated'
     ):
-      return None
+      return reject()
     state_ns, delay_ns = int(sm.logMonoTime['carState']), int(sm.logMonoTime['lateralDelay'])
     if not 0 < state_ns <= now_ns or now_ns - state_ns > 100_000_000 or not 0 < delay_ns <= now_ns or now_ns - delay_ns > 500_000_000:
-      return None
+      return reject()
     from openpilot.starpilot.flm.calibration_lifecycle import calibrated_basis
     generation = digest(tuple(float(v) for v in calibration.rpyCalib))
     estimate = generation
     lifecycle = getattr(collector, '_calibration_generation', '')
     if lifecycle:
       if calibrated_basis(calibration) is None:
-        return None
+        return reject()
       generation = digest(('live_vehicle_frame_v2', lifecycle))
     cache = getattr(collector, '_physical_calibrator', None)
     if cache is None or cache[0] != estimate:
@@ -485,11 +516,11 @@ def physical_observer(sm, cp, collector, now_ns):
       collector._physical_calibrator = (estimate, calibrator)
     calibrator = collector._physical_calibrator[1]
     if not calibrator.calib_valid:
-      return None
+      return reject()
     pose = calibrator.build_calibrated_pose(Pose.from_device_motion(dm))
     live_lag = float(sm['lateralDelay'].lateralDelay)
     if not math.isfinite(live_lag) or not 0 <= live_lag <= 0.5:
-      return None
+      return reject()
     lag = getattr(collector, '_physical_lag', None)
     if lag is None:
       lag = collector._physical_lag = round(live_lag * 1e9)
@@ -504,11 +535,11 @@ def physical_observer(sm, cp, collector, now_ns):
       if regime is None:
         collector.split('vehicle_model_unavailable', reset=True)
         collector._physical_vm_anchor = None
-        return None
+        return reject()
       if anchor is not None and regime != anchor:
         collector.split('vehicle_model_material_change', reset=True)
         collector._physical_vm_anchor = regime
-        return None
+        return reject()
       collector._physical_vm_anchor = regime
       native_epoch = command.native_identity
       native = bool(
@@ -519,9 +550,9 @@ def physical_observer(sm, cp, collector, now_ns):
         if 'vEgo' in values and 'steeringAngleDeg' in values:
           history[command.state_ns] = (float(values['vEgo']), float(values['steeringAngleDeg']))
     else:
-      return None
+      return reject()
     if not native:
-      return None
+      return reject()
     override = bool(
       cs.steeringPressed
       or cs.brakePressed
@@ -531,37 +562,57 @@ def physical_observer(sm, cp, collector, now_ns):
       or sm['driverMonitoringState'].noResponseForceDecel
     )
     fault = bool(cs.canTimeout or not cs.canValid or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted)
-    # Use independently timestamped actual CarState primitives at the pose
-    # source, without pretending the latest speed/angle occurred earlier.
-    before = [stamp for stamp in history if stamp <= pose_ns]
-    after = [stamp for stamp in history if stamp >= pose_ns]
-    if not before or not after:
-      return None
-    left, right = max(before), min(after)
-    if pose_ns - left > 100_000_000 or right - pose_ns > 100_000_000:
-      return None
-    weight = 0.0 if left == right else (pose_ns - left) / (right - left)
-    speed, steering_angle = tuple(a + (b - a) * weight for a, b in zip(history[left], history[right], strict=True))
-    # CP geometry is startup static; exact VM inputs are captured per command
-    # and replayed by the actual-controller family adapter.
-    return PhysicalEvidence(
-      pose_ns,
-      int(sm.recv_time['deviceMotion'] * 1e9),
-      generation,
-      digest((float(cp.steerRatio), float(cp.wheelbase), float(cp.centerToFront), float(cp.mass), collector._physical_clock, native_epoch, regime)),
-      digest((lag,)),
-      lag,
-      speed,
-      float(pose.angular_velocity.xyz[2]),
-      float(pose.orientation.xyz[0]),
-      steering_angle,
-      True,
-      override,
-      fault,
-      native,
-      source_boot_ns=int(dm.timestamp),
-      clock_offset_ns=collector._physical_clock,
-      clock_uncertainty_ns=(mono_after - mono_before) // 2,
+    if override or fault:
+      return reject()
+    # Freeze converted primitives at their original pose receipt. A following
+    # CarState may provide the right interpolation bracket, but may not provide
+    # a replacement pose timestamp, transform, authority or source identity.
+    command = ready[-1][0]
+    context = (
+      getattr(collector, 'session', ''), getattr(collector, 'model_block_sequence', 0),
+      command.identity, command.generation, command.source_epoch,
+      command.baseline_revision, command.controller_revision,
+      generation, estimate, collector._physical_clock, native_epoch, regime, lag,
+      float(cp.steerRatio), float(cp.wheelbase), float(cp.centerToFront), float(cp.mass),
     )
-  except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+    queue = getattr(collector, '_physical_pose_queue', ())
+    if getattr(collector, '_physical_pose_context', None) != context:
+      queue = ()
+    collector._physical_pose_context = context
+    queue = tuple(value for value in queue if 0 <= now_ns - value.mono_ns <= 100_000_000)
+    seen = getattr(collector, '_physical_seen_pose', 0)
+    if pose_ns < seen:
+      return reject()
+    if pose_ns > seen:
+      collector._physical_seen_pose = pose_ns
+      evidence = PhysicalEvidence(
+        pose_ns,
+        int(sm.recv_time['deviceMotion'] * 1e9),
+        generation,
+        digest((float(cp.steerRatio), float(cp.wheelbase), float(cp.centerToFront), float(cp.mass), collector._physical_clock, native_epoch, regime)),
+        digest((lag,)), lag, 0.0,
+        float(pose.angular_velocity.xyz[2]), float(pose.orientation.xyz[0]), 0.0,
+        True, False, False, True,
+        source_boot_ns=int(dm.timestamp),
+        clock_offset_ns=collector._physical_clock,
+        clock_uncertainty_ns=(mono_after - mono_before) // 2,
+      )
+      queue = (*queue, evidence)[-4:]
+    collector._physical_pose_queue = queue
+    for index, evidence in enumerate(queue):
+      before = [stamp for stamp in history if stamp <= evidence.mono_ns]
+      after = [stamp for stamp in history if stamp >= evidence.mono_ns]
+      if not before or not after:
+        continue
+      left, right = max(before), min(after)
+      if evidence.mono_ns - left > 100_000_000 or right - evidence.mono_ns > 100_000_000:
+        continue
+      weight = 0.0 if left == right else (evidence.mono_ns - left) / (right - left)
+      speed, steering_angle = tuple(a + (b - a) * weight for a, b in zip(history[left], history[right], strict=True))
+      # Consume once, in source order; downstream command/response joins keep
+      # their original independent 30 ms actuation and 100 ms response limits.
+      collector._physical_pose_queue = queue[index + 1:]
+      return replace(evidence, speed_mps=speed, steering_angle_deg=steering_angle)
     return None
+  except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+    return reject()

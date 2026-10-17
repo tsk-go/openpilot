@@ -67,7 +67,7 @@ class HomeState:
   paired: bool = True
   network: str = "none"
   network_strength: int = 0
-  temperature_c: int | None = None
+  temperature_c: float | None = None
   vehicle_online: bool = True
   connection: str = "OFFLINE"
   bluetooth: bool = False
@@ -76,6 +76,8 @@ class HomeState:
   recording_audio: bool = False
   branch: str = ""
   gpu_state: str = "disconnected"
+  metric: bool = False
+  temperature_high: bool = False
 
 
 @dataclass(frozen=True)

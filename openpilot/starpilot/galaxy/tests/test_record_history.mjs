@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { RouteWorkspace } from '../web/js/route-workspace.js'
+import { CameraViewer } from '../web/js/camera-viewer.js'
 import { BottomNav } from '../web/js/bottom-nav.js'
 import { LocalHistoryFeed, LocalRecordingsPage, availableFiles, hasVideo, validLocalHistory, quickRoadUrl,
   segmentSummaryUrl, validSegmentSummary, routeFiles, firstQuickVideo, routeDate, connectRouteUrl, routeMatchesSearch } from '../web/js/record-history.js'
@@ -29,10 +31,10 @@ assert.equal(validSegmentSummary(summary, `${current}--2`), false)
 assert.match(LocalRecordingsPage.template, /Local recordings/)
 assert.equal(hasVideo(history.routes[0].segments[0].files), true)
 assert.equal(hasVideo({ rlog: true, qlog: true, fcamera: false, dcamera: false, ecamera: false, qcamera: false }), false)
-assert.match(LocalRecordingsPage.template, /v-if="hasVideo\(segment\.files\)"[^>]*@click="confirmDeleteVideos\(segment\)"/)
+assert.match(RouteWorkspace.template, /<details v-if="hasVideo\(segment\.files\)"[^>]*>[\s\S]*?@click="confirmDeleteVideos\(segment\)"/)
 assert.match(LocalRecordingsPage.template, /scan was incomplete/)
 assert.doesNotMatch(LocalRecordingsPage.template, /v-html|deleteRoute/)
-assert.match(LocalRecordingsPage.template, /aria-label="Video segment"/)
+assert.match(RouteWorkspace.template, /aria-label="Route segment"/)
 assert.doesNotMatch(LocalRecordingsPage.template, /<details[^>]*\sopen[\s=>]/)
 assert.deepEqual(routeFiles(history.routes[0]), ['Full log', 'Quick log', 'Road video', 'Driver video', 'Quick video'])
 assert.equal(firstQuickVideo(history.routes[0]).number, 0)
@@ -52,13 +54,11 @@ for (const connectUrl of [`https://example.com/abcdef0123456789/${current}`, `${
 }
 assert.equal(connectRouteUrl({ ...connected, routeId: `0000000000000000|${current}` }), null)
 const cards = LocalRecordingsPage.computed.routeCards.call({ query: "", data: { routes: [connected] } })
-assert.equal(cards[0].connect, connected.connectUrl)
-assert.equal(cards[0].firstQuick.number, 0)
-assert.equal(cards[0].fileLabels.length, 5)
+assert.equal(cards[0].routeId, current)
 const app = readFileSync(new URL('../web/js/app.js', import.meta.url), 'utf8')
-assert.match(app, /<LocalRecordingsPage v-else-if="route.path === '\/recordings' && authState.localAccess"/)
+assert.match(app, /<LocalRecordingsPage v-else-if="isActive\('\/recordings'\) && authState.localAccess"/)
 assert.match(app, /<div v-if="authState.localAccess" class="gx-nav-section"><div class="gx-nav-section__title">Routes<\/div>/)
-assert.match(app, /<GxState v-else-if="route.path === '\/recordings'">Routes require a local Galaxy connection/)
+assert.match(app, /<GxState v-else-if="isActive\('\/recordings'\)">Routes require a local Galaxy connection/)
 assert.match(app, /<BottomNav[^>]*:local-access="authState.localAccess"/)
 assert.match(BottomNav.template, /:disabled="item.path === '\/recordings' && !localAccess"/)
 
@@ -176,61 +176,61 @@ listeners.get('visibilitychange')()
 assert.equal(page.$data.data, null)
 LocalRecordingsPage.beforeUnmount.call(page)
 assert.equal(listeners.size, 0)
+
+const detailsRequest = new AbortController()
+const workspace = { ...RouteWorkspace.data.call({initialMode:'replay'}), ...RouteWorkspace.methods,
+  replayMounted: true, replayBusy: true, infoMode: 'details', detailsStatus: 'ready', details: {}, detailsRequest,
+  segmentNumber: 1, load() {}, $refs: {} }
+RouteWorkspace.mounted.call(workspace)
+listeners.get('visibilitychange')()
+assert.equal(workspace.replayMounted, false)
+assert.equal(workspace.replayBusy, false, 'backgrounding a preparing replay must release the segment controls')
+assert.equal(detailsRequest.signal.aborted, true)
+assert.equal(workspace.details, null)
+assert.equal(workspace.infoMode, 'files', 'clearing Details must leave visible content selected')
+document.hidden = false
+listeners.get('visibilitychange')()
+assert.equal(workspace.replayBusy, false)
+assert.equal(workspace.replayMounted, false, 'returning must not automatically restart replay')
+assert.equal(workspace.infoMode, 'files')
+assert.equal(workspace.segmentNumber, 1, 'returning preserves the selected segment')
+RouteWorkspace.beforeUnmount.call(workspace)
+assert.equal(listeners.size, 0)
 globalThis.document = priorDocument
 
-// A selected segment is immediately visible, and retired media errors cannot act on a new video.
-const controls = LocalRecordingsPage.methods
-const player = { mode: 'local', status: 'ready', replayRoute: null, playing: null, playerError: '', playerGeneration: 0,
-  sessionProbe: null, $refs: {}, $nextTick(callback) { callback() }, unauthorized() { this.revoked = true } }
-for (const [name, method] of Object.entries(controls)) player[name] = method
-player.openPlayer(history.routes[0], history.routes[0].segments[0])
-assert.equal(player.playing.segments.length, 2)
-assert.equal(player.playing.index, 0)
-player.chooseSegment(1)
-assert.equal(player.playing.index, 1)
-const oldVideo = {}
-player.$refs.quickVideo = { dataset: { playerGeneration: String(player.playerGeneration) },
-  pause() {}, removeAttribute() {}, load() {} }
+// Changing source retires authentication probes without moving the selected segment.
+const camera = { ...CameraViewer.data(), segment: history.routes[0].segments[0], camera: 'qcamera', $refs: {},
+  unauthorized() { this.revoked = true } }
+Object.assign(camera, CameraViewer.methods)
+Object.defineProperty(camera, 'url', { get: () => CameraViewer.computed.url.call(camera) })
 const oldFetch = globalThis.fetch
 let sessionRequest
-globalThis.fetch = (_url, options) => new Promise((resolve) => { sessionRequest = { options, resolve } })
-await player.videoError({ currentTarget: oldVideo })
-assert.equal(sessionRequest, undefined, 'late error from retired element is ignored')
-const active = player.$refs.quickVideo
-active.dataset.playerGeneration = String(player.playerGeneration - 1)
-await player.videoError({ currentTarget: active })
-assert.equal(sessionRequest, undefined, 'retired generation on an old element is ignored')
-active.dataset.playerGeneration = String(player.playerGeneration)
-const checking = player.videoError({ currentTarget: active })
+const video = { dataset: { playerGeneration: '0' }, pause() {}, removeAttribute() {}, load() {} }
+camera.$refs.video = video
+await camera.videoError({ currentTarget: {} })
+assert.equal(sessionRequest, undefined)
+globalThis.fetch = (_url, options) => new Promise(resolve => { sessionRequest = {options, resolve} })
+const checking = camera.videoError({ currentTarget: video })
 await flush()
-assert.equal(sessionRequest.options.credentials, 'same-origin')
-player.closePlayer()
+camera.retire()
 assert.equal(sessionRequest.options.signal.aborted, true)
-sessionRequest.resolve({ status: 401, json: async () => ({ authenticated: false }) })
+sessionRequest.resolve({ status: 401, json: async () => ({authenticated: false}) })
 await checking
-assert.equal(player.revoked, undefined, 'retired session check cannot revoke reopened player')
-player.openPlayer(history.routes[0], history.routes[0].segments[0])
-player.$refs.quickVideo = { dataset: { playerGeneration: String(player.playerGeneration) },
-  pause() {}, removeAttribute() {}, load() {} }
-sessionRequest = undefined
-const revokedVideo = player.videoError({ currentTarget: player.$refs.quickVideo })
+assert.equal(camera.revoked, undefined, 'retired auth probe cannot revoke a new video')
+video.dataset.playerGeneration = String(camera.generation)
+const currentCheck = camera.videoError({currentTarget: video})
 await flush()
-sessionRequest.resolve({ status: 401, json: async () => ({ authenticated: false }) })
-await revokedVideo
-assert.equal(player.playing, null)
-assert.equal(player.revoked, true, 'current media auth loss clears playback and session')
-player.mode = 'offline-preview'
-sessionRequest = undefined
-player.openPlayer(history.routes[0], history.routes[0].segments[0])
-await player.videoError({ currentTarget: player.$refs.quickVideo })
-assert.equal(player.playing, null, 'offline preview never opens a video')
-assert.equal(sessionRequest, undefined, 'offline preview does not request media or session')
+sessionRequest.resolve({ status: 401, json: async () => ({authenticated: false}) })
+await currentCheck
+assert.equal(camera.revoked, true)
+camera.camera = 'dcamera'
+assert.equal(camera.url, null)
+assert.equal(camera.segment.number, 0, 'missing camera does not jump to a different segment')
 globalThis.fetch = oldFetch
-assert.match(LocalRecordingsPage.template, /cameraLabel\(playing.camera\)/)
-assert.match(LocalRecordingsPage.template, /@error="videoError\(\$event\)"/)
-assert.match(LocalRecordingsPage.template, /Distance is estimated from recorded speed/)
-assert.match(LocalRecordingsPage.template, /Steering active/)
-assert.match(LocalRecordingsPage.template, /Longitudinal active/)
+assert.match(RouteWorkspace.template, /Distance is estimated from recorded speed/)
+assert.match(RouteWorkspace.template, /Steering active/)
+assert.match(RouteWorkspace.template, /Longitudinal active/)
+const controls = RouteWorkspace.methods
 
 // The mounted page requests details only on selection; hide, timeout and late responses retire them.
 const savedDocument = globalThis.document
@@ -271,7 +271,7 @@ detailRequests[3].resolve({ status: 503, ok: false, json: async () => ({ code: '
 await revokeDetails
 assert.equal(detailsPage.revoked, true)
 assert.equal(detailsPage.details, null)
-detailsPage.mode = 'offline-preview'
+document.hidden = true
 await detailsPage.openDetails(segment)
 assert.equal(detailRequests.length, 4)
 globalThis.fetch = oldFetch
@@ -289,26 +289,22 @@ library.sortOrder = "shortest"
 assert.equal(LocalRecordingsPage.computed.routeCards.call(library)[0].segmentCount, 1)
 library.preservedOnly = true
 assert.equal(LocalRecordingsPage.computed.routeCards.call(library).length, 0)
-player.mode = "local"
-player.watchRoute(history.routes[0])
-assert.equal(player.playing.camera, "fcamera")
-player.selectCamera("dcamera")
-assert.equal(player.playing.camera, "dcamera")
-assert.equal(player.playing.segments[0].number, 2)
-player.closePlayer()
-for (const segment of history.routes[0].segments) {
-  player.watchRoute(history.routes[0], segment)
-  assert.equal(player.playing.segments[player.playing.index].number, segment.number, 'Play video starts at the selected segment')
-  assert.equal(player.replayRoute, null, 'plain video does not launch UI replay')
-  player.closePlayer()
-}
-assert.match(LocalRecordingsPage.template, /@click="watchRoute\(logsRoute, segment\)">Play video/)
-assert.match(LocalRecordingsPage.template, /<h2>Routes<\/h2>/)
+// List entry points carry the chosen mode into the same route workspace.
+const navigation = { go(path) { this.path = path } }
+const priorWindow = globalThis.window
+globalThis.window = {scrollY: 125}
+LocalRecordingsPage.methods.openRoute.call(navigation, history.routes[0], 'replay')
+assert.equal(navigation.entryMode, 'replay')
+assert.equal(navigation.path, `/recordings/${current}`)
+assert.equal(navigation.listScroll, 125)
+assert.equal(LocalRecordingsPage.computed.selectedRouteId.call({routePath:navigation.path}), current)
+globalThis.window = priorWindow
 
 // Confirmation has no side effects; errors stay in the dialog, and success refreshes inventory.
-const deletePage = { ...LocalRecordingsPage.data(), mode: 'local', status: 'ready', routeCards: [],
-  unauthorized: () => assert.fail('unexpected unauthorized'), feed: { async load() { deletePage.loads++ } }, loads: 0 }
-for (const [key, method] of Object.entries(LocalRecordingsPage.methods)) deletePage[key] = method.bind(deletePage)
+const deletePage = { ...RouteWorkspace.data.call({initialMode:'footage'}), status: 'ready', $refs: {}, $emit() {},
+  unauthorized: () => assert.fail('unexpected unauthorized'), loads: 0 }
+for (const [key, method] of Object.entries(RouteWorkspace.methods)) deletePage[key] = method.bind(deletePage)
+deletePage.load = async () => { deletePage.loads++ }
 const deleteSegment = { segmentName: `${current}--0`, number: 0, files: { qcamera: true } }
 const realFetch = globalThis.fetch
 const deleteCalls = []
@@ -330,12 +326,4 @@ try {
   assert.equal(deletePage.deleting, null)
 } finally { globalThis.fetch = realFetch }
 
-const replayPage = { closePlayer() { this.playing = null }, playing: {} }
-LocalRecordingsPage.methods.openReplay.call(replayPage, history.routes[0], 0)
-assert.deepEqual(replayPage.replayRoute, { routeId: current, segment: 0 })
-assert.equal(replayPage.playing, null)
-LocalRecordingsPage.methods.openReplay.call(replayPage, history.routes[0])
-assert.deepEqual(replayPage.replayRoute, { routeId: current, segment: null }, 'full route does not retain a prior selected segment')
-assert.match(LocalRecordingsPage.template, /@click="openLogs\(route\)">\{\{ route.segmentCount \}\}/)
-assert.match(LocalRecordingsPage.template, /:disabled="!replayableSegment\(segment\)" @click="openReplay\(logsRoute, segment.number\)"/)
-assert.match(LocalRecordingsPage.template, /:start-segment="replayRoute.segment"/)
+console.log('Routes: inventory, filters, scoped navigation, retired media/auth/detail requests and deletion passed')

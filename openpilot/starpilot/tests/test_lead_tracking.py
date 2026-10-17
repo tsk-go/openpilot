@@ -192,6 +192,28 @@ class TestLeadDetector(unittest.TestCase):
     self.assertIsNone(stale.tracked)
     self.assertFalse(detector.tracked)
 
+  def test_stopped_track_retains_only_fresh_bounded_origin_geometry(self):
+    for variation in ('clear', 'quantized', 'stale', 'moving', 'bad_y', 'tail_backstep', 'flag_speed'):
+      detector = LeadDetector()
+      for tick in range(15):
+        step(detector, tick, lead=wire_lead(distance=5, speed=0), speed=2.)
+      self.assertTrue(detector.tracked)
+      event = messaging.new_message('modelV2', valid=True)
+      xs = [70. * index / 32 for index in range(33)]
+      xs[1:3] = [0.0005, 0.0002]
+      if variation == 'tail_backstep':
+        xs[20] = xs[19] - .001
+      event.modelV2.position.x = xs
+      event.modelV2.position.y = [float('nan') if variation == 'bad_y' else 0.] * 33
+      model = messaging.log_from_bytes(event.to_bytes()).modelV2
+      observation = step(detector, 15, model=model, lead=wire_lead(distance=5, speed=.8),
+                         speed={'moving': .5, 'flag_speed': .5, 'quantized': .044}.get(variation, 0.),
+                         standstill=variation != 'moving', model_fresh=variation != 'stale')
+      if variation in ('clear', 'quantized'):
+        self.assertTrue(observation.tracked)
+      else:
+        self.assertIsNone(observation.tracked)
+
   def test_serialized_model_origin_roundoff_only(self):
     detector = LeadDetector()
     roundoff = step(detector, 0, model=wire_model(origin=-6.64888977208733e-11))

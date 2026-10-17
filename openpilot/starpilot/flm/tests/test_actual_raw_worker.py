@@ -27,7 +27,7 @@ from openpilot.starpilot.flm.fullrate_collector import ControlEvidence, AppliedE
 from openpilot.starpilot.flm.learner_factory import TorqueCollectionAdapter, decode_fit_result, fit_snapshot
 from openpilot.starpilot.flm.learning_wire import write_control, read_control, write_applied, read_applied
 from openpilot.starpilot.flm.torque_adapter import Objective, gates
-from openpilot.starpilot.flm.runtime_adapter_registry import current_authority, read_source
+from openpilot.starpilot.flm.runtime_adapter_registry import baseline_values, current_authority, read_source
 from openpilot.starpilot.flm.torque_observation import TorqueObservation, REVISION
 from openpilot.starpilot.flm.tests.test_registered_controls_global import controls_for, frame
 from openpilot.starpilot.flm.tests.test_registered_accepted_profile import accepted_frame
@@ -38,12 +38,13 @@ BASE = 400_000_000_000
 CONTEXT = ('a' * 64, 'b' * 64, 'c' * 64, 0)
 
 
-def raw_job(cp, runtime, params_store):
+def raw_job(cp, runtime, params_store, *, native_refinements=False):
   factory = SelectedControllerFactory(cp, 'standard')
   ci = interfaces[cp.carFingerprint](cp)
   ci.update([])
   assert install_observer(ci)
   health = messaging.SubMaster(['pandaStates'])
+  native_health = messaging.SubMaster(['lateralTorqueParameters']) if native_refinements else None
   panda_period_ns = round(1e9 / SERVICE_LIST['pandaStates'].frequency)
   last_panda_ns = 0
 
@@ -101,6 +102,20 @@ def raw_job(cp, runtime, params_store):
       # (after eps_torque_scale), as consumed by the real measured limiter.
       cs.steeringTorqueEps = measured_eps_torque
       update_health(stamp)
+      if native_refinements and tick % 25 == 0:
+        from openpilot.starpilot.flm.native_baseline import apply_native_refinement
+        packet = messaging.new_message('lateralTorqueParameters', valid=True, logMonoTime=stamp)
+        row = packet.lateralTorqueParameters
+        row.version, row.valid, row.useParams = 1, True, True
+        # Small, deterministic changing native baseline, independent of the
+        # synthetic physical plant or fitted objective. No fabricated fit.
+        row.latAccelFactorFiltered = float(cp.lateralTuning.torque.latAccelFactor) * (1 + .002 * math.sin((block * 400 + tick) / 100))
+        row.latAccelOffsetFiltered = 0.
+        row.frictionCoefficientFiltered = float(cp.lateralTuning.torque.friction) * (1 + .002 * math.cos((block * 400 + tick) / 100))
+        native_health.update_msgs(stamp / 1e9, [packet.as_reader()])
+        apply_native_refinement(controller, cp, native_health, now_ns=stamp,
+          apply=lambda controller=controller, row=row: controller.update_torque_parameters(row.latAccelFactorFiltered, row.latAccelOffsetFiltered,
+                                                           row.frictionCoefficientFiltered))
       checkpoint = ()
       if tick >= 200 and tick % 100 == 0:
         checkpoint = capture_snapshot(controller, vm).values
@@ -153,7 +168,8 @@ def raw_job(cp, runtime, params_store):
         stage_schema_revision=REVISION, stage_values=values, applied_coordinates=(0.0, 0.0),
         source_epoch=source.source_epoch, source_receipt_ns=source.observed_ns, controller_mode='standard',
         policy=runtime.descriptor.policy, baseline_revision=runtime.baseline_revision,
-        baseline_values=runtime.initial_values, controller_revision=runtime.descriptor.controller_revision,
+        baseline_values=(baseline_values(controller) if native_refinements else runtime.initial_values),
+        controller_revision=runtime.descriptor.controller_revision,
         replay_snapshot=checkpoint, replay_inputs=inputs, snapshot_sequence=sequence)
       applied = AppliedEvidence(stamp, stamp, stamp + 1_000_000, 'normalized_torque', float(output.torque),
                                 True, True, False, False, False, allowed, witness, ci.CC.frame, stamp + 1_000_000)
@@ -194,11 +210,17 @@ def raw_job(cp, runtime, params_store):
              'plant_tau_seconds': PLANT_TAU_SECONDS}
   assert all(min(calibration_responses) <= value <= max(calibration_responses) for value in stage_targets), support
   cpu, wall = time.thread_time_ns(), time.perf_counter_ns()
-  snapshot = adapter.fit_job_snapshot(tuple(blocks), BASE + 300_000_000, 1, None,
+  job_now_ns = applied.apply_ns + 2_000_000 if native_refinements else BASE + 300_000_000
+  snapshot = adapter.fit_job_snapshot(tuple(blocks), job_now_ns, 1, None,
                                       control=last_control, output=last_output, physical_context=CONTEXT)
   export_cost = {'cpu_ns': time.thread_time_ns() - cpu, 'wall_ns': time.perf_counter_ns() - wall,
                  'json_bytes': len(json.dumps(snapshot).encode()), 'recorded_frames': len(adapter.replay.records), 'blocks': 16, 'support': support}
   assert snapshot is not None and export_cost['recorded_frames'] == 3200
+  if native_refinements:
+    export_cost['last_physical'] = dict(points[-1].physical)
+    # Fit uses its genuine maneuver endpoint. Fresh revalidation separately
+    # uses later actual frames already observed after that physical response.
+    last_control, last_output = control, applied
   return snapshot, adapter, last_control, last_output, export_cost
 
 

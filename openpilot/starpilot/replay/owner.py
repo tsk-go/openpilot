@@ -24,7 +24,8 @@ import time
 from typing import cast
 import uuid
 
-from openpilot.starpilot.replay.client import MAX_REQUEST, MAX_RESPONSE, encode, parse, receive, replay_root
+from openpilot.starpilot.replay.client import MAX_REQUEST, MAX_RESPONSE, MAX_WORKER_STATUS, encode, parse, receive, replay_root
+from openpilot.starpilot.replay.export import BITRATE_KBPS, EXPORT_TTL, MAX_EXPORT_BYTES, disk_budget
 from openpilot.tools.replay.display_clock import RECORD
 
 
@@ -151,6 +152,7 @@ class ReplayOwner:
     self.root = Path(root) if root is not None else replay_root()
     _owned_dir(self.root)
     _owned_dir(self.root / 'sessions')
+    _owned_dir(self.root / 'exports')
     if profile not in ('large', 'compact'):
       raise ValueError('Invalid replay profile')
     self.authority, self.params, self.profile, self.spawn, self.clock = authority, params, profile, spawn, clock
@@ -170,12 +172,15 @@ class ReplayOwner:
     self.session_dir = None
     self.retained_lease = None
     self.base_warnings = []
+    self.export = None
+    self.export_client = None
+    self.view_display = None
     self.status = self._idle()
 
   def _idle(self, error=None):
     return {'schemaVersion': 1, 'ownerId': self.owner_id, 'sessionId': None, 'state': 'idle', 'routeId': None,
             'profile': self.profile, 'revision': 0, 'epoch': 0, 'position': 0.0, 'start': 0.0, 'end': 0.0,
-            'rate': 1.0, 'paused': True, 'errorCode': error, 'sourceWarnings': [], 'seekRanges': [],
+            'rate': 1.0, 'paused': True, 'errorCode': error, 'sourceWarnings': [], 'seekRanges': [], 'segmentRanges': [],
             'frameReady': False, 'mediaReady': False}
 
   def _snapshot(self, client=None):
@@ -183,10 +188,38 @@ class ReplayOwner:
     owned = client == self.client_id and client is not None
     result['owned'] = owned
     result['offroad'] = bool(self.authority())
+    self._expire_export()
+    if self.export is not None:
+      result['export'] = {key: value for key, value in self.export.items() if key != 'expires'}
+      result['export']['owned'] = client == self.export_client
+      if 'expires' in self.export:
+        result['export']['expiresInSeconds'] = max(0., self.export['expires'] - self.clock())
     if not owned:
       for key in ('framePath', 'media', 'codec'):
         result.pop(key, None)
     return result
+
+  def _expire_export(self, *, replace=False):
+    if (self.export is None or self.worker is not None and self.status.get('purpose') == 'export' or
+        not replace and self.clock() < self.export.get('expires', float('inf'))):
+      return True
+    directory = self.root / 'exports' / self.export['id']
+    path = directory / 'replay.mp4'
+    try:
+      fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+      try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        path.unlink()
+      finally:
+        os.close(fd)
+      directory.rmdir()
+    except FileNotFoundError:
+      if directory.exists():
+        directory.rmdir()
+    except (BlockingIOError, OSError):
+      return False
+    self.export = self.export_client = None
+    return True
 
   def _touch(self, request):
     client = request.get('clientId')
@@ -235,12 +268,32 @@ class ReplayOwner:
         dates = {}  # Optional dates must not hide usable recordings.
       for route in routes:
         route['startTime'] = dates.get(route['routeId'])
+        for segment in route.get('segments', []):
+          segment.pop('logFiles', None)
+          segment.pop('logBytes', None)
       return result
     with self.lock:
       if op == 'status' and set(request) <= {'op', 'clientId'}:
         return self._snapshot(self._touch(request))
       if op == 'start':
         return self._start(request)
+      if op == 'export-start':
+        return self._start(request, exporting=True)
+      if op == 'export-file':
+        if set(request) != {'op', 'exportId', 'clientId'} or not _token(request['exportId']):
+          raise Rejected('invalid_request')
+        self._expire_export()
+        if (self.export is None or self.export['id'] != request['exportId'] or self.export_client != request['clientId'] or
+            self.export['state'] != 'ready'):
+          raise Rejected('export_unavailable', 'Replay export is unavailable; render it again')
+        return {key: self.export[key] for key in ('id', 'bytes', 'filename')}
+      if op == 'export-clear':
+        if set(request) != {'op', 'routeId'} or type(request['routeId']) is not str:
+          raise Rejected('invalid_request')
+        if self.export is not None and self.export['routeId'] == request['routeId']:
+          if self.worker is not None and self.status.get('purpose') == 'export' or not self._expire_export(replace=True):
+            raise Rejected('busy', 'Stop the export or finish downloading before deleting this route')
+        return {'cleared': True}
       if op == 'control':
         return self._control(request)
       if op == 'stop':
@@ -256,9 +309,10 @@ class ReplayOwner:
         return self._media(request)
     raise Rejected('invalid_request')
 
-  def _start(self, request):
-    common = {'op', 'routeId', 'target', 'clientId', 'requestId', 'expectedOwnerId'}
-    if (set(request) not in (common, common | {'segment'}) or request['target'] not in ('native', 'web') or
+  def _start(self, request, *, exporting=False):
+    common = {'op', 'routeId', 'clientId', 'requestId', 'expectedOwnerId'} | (set() if exporting else {'target'})
+    target = 'web' if exporting else request.get('target')
+    if (set(request) not in (common, common | {'segment'}) or target not in ('native', 'web') or
         'segment' in request and (type(request['segment']) is not int or not 0 <= request['segment'] <= 999999)):
       raise Rejected('invalid_request')
     if self._repeat(request):
@@ -276,6 +330,12 @@ class ReplayOwner:
     if segment is not None and not any(item['number'] == segment and (item['files']['rlog'] or item['files']['qlog']) and
                                       (item['files']['fcamera'] or item['files']['qcamera']) for item in route.get('segments', [])):
       raise Rejected('segment_unavailable', 'This segment has no replayable driving logs and road video')
+    budget = disk_budget(self.root) if exporting else 0
+    estimate = (1 if segment is not None else len(route.get('segments', []))) * 60 * BITRATE_KBPS * 1000 // 8
+    if exporting and (budget < estimate or estimate <= 0):
+      raise Rejected('storage_low', 'Not enough free recording storage; export individual segments instead')
+    if exporting and not self._expire_export(replace=True):
+      raise Rejected('busy', 'Finish downloading the previous replay before exporting another')
     sid = uuid.uuid4().hex
     directory = self.root / 'sessions' / sid
     _owned_dir(directory)
@@ -289,14 +349,22 @@ class ReplayOwner:
     self.base_warnings = list(route.get('warnings', []))[:32]
     self.status = self._idle()
     self.status.update(sessionId=sid, state='preparing', routeId=route['routeId'], revision=1,
-                       target=request['target'], sourceWarnings=self.base_warnings, lastRequestId=request['requestId'])
+                       target=target, purpose='export' if exporting else 'view',
+                       sourceWarnings=self.base_warnings, lastRequestId=request['requestId'])
+    if exporting:
+      self.export_client = request['clientId']
+      self.export = {'id': sid, 'routeId': route['routeId'], 'segment': segment, 'state': 'rendering', 'progress': 0.,
+                     'bytes': 0, 'filename': route['routeId'].replace('|', '_') + '-replay' +
+                     (f'-segment-{segment}' if segment is not None else '-route') + '.mp4', 'error': None}
     self._remember(request)
-    self.worker = threading.Thread(target=self._run, args=(sid, route['routeId'], request['target'], segment),
+    self.worker = threading.Thread(target=self._run, args=(sid, route['routeId'], target, segment, budget),
                                    name='recorded-replay', daemon=True)
     self.worker.start()
     return self._snapshot(self.client_id)
 
   def _control(self, request):
+    if self.status.get('purpose') == 'export':
+      raise Rejected('export_active', 'Replay export is rendering; cancel it before using playback controls')
     common = {'op', 'sessionId', 'clientId', 'requestId', 'expectedRevision', 'action'}
     action = request.get('action')
     extra = {'pause': 'paused', 'seek': 'position', 'rate': 'rate'}.get(action)
@@ -376,6 +444,11 @@ class ReplayOwner:
     snapshot = json.dumps({'version': 1, 'values': values}).encode('utf-8')
     if len(snapshot) > 128 * 1024:
       raise Rejected('settings_unavailable')
+    context = self.client_id, self.status['routeId']
+    if self.status.get('purpose') == 'export' and self.view_display is not None and self.view_display[:2] == context:
+      snapshot = self.view_display[2]
+    elif self.status.get('target') == 'web':
+      self.view_display = (*context, snapshot)
     path = directory / 'display.json'
     path.write_bytes(snapshot)
     path.chmod(0o600)
@@ -408,12 +481,26 @@ class ReplayOwner:
       if any(before[1] > after[0] for before, after in zip(ranges, ranges[1:], strict=False)):
         raise Rejected('worker_failed')
       self.status['seekRanges'] = ranges
+      segments = value.get('segmentRanges', [])
+      if (type(segments) is not list or len(segments) > 512 or
+          any(type(item) is not list or len(item) != 3 or type(item[0]) is not int or not 0 <= item[0] <= 999999 or
+              item[1:] != bounds for item, bounds in zip(segments, ranges, strict=False)) or
+          segments and (len(segments) != len(ranges) or len({item[0] for item in segments}) != len(segments))):
+        raise Rejected('worker_failed')
+      self.status['segmentRanges'] = segments
+      if self.status.get('purpose') == 'export':
+        phase, progress = value.get('exportState'), value.get('exportProgress')
+        if phase is not None:
+          if phase not in {'rendering', 'finalizing', 'ready'} or not _finite(progress) or not 0 <= progress <= 1:
+            raise Rejected('worker_failed')
+          self.export.update(state='finalizing' if phase == 'ready' else phase, progress=progress)
+          self.status['exportComplete'] = phase == 'ready'
       warnings = value.get('sourceWarnings', [])
       if type(warnings) is not list or len(warnings) > 32 or any(type(warning) is not str or len(warning) > 160 for warning in warnings):
         raise Rejected('worker_failed')
       self.status['sourceWarnings'] = list(dict.fromkeys([*self.base_warnings, *warnings]))[:32]
       if self.status['target'] == 'native':
-        self.status['framePath'] = str(directory / 'frame')
+        self.status['framePath'] = str(Path('/dev/shm') / ('msgq_replay-' + directory.name[:24]) / 'frame')
       media = value.get('media')
       if type(media) is dict:
         if (set(media) != {'epoch', 'codec', 'firstSequence', 'lastSequence', 'width', 'height'} or
@@ -452,6 +539,25 @@ class ReplayOwner:
 
   def recover(self):
     """Called only after acquiring the owner lease; never clean another live owner."""
+    exports = list((self.root / 'exports').iterdir())
+    if len(exports) > 64:
+      raise Rejected('unavailable', 'Replay export recovery needs attention')
+    for directory in exports:
+      if _token(directory.name):
+        _owned_dir(directory)
+        path = directory / 'replay.mp4'
+        try:
+          fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+          try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            path.unlink()
+          finally:
+            os.close(fd)
+        except FileNotFoundError:
+          pass
+        except BlockingIOError:
+          raise Rejected('busy', 'A previous replay export is still downloading') from None
+        directory.rmdir()
     entries = list((self.root / 'sessions').iterdir())
     if len(entries) > 64:
       raise Rejected('unavailable', 'Replay recovery needs attention')
@@ -505,7 +611,7 @@ class ReplayOwner:
       Path('/tmp', prefix + '_visionipc_camerad').unlink(missing_ok=True)
       shutil.rmtree(directory)
 
-  def _run(self, sid, route_id, target, segment=None):
+  def _run(self, sid, route_id, target, segment=None, export_budget=0):
     directory = self.root / 'sessions' / sid
     prefix = 'replay-' + sid[:24]
     ipc = Path('/dev/shm') / ('msgq_' + prefix)
@@ -537,6 +643,8 @@ class ReplayOwner:
                  '--route-id', route_id, '--data-dir', str(self.catalog.root), '--target', target, '--profile', self.profile]
       if segment is not None:
         command.extend(['--start-segment', str(segment)])
+      if export_budget:
+        command.extend(['--export-budget', str(export_budget)])
       child = self.spawn(_guarded_command(command), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, start_new_session=True, bufsize=0)
       with self.lock:
@@ -558,7 +666,7 @@ class ReplayOwner:
             if not self.authority():
               error = 'not_offroad'
               self.cancel.set()
-            elif now - self.lease_at > LEASE_SECONDS:
+            elif not export_budget and now - self.lease_at > LEASE_SECONDS:
               error = 'viewer_disconnected'
               self.cancel.set()
             elif now - last_source_check >= 1:
@@ -566,6 +674,10 @@ class ReplayOwner:
               if not lease.current():
                 error = 'route_changed'
                 self.cancel.set()
+            if export_budget and (disk_budget(self.root) <= 0 or now - started > PREPARE_SECONDS + 300 + 2 *
+                                  (1 if segment is not None else len(lease.route['segments'])) * 60):
+              error = 'export_resource_limit'
+              self.cancel.set()
             if self.status['state'] == 'preparing' and now - started > PREPARE_SECONDS:
               error = 'prepare_timeout'
               self.cancel.set()
@@ -601,18 +713,32 @@ class ReplayOwner:
               del diagnostics[:-65536]
             else:
               stdout.extend(chunk)
-              if len(stdout) > 32768:
+              if len(stdout) > MAX_WORKER_STATUS + 8192:
                 raise Rejected('worker_failed')
               while b'\n' in stdout:
                 line, _, remaining = stdout.partition(b'\n')
                 stdout = bytearray(remaining)
-                self._observe(parse(bytes(line), 16384), directory)
+                self._observe(parse(bytes(line), MAX_WORKER_STATUS), directory)
           if child.poll() is not None and not selector.get_map():
             break
       if stdout:
         raise Rejected('worker_failed')
       if child.returncode != 0 and not self.cancel.is_set():
         raise Rejected(self.status.get('errorCode') or 'worker_failed')
+      if export_budget:
+        if not self.cancel.is_set():
+          if not self.authority() or not lease.current() or not self.status.get('exportComplete'):
+            raise Rejected('export_incomplete')
+        else:
+          return
+        path = directory / 'export.mp4'
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or not 0 < info.st_size <= min(MAX_EXPORT_BYTES, export_budget):
+          raise Rejected('export_incomplete')
+        destination = self.root / 'exports' / sid
+        _owned_dir(destination)
+        path.replace(destination / 'replay.mp4')
+        self.export.update(bytes=info.st_size)
     except Exception as failure:
       error = getattr(failure, 'code', 'worker_failed')
     finally:
@@ -647,12 +773,17 @@ class ReplayOwner:
       with self.lock:
         if reaped:
           previous_error = self.status.get('errorCode')
+          if export_budget:
+            self.export.update(state='failed' if error else 'cancelled' if self.cancel.is_set() else 'ready',
+                               error=error, expires=self.clock() + EXPORT_TTL)
           self.status = self._idle(error or previous_error)
           self.child = self.worker = None
           self.client_id = None
           self.pending = None
           self.session_dir = None
         else:
+          if export_budget:
+            self.export.update(state='failed', error=error or 'stop_unconfirmed')
           self.retained_lease = lease
           self.status.update(state='failed', errorCode=error or 'stop_unconfirmed', frameReady=False, mediaReady=False)
 
@@ -692,6 +823,8 @@ def serve(owner, *, stop=None, path=None):
         try:
           peer, _ = server.accept()
         except TimeoutError:
+          with owner.lock:
+            owner._expire_export()
           continue
         with peer:
           peer.settimeout(1)
@@ -722,12 +855,12 @@ def serve(owner, *, stop=None, path=None):
 def main():
   from openpilot.common.hardware import HARDWARE
   from openpilot.common.params import Params
-  from openpilot.starpilot.replay.catalog import ReplayCatalog
+  from openpilot.starpilot.galaxy.route_inventory import RouteInventory
   if os.environ.get('OPENPILOT_PREFIX'):
     raise RuntimeError('Replay owner must use the real device namespace')
   params = Params()
   authority = LiveAuthority(params)
-  owner = ReplayOwner(ReplayCatalog(), authority=authority.allowed, params=params,
+  owner = ReplayOwner(RouteInventory(), authority=authority.allowed, params=params,
                       profile='compact' if HARDWARE.get_device_type() == 'mici' else 'large')
   stop = threading.Event()
   for sig in (signal.SIGINT, signal.SIGTERM):

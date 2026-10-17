@@ -13,7 +13,7 @@ from openpilot.starpilot.ui.feature_settings_state import (
   FEATURE_BUTTON_TOP, FEATURE_BUTTON_HEIGHT, FEATURE_ACTION_MARGIN, FEATURE_HEADER_HEIGHT,
   FEATURE_TAP_SLOP, FEATURE_FLICK_DISTANCE, FEATURE_PAGE_COUNTER_WIDTH,
   feature_scroll, feature_action_left, feature_action_rects, feature_row_top, feature_page_counter_left, feature_footer_buttons,
-  value_buttons, value_editor_rect, value_done_rect, value_text,
+  value_buttons, value_editor_rect, value_done_rect, value_text, value_reason,
 )
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile
 from openpilot.starpilot.ui.settings_geometry import (
@@ -25,7 +25,9 @@ from openpilot.starpilot.ui.settings_geometry import (
 LABEL_SIZE = 50
 DETAIL_SIZE = 35
 PAGE_TRANSITION_TIME = 0.18
-EDGE_ACCENT = rl.color_lerp(PANEL_BG, ACCENT, 0.5)
+EDGE_ACCENT = rl.color_lerp(PANEL_BG, ACCENT, 0.4)
+EDGE_FADE_HEIGHT = 96
+EDGE_FADE_CLEAR = rl.Color(PANEL_BG.r, PANEL_BG.g, PANEL_BG.b, 0)
 VALUE_SELECTED_BORDER = rl.Color(ACCENT.r, ACCENT.g, ACCENT.b, 100)
 VALUE_DONE_BG = rl.Color(ACCENT.r, ACCENT.g, ACCENT.b, 34)
 DRIVE_MODE_BORDER = rl.Color(108, 102, 122, 255)
@@ -120,26 +122,33 @@ class FeatureSettingsView:
       return
     can_page = drag_x != 0 and feature_scroll(state.scroll, 1 if drag_x < 0 else -1, len(state.rows)) != state.scroll
     rows_state, pull_x, cover = self._page_frame(state, feature_pull(drag_x, can_page), drag_x != 0)
-    if pull_x and can_page:
-      edge_x = 2125 - FEATURE_FLICK_DISTANCE if pull_x < 0 else left + 25
-      gap_x = 2125 + pull_x if pull_x < 0 else left - 20
-      gap_right = 2160 if pull_x < 0 else left + 25 + pull_x
-      color_left, color_right = (PANEL_BG, EDGE_ACCENT) if pull_x < 0 else (EDGE_ACCENT, PANEL_BG)
-      rl.draw_rectangle_gradient_ex(rl.Rectangle(gap_x, row_top, gap_right - gap_x, FEATURE_VISIBLE_ROWS * FEATURE_ROW_HEIGHT),
-                                    color_left, color_left, color_right, color_right)
-      cx, cy = edge_x + FEATURE_FLICK_DISTANCE / 2, row_top + FEATURE_VISIBLE_ROWS * FEATURE_ROW_HEIGHT / 2
-      direction = 1 if pull_x < 0 else -1
-      tip = rl.Vector2(cx + direction * 8, cy)
-      rl.draw_line_ex(rl.Vector2(cx - direction * 8, cy - 16), tip, 4, TEXT_PRIMARY)
-      rl.draw_line_ex(tip, rl.Vector2(cx - direction * 8, cy + 16), 4, TEXT_PRIMARY)
-    clip.begin_scissor_mode(left + 25, row_top, 2100 - left, FEATURE_VISIBLE_ROWS * FEATURE_ROW_HEIGHT)
+    body = rl.Rectangle(left + 25, row_top, 2100 - left, FEATURE_VISIBLE_ROWS * FEATURE_ROW_HEIGHT)
+    clip.begin_scissor_mode(body.x, body.y, body.width, body.height)
     try:
+      if pull_x and can_page:
+        gap = abs(pull_x)
+        gap_x = body.x + body.width + pull_x if pull_x < 0 else body.x
+        edge = rl.color_lerp(PANEL_BG, EDGE_ACCENT, gap / FEATURE_FLICK_DISTANCE)
+        color_left, color_right = (PANEL_BG, edge) if pull_x < 0 else (edge, PANEL_BG)
+        rl.draw_rectangle_gradient_ex(rl.Rectangle(gap_x, body.y, gap, body.height),
+                                      color_left, color_left, color_right, color_right)
+        # Feather the exposed background before drawing the moving rows and their text.
+        rl.draw_rectangle_gradient_ex(rl.Rectangle(gap_x, body.y, gap, EDGE_FADE_HEIGHT),
+                                      PANEL_BG, EDGE_FADE_CLEAR, EDGE_FADE_CLEAR, PANEL_BG)
+        rl.draw_rectangle_gradient_ex(rl.Rectangle(gap_x, body.y + body.height - EDGE_FADE_HEIGHT, gap, EDGE_FADE_HEIGHT),
+                                      EDGE_FADE_CLEAR, PANEL_BG, PANEL_BG, EDGE_FADE_CLEAR)
+        edge_x = body.x + body.width - FEATURE_FLICK_DISTANCE if pull_x < 0 else body.x
+        cx, cy = edge_x + FEATURE_FLICK_DISTANCE / 2, body.y + body.height / 2
+        direction = 1 if pull_x < 0 else -1
+        tip = rl.Vector2(cx + direction * 8, cy)
+        rl.draw_line_ex(rl.Vector2(cx - direction * 8, cy - 16), tip, 4, TEXT_PRIMARY)
+        rl.draw_line_ex(tip, rl.Vector2(cx - direction * 8, cy + 16), 4, TEXT_PRIMARY)
       if pull_x:
         rl.rl_push_matrix()
       try:
         if pull_x:
           rl.rl_translatef(pull_x, 0, 0)
-          rl.draw_rectangle_rec(rl.Rectangle(left + 25, row_top, 2100 - left, FEATURE_VISIBLE_ROWS * FEATURE_ROW_HEIGHT), PANEL_BG)
+          rl.draw_rectangle_rec(body, PANEL_BG)
         for visible, row in enumerate(rows_state.rows[rows_state.scroll:rows_state.scroll + FEATURE_VISIBLE_ROWS]):
           y = row_top + visible * FEATURE_ROW_HEIGHT
           value = _boolean_value(row)
@@ -155,12 +164,13 @@ class FeatureSettingsView:
             continue
           has_control = bool(row.actions or row.page or _confirmation(row) or row.available or value is not None)
           width = (feature_action_left(row) - 24 if has_control else 2094) - (left + 55)
-          detail = row.value + (" " + row.unit if row.unit and row.value != "Auto" else "")
+          detail = value_text(row) if row.key == "LaneCenteringStrength" else row.value + (" " + row.unit if row.unit and row.value != "Auto" else "")
           if value is not None or (row.available and not row.actions and not row.page and not _confirmation(row) and not row.repair_value):
             detail = ""
           if row.page and detail in ("Saved settings", "Saved preferences", "Saved profiles"):
             detail = ""
-          detail += (" - " if detail and row.reason else "") + row.reason
+          reason = value_reason(row)
+          detail += (" - " if detail and reason else "") + reason
           label = self._elide(row.label, FontRole.NORMAL, LABEL_SIZE, width)
           detail = self._elide(detail, FontRole.NORMAL, DETAIL_SIZE, width)
           label_top, label_bottom = self.fonts.vertical_ink(label, FontRole.NORMAL, LABEL_SIZE)
@@ -239,8 +249,9 @@ class FeatureSettingsView:
                 self._center(self._elide(row.repair_value, FontRole.MEDIUM, DETAIL_SIZE, action.width - 24), DETAIL_SIZE,
                              rl.Rectangle(action.x, action.y + action.height / 2, action.width, action.height / 2))
             else:
-              value_text = row.value + (" " + row.unit if row.unit and row.value != "Auto" else "")
-              self._center(self._elide(value_text, FontRole.NORMAL, LABEL_SIZE, action.width - 24), LABEL_SIZE,
+              display_value = (value_text(row) if row.key == "LaneCenteringStrength" else
+                               row.value + (" " + row.unit if row.unit and row.value != "Auto" else ""))
+              self._center(self._elide(display_value, FontRole.NORMAL, LABEL_SIZE, action.width - 24), LABEL_SIZE,
                            rl.Rectangle(action.x, y + 12, action.width, FEATURE_BUTTON_TOP - 24), role=FontRole.NORMAL)
               for x, text in ((1760, "-"), (1940, "+")):
                 button = rl.Rectangle(x, y + FEATURE_BUTTON_TOP, 155, FEATURE_BUTTON_HEIGHT)
@@ -252,8 +263,7 @@ class FeatureSettingsView:
         if pull_x:
           rl.rl_pop_matrix()
       if cover:
-        rl.draw_rectangle_rec(rl.Rectangle(left + 25, row_top, 2100 - left, FEATURE_VISIBLE_ROWS * FEATURE_ROW_HEIGHT),
-                              rl.Color(PANEL_BG.r, PANEL_BG.g, PANEL_BG.b, cover))
+        rl.draw_rectangle_rec(body, rl.Color(PANEL_BG.r, PANEL_BG.g, PANEL_BG.b, cover))
     finally:
       clip.end_scissor_mode()
     if state.editor:

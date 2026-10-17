@@ -32,6 +32,12 @@ def write_projection(value):
 
   data = projection_to_dict(value)
   result = {wire: data[key] for wire, key in FIELDS}
+  # Honda's normalized limiter can have no unlimited integer command: its
+  # lookup encoder runs AFTER limiting. Preserve absence rather than inventing
+  # an unclipped integer or dropping the original clipped context.
+  result['version'] = 2
+  result['unlimitedRawPresent'] = data['unlimited_raw'] is not None
+  result['unlimitedRaw'] = 0 if data['unlimited_raw'] is None else data['unlimited_raw']
   result['limits'] = [{'name': name, 'value': amount} for name, amount in data['limits']]
   result['shape'] = _named_values(tuple((str(index), item) for index, item in enumerate(data['shape'])))
   return result
@@ -40,6 +46,8 @@ def write_projection(value):
 def read_projection(value):
   if value.version == 0:
     return None
+  if value.version not in (1, 2):
+    raise ValueError('steering projection wire version')
   from opendbc.car.steering_projection import projection_from_dict
   from openpilot.starpilot.flm.learning_wire import _read_named_values
 
@@ -63,6 +71,15 @@ def read_projection(value):
       if key in ('lookup_x', 'lookup_y')
       else float(item)
     )
+  if value.version == 2:
+    # Version1 always carried an actual integer. Version2 explicitly preserves
+    # the observer's optional integer without making zero mean unavailable.
+    if not value.unlimitedRawPresent:
+      if (value.unlimitedRaw != 0 or value.family != 'honda' or
+          value.mappingKind != 'honda_lookup' or value.limiterKind != 'normalized_rate'):
+        raise ValueError('invalid absent normalized Honda command')
+      data['unlimited_raw'] = None
+    data['version'] = 1  # Immutable observer/codec contract remains version1.
   shape = _read_named_values(value.shape, 7)
   if tuple(name for name, _ in shape) != tuple(str(index) for index in range(len(shape))):
     raise ValueError('steering projection shape order')

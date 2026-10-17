@@ -141,7 +141,8 @@ def physical_frame(collector, basis, now=BASE):
 
 
 def test_actual_physical_observer_updates_live_transform_without_splitting_generation():
-  command = SimpleNamespace(native_identity='current-native', state_ns=BASE,
+  command = SimpleNamespace(identity='a' * 64, generation=1, source_epoch='b' * 64, baseline_revision='baseline',
+    controller_revision='controller', native_identity='current-native', state_ns=BASE,
     replay_inputs=(('vm.sR', 14.), ('vm.cF', 100000.), ('vm.cR', 100000.),
                    ('vEgo', 30.), ('steeringAngleDeg', 0.)))
   collector = SimpleNamespace(context=('identity', 1, 'normalized_torque', 'stage', 'response', 'a' * 64),
@@ -149,7 +150,9 @@ def test_actual_physical_observer_updates_live_transform_without_splitting_gener
     ready=[(command, SimpleNamespace(native_allowed=True, apply_ns=BASE))],
     adapter=SimpleNamespace(command_domain='normalized_torque'))
   first = physical_frame(collector, (0., 0., 0.))
-  next_frame = physical_frame(collector, (0., .002, .001))
+  command.state_ns = BASE + 10_000_000
+  collector.ready[-1][1].apply_ns = command.state_ns
+  next_frame = physical_frame(collector, (0., .002, .001), now=command.state_ns)
   assert first is not None and next_frame is not None
   assert first.calibration == next_frame.calibration
   assert first.yaw_rate != next_frame.yaw_rate

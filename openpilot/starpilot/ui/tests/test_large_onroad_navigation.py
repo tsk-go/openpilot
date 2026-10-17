@@ -7,7 +7,7 @@ import pytest
 
 from openpilot.starpilot.ui.tests.test_runtime_layouts import runtime_app
 from openpilot.selfdrive.ui.layouts import main
-from openpilot.selfdrive.ui.layouts.sidebar import Sidebar
+from openpilot.selfdrive.ui.layouts.sidebar import Colors, Sidebar, ThermalStatus
 from openpilot.selfdrive.ui.layouts.settings.settings import PanelType
 from openpilot.starpilot.ui.onroad_state import OnroadState, SpeedLimitObservation, OnroadInput
 from openpilot.starpilot.ui.onroad_navigation import NavigationCard
@@ -63,6 +63,22 @@ def tap(n, x, y, *, dx=0, dy=0):
   n.frame(n.event(x + dx, y + dy, down=True))
   n.frame(n.event(x + dx, y + dy, released=True))
   n.frame()
+
+
+@pytest.mark.parametrize('thermal_status,color', [(ThermalStatus.ok, Colors.GOOD),
+                                                (ThermalStatus.overheated, Colors.DANGER),
+                                                (ThermalStatus.critical, Colors.DANGER)])
+@pytest.mark.parametrize('temperature,celsius,fahrenheit', [(0, '0°C', '32°F'), (65.6, '66°C', '150°F'), (107, '107°C', '225°F')])
+def test_sidebar_temperature_follows_metric_setting(thermal_status, color, temperature, celsius, fahrenheit):
+  with patch('openpilot.selfdrive.ui.layouts.sidebar.gui_app'):
+    sidebar = Sidebar()
+  assert sidebar._temp_status.value == '--'
+  device_state = NS(maxTempC=temperature, thermalStatus=thermal_status)
+  for metric, value in ((True, celsius), (False, fahrenheit), (True, celsius)):
+    with patch('openpilot.selfdrive.ui.layouts.sidebar.ui_state', NS(is_metric=metric)):
+      sidebar._update_temperature_status(device_state)
+    assert (sidebar._temp_status.label, sidebar._temp_status.value) == ('TEMP', value)
+    assert sidebar._temp_status.color == color
 
 
 def test_background_tap_opens_settings_sidebar_and_can_close_repeatedly(large_layout):

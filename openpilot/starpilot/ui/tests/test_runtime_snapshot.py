@@ -8,6 +8,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+import pyray as rl
+
 from openpilot.cereal import log, messaging
 from openpilot.starpilot.ui.onroad_state import AlertSize, ObservationKind
 from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter as NativeRuntimeSnapshotAdapter, current_alert, current_message, display_message
@@ -82,7 +84,8 @@ class SubMasterFake:
 
 def ui_fake():
   sm = SubMasterFake()
-  sm.put("deviceState", NS(started=True, networkType=NS(raw=1), networkStrength=NS(raw=2), lastAthenaPingTime=NOW))
+  sm.put("deviceState", NS(started=True, networkType=NS(raw=1), networkStrength=NS(raw=2), lastAthenaPingTime=NOW,
+                           maxTempC=65.6, thermalStatus=log.DeviceState.ThermalStatus.ok))
   sm.put("pandaStates", [NS(pandaType=log.PandaState.PandaType.tres, ignitionLine=True, ignitionCan=False)])
   sm.put("carState", NS(vEgoCluster=15.0, vEgo=16.0, vCruiseCluster=80.0))
   sm.put("carControl", NS(latActive=True, longActive=False, actuators=NS(torque=0.3)))
@@ -97,6 +100,39 @@ def ui_fake():
 
 
 class TestRuntimeSnapshot(unittest.TestCase):
+  def test_home_temperature_uses_live_units_and_warning_status(self):
+    from openpilot.starpilot.ui.home import HomeView
+    from openpilot.starpilot.ui.presentation import Profile
+
+    ui = ui_fake()
+    ui.started = False
+    adapter = RuntimeSnapshotAdapter(ui)
+    view = HomeView.__new__(HomeView)
+    view.fonts = Mock(spec=BitmapFonts, profile=Profile.LARGE)
+    with patch.object(view, '_icon'), patch.object(view, '_text') as text, \
+         patch.object(view, '_measure', return_value=NS(width=80, height=35)), \
+         patch('openpilot.starpilot.ui.home.rl.draw_circle'), \
+         patch('openpilot.starpilot.ui.home.clip.begin_scissor_mode'), patch('openpilot.starpilot.ui.home.clip.end_scissor_mode'), \
+         patch('openpilot.starpilot.ui.home.outside_rounded_border'), \
+         patch('openpilot.starpilot.ui.home.rl.draw_rectangle_rounded') as edge:
+      for temperature, high, celsius, fahrenheit in ((0., False, '0°C', '32°F'), (65.6, False, '66°C', '150°F'),
+                                                    (107., True, '107°C', '225°F'), (None, False, '--', '--')):
+        ui.sm['deviceState'].maxTempC = temperature
+        ui.sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.critical if high else log.DeviceState.ThermalStatus.ok
+        ui.sm.valid['deviceState'] = temperature is not None
+        for metric, expected in ((True, celsius), (False, fahrenheit), (True, celsius)):
+          with self.subTest(temperature=temperature, metric=metric):
+            ui.is_metric = metric
+            home = adapter.build(ShellMode.HOME, now_ns=NOW).home
+            self.assertEqual(home.temperature_c, temperature)
+            self.assertEqual(home.metric, metric)
+            text.reset_mock()
+            edge.reset_mock()
+            view._sidebar(home)
+            self.assertEqual(text.call_args_list[2].args[0], expected)
+            expected_color = (201, 34, 49, 255) if high else (255, 255, 255, 255)
+            self.assertEqual(rl.color_to_int(edge.call_args_list[0].args[-1]), rl.color_to_int(expected_color))
+
   # Temporary old-route replay compatibility: remove this entire test when support is removed.
   # Cleanup instructions: openpilot/starpilot/ui/old_starpilot_route_shim.py.
   def test_legacy_slc_is_replay_only_display_fallback(self):

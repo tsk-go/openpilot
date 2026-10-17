@@ -12,7 +12,7 @@ import math
 import numpy as np
 
 from openpilot.common.realtime import DT_MDL
-from openpilot.starpilot.model_geometry import normalized_origin
+from openpilot.starpilot.model_geometry import STANDSTILL_RELEASE_SPEED_MPS, normalized_origin, standstill_clear_horizon
 
 
 STOP_DISTANCE_M = 6.0
@@ -159,6 +159,15 @@ class LeadDetector:
     prob = _number(_get(radar_lead, 'modelProb'), 0.0, 1.0)
     y_rel = _number(_get(radar_lead, 'yRel'), -20.0, 20.0)
     path = _path_at_distance(model, distance) if model_fresh and distance is not None else None
+    if path is None and model_fresh and standstill is True and speed is not None and speed <= STANDSTILL_RELEASE_SPEED_MPS:
+      # Only retain a stopped track; these coordinates never enter interpolation.
+      horizon = standstill_clear_horizon(model)
+      try:
+        offsets = tuple(_number(value, -50.0, 50.0) for value in model.position.y)
+      except (AttributeError, TypeError, ValueError, OverflowError):
+        offsets = ()
+      if horizon is not None and len(offsets) == 33 and all(value is not None for value in offsets):
+        path = horizon, 0.0
     if (
       not radar_fresh
       or not model_fresh

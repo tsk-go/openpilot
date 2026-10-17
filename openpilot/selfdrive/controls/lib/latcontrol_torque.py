@@ -64,6 +64,12 @@ class LatControlTorque(LatControl):
     self.starpilot_extension = create_extension(self, CP, self.controller_mode, self.controller_policy, turn_assist=turn_assist)
     self.flm_source = flm.GmLiveSource(CP, self.controller_mode)
     self.flm_surface = None
+    from openpilot.starpilot.flm.runtime_adapter_registry import baseline_values
+    self.native_learning_baseline = baseline_values(self)
+    self.native_learning_refinement = None
+    self.native_learning_provenance = ()
+    self.native_learning_last_tick = 0
+    self.native_learning_source = None
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     if self.starpilot_extension is not None:
@@ -88,10 +94,13 @@ class LatControlTorque(LatControl):
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     self.flm_surface = self.flm_source.sample(active=active, speed=CS.vEgo)
     if self.starpilot_extension is not None:
-      return self.starpilot_extension.update(active, CS, VM, params, steer_limited_by_safety,
-                                                        desired_curvature, curvature_limited, lat_delay)
-    return self.update_standard(active, CS, VM, params, steer_limited_by_safety,
-                                desired_curvature, curvature_limited, lat_delay)
+      result = self.starpilot_extension.update(active, CS, VM, params, steer_limited_by_safety,
+                                                desired_curvature, curvature_limited, lat_delay)
+    else:
+      result = self.update_standard(active, CS, VM, params, steer_limited_by_safety,
+                                    desired_curvature, curvature_limited, lat_delay)
+    return auto_stages.apply_selected_output(self, CS, VM, params, desired_curvature, result,
+      active=active, limited=steer_limited_by_safety or curvature_limited)
 
   def update_standard(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay,
                       *, friction_policy=None):
@@ -105,6 +114,8 @@ class LatControlTorque(LatControl):
     roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
     curvature_deadzone = abs(VM.calc_curvature(math.radians(self.steering_angle_deadzone_deg + flm.deadband(self.flm_surface, CS.vEgo)), CS.vEgo, 0.0))
     lateral_accel_deadzone = curvature_deadzone * CS.vEgo ** 2
+    lateral_accel_deadzone = auto_stages.apply_selected_deadzone(self, CS, VM, float(lateral_accel_deadzone), desired_curvature,
+      active=active, limited=steer_limited_by_safety or curvature_limited)
 
     delay_frames = int(np.clip(lat_delay / self.dt + 1, 1, self.lat_accel_request_buffer_len))
     expected_lateral_accel = self.lat_accel_request_buffer[-delay_frames]
@@ -124,7 +135,9 @@ class LatControlTorque(LatControl):
       threshold = friction_policy.friction_threshold(CS.vEgo, setpoint, desired_lateral_jerk)
     ff, threshold = auto_stages.apply_stages(self, CS, setpoint, desired_lateral_jerk, ff, threshold,
       active=active, limited=steer_limited_by_safety or curvature_limited)
-    ff += self.friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, threshold, CS, setpoint)
+    selected_friction = self.friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, threshold, CS, setpoint)
+    ff += auto_stages.apply_selected_friction(self, CS, setpoint, float(selected_friction),
+      active=active, limited=steer_limited_by_safety or curvature_limited)
 
     if not active:
       output_torque = 0.0

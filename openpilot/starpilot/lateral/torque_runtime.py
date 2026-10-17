@@ -220,17 +220,10 @@ class TorqueHost:
     # This host becomes its sole writer after adoption; no CP reset is introduced.
     assert self.native_base is not None
     base = self.native_base
-    if self.allow_learning and not self.settings.force_auto_off and sm.all_checks(['lateralTorqueParameters']):
-      state = sm['lateralTorqueParameters']
-      if state.useParams:
-        try:
-          native = TorqueTuning(TorqueSource.LEARNED, self.vehicle.vehicle,
-                                float(state.latAccelFactorFiltered), float(state.latAccelOffsetFiltered),
-                                float(state.frictionCoefficientFiltered))
-          if self._valid_native(native):
-            self.native_base = base = native
-        except (AttributeError, TypeError, ValueError, OverflowError):
-          pass
+    if self.allow_learning and not self.settings.force_auto_off:
+      native = self._learned(sm, now_ns)
+      if native is not None and self._valid_native(native):
+        self.native_base = base = native
     if self.settings.valid and (self.settings.user_factor is not None or self.settings.user_friction is not None):
       target = self._select(sm, now_ns)
     elif automatic is not None and lat_active and self.settings.valid:
@@ -268,8 +261,14 @@ class TorqueHost:
 
   def _learned(self, sm, now_ns: int) -> TorqueTuning | None:
     name = 'lateralTorqueParameters'
-    stamp = int(sm.logMonoTime[name])
-    if not sm.all_checks([name]) or stamp <= 0 or not 0 <= now_ns - stamp <= int(2e9 / SERVICE_LIST[name].frequency):
+    try:
+      stamp = int(sm.logMonoTime[name])
+      received = int(sm.recv_time[name] * 1e9)
+      maximum_age = int(2e9 / SERVICE_LIST[name].frequency)
+      if (not sm.all_checks([name]) or not 0 < stamp <= received <= now_ns or
+          now_ns - stamp > maximum_age or now_ns - received > maximum_age):
+        return None
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
       return None
     state = sm[name]
     if not (state.useParams or self.settings.force_auto) or not state.valid or int(state.version) != LEARNER_VERSION:

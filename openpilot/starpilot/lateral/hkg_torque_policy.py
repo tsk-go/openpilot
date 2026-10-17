@@ -92,6 +92,8 @@ class HKGShapedTorquePolicy:
     fade = np.interp(cs.vEgo, FF_ROLL_OFFSET_FADE_BP, FF_ROLL_OFFSET_FADE_V)
     roll = params.roll * ACCELERATION_DUE_TO_GRAVITY * fade
     deadzone = abs(vm.calc_curvature(math.radians(parent.steering_angle_deadzone_deg), cs.vEgo, 0.0)) * cs.vEgo**2
+    deadzone = auto_stages.apply_selected_deadzone(parent, cs, vm, float(deadzone), curvature,
+      active=active, limited=safety_limited or curvature_limited)
     delay_frames = int(np.clip(delay / self.dt, 1, self.buffer_len))
     expected = self.curvature_buffer[-delay_frames] * cs.vEgo**2
     self.curvature_buffer.append(curvature)
@@ -113,7 +115,9 @@ class HKGShapedTorquePolicy:
     friction_jerk = math.copysign(max(abs(jerk) - jerk_deadzone, 0.0), jerk)
     ff, threshold = auto_stages.apply_stages(parent, cs, setpoint, jerk, ff, threshold,
       active=active, limited=safety_limited or curvature_limited)
-    ff += friction_scale * parent.friction(error + JERK_GAIN * friction_jerk, deadzone, threshold, cs, setpoint)
+    selected_friction = friction_scale * parent.friction(error + JERK_GAIN * friction_jerk, deadzone, threshold, cs, setpoint)
+    ff += auto_stages.apply_selected_friction(parent, cs, setpoint, float(selected_friction),
+      active=active, limited=safety_limited or curvature_limited)
     if cs.vEgo < self.low_speed_reset_threshold:
       parent.pid.reset()
     freeze = safety_limited or cs.steeringPressed or cs.vEgo < self.low_speed_reset_threshold or unwind

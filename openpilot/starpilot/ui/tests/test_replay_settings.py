@@ -244,6 +244,19 @@ def test_buffering_preserves_published_native_frame(prepared_playback):
   assert owner.frame is None
 
 
+def test_new_frame_is_polled_on_next_ui_frame_after_an_unchanged_read(prepared_playback):
+  owner, _, frames, clock, _ = prepared_playback
+  owner.autoplay_at = None
+  owner.next_status = 100
+  owner.next_frame = 0
+  owner.tick()
+  pump(owner, lambda: owner.pending is None)
+  frame = NS(session_id=owner.own_session, epoch=1, frame_id=1)
+  frames.append(frame)
+  clock.now += 1 / 60
+  pump(owner, lambda: owner.frame is frame)
+
+
 def test_autoplay_waits_one_second_after_first_valid_frame_and_runs_only_once(prepared_playback):
   owner, backend, frames, clock, factory = prepared_playback
   clock.now = 10

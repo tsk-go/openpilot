@@ -25,7 +25,6 @@ from openpilot.starpilot.ui.onroad_dm import draw_monitor_art, monitor_bounds, m
 from openpilot.starpilot.ui.onroad_stopped_timer import PREVIEW_DURATION_S
 from openpilot.starpilot.ui.layout_preview_sidebar import SIDEBAR_WIDTH, render_sidebar
 from openpilot.starpilot.ui.presentation import BitmapFonts, FontRole, Profile, default_font_directory
-from openpilot.starpilot.ui.wheel_feedback import WheelFeedback
 from openpilot.starpilot.ui.rainbow_path import RainbowPath
 from openpilot.starpilot.ui.road_colors import edge_gradient, lane_color, path_mode, solid_gradient
 from openpilot.starpilot.ui.onroad_customization import ROAD_COLORS
@@ -88,7 +87,7 @@ def sample_state(scene: str, document: dict) -> OnroadState:
                                                        decision_id=1, presentation_id=1, action_enabled=longitudinal),
                      alert=OnroadAlert(), appearance=OnroadAppearance(wheel_pedal_feedback=True,
                                                                       show_speed_limit_sign=True),
-                     wheel_feedback=WheelFeedback(brake_pressed=scene == "braking"),
+                     wheel_acceleration=-2.0 if scene == "braking" else 0.0,
                      metric=False, experimental_available=True,
                      experimental_enabled=scene == "experimental" or scene in CEM_SCENE_REASONS, lateral_active=lateral,
                      longitudinal_active=longitudinal, stock_cruise_active=False,

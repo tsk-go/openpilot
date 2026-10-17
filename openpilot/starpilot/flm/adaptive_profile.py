@@ -1,5 +1,6 @@
 """Identity-bound passive residual identification; adapters retain authority."""
 from dataclasses import dataclass, replace
+from openpilot.starpilot.flm.full_surface_profile import FullSurfaceEnvelope
 import math
 from typing import TypeGuard
 
@@ -58,6 +59,7 @@ class Profile:
   candidate_loss: float
   cohort_improvements: tuple[tuple[str, float], ...]
   policy: str = 'passive_stage_ridge_v1'
+  effect_envelope: FullSurfaceEnvelope | None = None
 
 
 @dataclass(frozen=True)
@@ -171,18 +173,24 @@ class ReplayValidation:
   no_saturation_regression: bool
   no_slew_regression: bool
   worst_cohort_improvement: float
+  native_baseline_values: tuple[float, ...] = ()
 
 
 def replay_accepts(validation, profile):
   return (isinstance(validation, ReplayValidation) and validation.profile == profile and
           bool(validation.baseline_revision) and bool(validation.physical_model_revision) and
           validation.no_saturation_regression is True and validation.no_slew_regression is True and
-          finite(validation.worst_cohort_improvement) and validation.worst_cohort_improvement > 0)
+          finite(validation.worst_cohort_improvement) and validation.worst_cohort_improvement > 0 and
+          type(validation.native_baseline_values) is tuple and len(validation.native_baseline_values) <= 32 and
+          all(finite(value) for value in validation.native_baseline_values))
 
 
 class ProfileOwner:
   """Logical residual owner; zero restores the adapter's unchanged fallback stages."""
-  def __init__(self, identity, parameters, *, baseline_revision, physical_model_revision):
+  def __init__(self, identity, parameters, *, baseline_revision, physical_model_revision, profile_policy='passive_stage_ridge_v1'):
+    if profile_policy not in ('passive_stage_ridge_v1', 'event_effect_coordinate_v2', 'event_effect_restore_v1'):
+      raise ValueError('unknown profile policy')
+    self.profile_policy = profile_policy
     self.identity, self.parameters = identity, tuple(parameters)
     self.baseline_revision = baseline_revision
     self.physical_model_revision = physical_model_revision
@@ -190,6 +198,7 @@ class ProfileOwner:
     self.last_ns = None
     self.sequence = 0
     self.last_profile = None
+    self.current_admission_valid = False
 
   def tick(self, profile, *, now_ns, active, enabled, manual, healthy, replay_validation):
     valid_clock = type(now_ns) is int and now_ns > 0 and (self.last_ns is None or 0 < now_ns - self.last_ns <= 50_000_000)
@@ -199,7 +208,7 @@ class ProfileOwner:
              replay_validation.baseline_revision == self.baseline_revision and
              replay_validation.physical_model_revision == self.physical_model_revision and
              isinstance(profile, Profile) and profile.identity == self.identity and profile.parameters == self.parameters and
-             profile.policy == 'passive_stage_ridge_v1' and type(profile.sequence) is int and profile.sequence > 0 and profile.sequence >= self.sequence and
+             profile.policy == self.profile_policy and type(profile.sequence) is int and profile.sequence > 0 and profile.sequence >= self.sequence and
              (profile.sequence != self.sequence or profile == self.last_profile) and
              0 < profile.observed_ns <= now_ns <= profile.expires_ns <= profile.observed_ns + 500_000_000 and
              len(profile.coefficients) == len(self.parameters) and all(finite(v) for v in (profile.candidate_loss, profile.baseline_loss)) and
@@ -209,6 +218,7 @@ class ProfileOwner:
              len(profile.train_ids) >= 4 and len(profile.heldout_ids) >= 4 and
              all(finite(v) and p.low <= v <= p.high and abs(v) <= p.max_step
                  for p, v in zip(self.parameters, profile.coefficients, strict=True)))
+    self.current_admission_valid = bool(valid)
     if valid:
       self.sequence = profile.sequence
       self.last_profile = profile
@@ -231,6 +241,9 @@ class ApplicationOutcome:
   reason: str
   baseline_revision: str
   physical_model_revision: str
+  effect_manifest_sha256: str = ''
+  effect_original_anchor: str = ''
+  effect_applied_profile_sha256: str = ''
 
 
 @dataclass(frozen=True)
@@ -243,6 +256,7 @@ class CurrentAdmission:
   enabled: bool
   manual: bool
   context_unchanged: bool
+  native_baseline_values: tuple[float, ...] = ()
 
 
 def readmit_profile(fit, validation, admission, *, now_ns, sequence):
@@ -255,5 +269,8 @@ def readmit_profile(fit, validation, admission, *, now_ns, sequence):
       not admission.healthy or not admission.enabled or admission.manual or not admission.context_unchanged or
       type(admission.source_ns) is not int or not 0 < admission.source_ns <= now_ns <= admission.source_ns + 100_000_000):
     return None
+  if (type(admission.native_baseline_values) is not tuple or len(admission.native_baseline_values) > 32 or
+      not all(finite(value) for value in admission.native_baseline_values)):
+    return None
   fresh = replace(fit, sequence=sequence, observed_ns=now_ns, expires_ns=now_ns + 500_000_000)
-  return fresh, replace(validation, profile=fresh)
+  return fresh, replace(validation, profile=fresh, native_baseline_values=admission.native_baseline_values)

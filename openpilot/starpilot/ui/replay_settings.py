@@ -248,8 +248,8 @@ class ReplayController:
       self.next_status = now + 0.25
       self.submit({'op': 'status', 'clientId': self.client_id})
     elif self.active and self.status.get('frameReady') and self.status.get('framePath') and now >= self.next_frame:
-      # Sample faster than the producer's 20 Hz cadence; unchanged slots do not copy pixels.
-      self.next_frame = now + 0.025
+      # Poll below the 60 Hz UI interval to avoid skipping frames.
+      self.next_frame = now + 0.01
       key = (self.status['framePath'], self.own_session, self.status.get('profile'), self.reader_generation)
       self.pending_op = 'frame'
       self.pending = self.executor.submit(self._read_frame, key)

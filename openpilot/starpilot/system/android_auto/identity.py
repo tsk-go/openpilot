@@ -83,13 +83,16 @@ def load_identity(directory: Path | None = None, now: datetime | None = None) ->
                   expires.isoformat() if expires is not None else "unknown", days_left)
 
 
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 # Before config versions, every save wrote these defaults, which pinned projection
 # at 12 fps / 4000 kbps. Unversioned files holding exactly them get today's defaults.
 LEGACY_DEFAULTS = {"fps": 12, "bitrate_kbps": 4000}
 # Before version 3 the car view could only publish RGBA, and every save wrote these off.
 # They were never a choice, so older files get today's defaults for them.
 PIPELINE_RESET = ("gpu_nv12", "async_readback")
+# Before version 5 every save wrote verify_head_unit on, and some cars send certificates the root cannot parse.
+# Older files get today's default (off).
+VERIFY_RESET = ("verify_head_unit",)
 
 DEFAULT_CONFIG = {
   "config_version": CONFIG_VERSION,
@@ -98,8 +101,10 @@ DEFAULT_CONFIG = {
   "companion_address": "",    # explicitly selected bonded car used before a separate wireless adapter
   "companion_name": "",
   "rfcomm_channel": 0,         # 0 = discover through SDP (normal); set only to work around a broken SDP record
-  "verify_head_unit": True,    # verify the car's certificate against root-cert.pem when present
+  "verify_head_unit": False,   # verify the car's certificate against root-cert.pem when present
   "connection": "wireless",    # "wireless": Bluetooth + the car's Wi-Fi; "wired": USB cable from the car to the comma's USB-C port
+  "usb_mode": "auto",          # wired: "auto" waits for the car's accessory handshake, then presents as an accessory itself;
+                               # "handshake" waits for it only; "direct" presents as an accessory at once
   "view": "car",               # Separate StarPilot road view; legacy mirror has no source
   # ANDROID AUTO VIDEO PERFORMANCE GUARDRAIL: The encoder, FPS, bitrate, rate control, NV12, and readback defaults below work together.
   # Altering this can degrade video smoothness or introduce lag on Android Auto.
@@ -132,6 +137,8 @@ def load_config(path: Path | None = None) -> dict:
         stored = {key: value for key, value in stored.items() if LEGACY_DEFAULTS.get(key, object()) != value}
       if not isinstance(version, int) or version < 3:
         stored = {key: value for key, value in stored.items() if key not in PIPELINE_RESET}
+      if not isinstance(version, int) or version < 5:
+        stored = {key: value for key, value in stored.items() if key not in VERIFY_RESET}
       config.update({key: value for key, value in stored.items() if key in DEFAULT_CONFIG and isinstance(value, type(DEFAULT_CONFIG[key]))})
   except (OSError, ValueError):
     pass
@@ -141,6 +148,8 @@ def load_config(path: Path | None = None) -> dict:
     config["view"] = "car"
   if config["connection"] not in ("wireless", "wired"):
     config["connection"] = "wireless"
+  if config["usb_mode"] not in ("auto", "handshake", "direct"):
+    config["usb_mode"] = "auto"
   config["bitrate_kbps"] = max(1000, min(12000, int(config["bitrate_kbps"])))
   if config["rate_control"] not in ("cbr", "vbr"):
     config["rate_control"] = "cbr"

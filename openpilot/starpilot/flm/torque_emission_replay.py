@@ -9,7 +9,14 @@ from dataclasses import dataclass, asdict
 from types import SimpleNamespace
 import math
 
+from openpilot.starpilot.flm.torque_eligibility import bounded_context_output
+from openpilot.starpilot.flm.clipping_quality import (
+  RECORDED_DEBT, STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, clipping_quality, debt_is_admitted, native_relief_is_admitted,
+  STRICT_IDENTIFICATION, NATIVE_SHADOW_IDENTIFICATION, identification_policy as validate_identification_policy,
+)
+
 from opendbc.car.steering_projection import (
+  CODECS,
   TorqueProjection,
   float32,
   normalized_applied_command,
@@ -63,10 +70,40 @@ class Emission:
   native_identity: str
 
 
+# Audited packet constructors use final raw torque plus unchanged source/CP,
+# enable/status/counter fields. These source files are included by the existing
+# implementation_revision identity. No unknown codec/native state gains support.
+EXACT_EMISSION_CODECS = CODECS & frozenset((
+  'gm.ASCMLKASteeringCmd', 'honda.STEERING_CONTROL', 'toyota.STEERING_LKA',
+  'hyundai.LKAS11', 'hyundai.CANFD_TORQUE', 'hyundai.BLENDED_TORQUE', 'hyundai.BLENDED_LKAS11',
+))
+
+
+def exact_local_emission(witness, reference_raw, candidate_raw, recorded_debt, reference_debt, candidate_debt):
+  """Local encoded equality only; NEVER equal prefix/plant/Civic hidden state.
+
+  Caller retains the decoded original source/packet and projects BOTH requests
+  using the full same candidate native prestate. Immutable original enable,
+  frame/counter/status/address/bus/codec context stays fixed in this projection.
+  Only the audited packet domains below may use this extra quality clause.
+  """
+  debts = recorded_debt, reference_debt, candidate_debt
+  return bool(projection_to_dict(witness) is not None and witness.steer_requested is True and
+    witness.codec_id in EXACT_EMISSION_CODECS and
+    type(reference_raw) is int and type(candidate_raw) is int and
+    candidate_raw == reference_raw == witness.final_raw and
+    all(type(value) in (int, float) and math.isfinite(value) and value != 0 for value in debts) and
+    (recorded_debt > 0) == (reference_debt > 0) == (candidate_debt > 0))
+
+
 class EncoderBranch:
   """Own previous raw/normalized torque and modified-Civic state per branch."""
 
-  def __init__(self):
+  def __init__(self, *, quality_contract=RECORDED_DEBT, identification_policy=STRICT_IDENTIFICATION):
+    self.quality_contract = clipping_quality(quality_contract)
+    self.identification_policy = validate_identification_policy(identification_policy)
+    if self.identification_policy == NATIVE_SHADOW_IDENTIFICATION and self.quality_contract not in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY):
+      raise ValueError('shadow identification requires combined quality proof')
     self.previous = None
     self.civic = None
     self.last_frame = None
@@ -75,6 +112,9 @@ class EncoderBranch:
 
   def step(self, event, request, *, actual=False):
     witness = event.witness
+    shadow = self.identification_policy == NATIVE_SHADOW_IDENTIFICATION
+    if shadow and (actual or not witness.steer_requested):
+      raise ValueError('shadow identification cannot grant original native evidence')
     if (
       self.last_frame is not None
       and witness.frame <= self.last_frame
@@ -99,13 +139,94 @@ class EncoderBranch:
     elif self.civic is not None:
       raise ValueError('Civic state disappeared')
     raw = project_candidate(witness, request, previous=self.previous, shape=shape)
+    honda_limited_source = None
+    if witness.family == 'honda' and witness.limiter_kind == 'normalized_rate':
+      from opendbc.car import DT_CTRL, rate_limit
+      import numpy as np
+
+      source = _shaped_input(witness, float32(request), shape)
+      params = SimpleNamespace(**dict(witness.limits))
+      honda_limited_source = rate_limit(source, self.previous,
+        -params.STEER_DELTA_DOWN * DT_CTRL, params.STEER_DELTA_UP * DT_CTRL)
+      if raw is None and (event.limited or shadow) and witness.mapping_kind == 'honda_lookup' and (witness.unlimited_raw is None or shadow):
+        from opendbc.car.steering_projection import project_request
+        if shadow and project_request(witness, request, shape=shape) is None:
+          raise ValueError('shadow native request support unavailable')
+        # Honda clips in normalized units BEFORE its integer lookup encoder.
+        # Keep clipped original context, never an estimation endpoint, and
+        # compare direct demand under the explicit quality contract; the
+        # recorded clipping-direction veto remains on EVERY candidate tick.
+        original_limited = rate_limit(witness.codec_input_torque, witness.previous_torque,
+          -params.STEER_DELTA_DOWN * DT_CTRL, params.STEER_DELTA_UP * DT_CTRL)
+        original_demand = witness.codec_input_torque - original_limited
+        reference_demand = original_demand
+        reference_source, reference_limited = witness.codec_input_torque, original_limited
+        if self.quality_contract != RECORDED_DEBT and not actual and not shadow:
+          # Use BOTH requests with the SAME complete candidate pre-tick Civic
+          # state and normalized limiter previous value, never recorded shaping.
+          reference_source = _shaped_input(witness, float32(witness.requested_torque), shape)
+          if not math.isfinite(reference_source):
+            raise ValueError('paired native request support unavailable')
+          reference_limited = rate_limit(reference_source, self.previous,
+            -params.STEER_DELTA_DOWN * DT_CTRL, params.STEER_DELTA_UP * DT_CTRL)
+          reference_demand = reference_source - reference_limited
+        candidate_demand = source - honda_limited_source
+        raw = int(np.interp(-honda_limited_source * witness.effective_max, witness.lookup_x, witness.lookup_y))
+        admitted = debt_is_admitted(original_demand, reference_demand, candidate_demand, self.quality_contract)
+        if not admitted and self.quality_contract in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY) and not shadow and event.limited:
+          reference_raw = int(np.interp(-reference_limited * witness.effective_max, witness.lookup_x, witness.lookup_y))
+          recorded_output = normalized_applied_command(witness)
+          reference_output = normalized_applied_command(witness._replace(final_raw=reference_raw))
+          candidate_output = normalized_applied_command(witness._replace(final_raw=raw))
+          # Require actual unshaped source relief too; the full candidate Civic
+          # filter must independently preserve the native-source relief order.
+          requested = float32(request)
+          admitted = (requested * witness.requested_torque > 0 and abs(requested) < abs(witness.requested_torque) and
+            native_relief_is_admitted(witness.codec_input_torque, reference_source, source,
+              recorded_output, reference_output, candidate_output, original_demand, reference_demand, candidate_demand))
+        if not admitted and self.quality_contract == EXACT_EMISSION_QUALITY and not actual and not shadow and event.limited:
+          admitted = exact_local_emission(witness, reference_raw, raw, original_demand, reference_demand, candidate_demand)
+        if not shadow and (not original_demand or not actual and not admitted):
+          raise ValueError('candidate encoder clipping regression')
+    if raw is None and (event.limited or shadow) and witness.limiter_kind in ('driver', 'measured'):
+      from opendbc.car.steering_projection import project_request
+      from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_meas_steer_torque_limits
+
+      requested_raw = project_request(witness, request, shape=shape)
+      if requested_raw is not None:
+        params = SimpleNamespace(STEER_MAX=witness.effective_max, **dict(witness.limits))
+        if witness.limiter_kind == 'driver':
+          raw = apply_driver_steer_torque_limits(requested_raw, self.previous, witness.measured_torque, params, int(witness.effective_max))
+        else:
+          raw = apply_meas_steer_torque_limits(requested_raw, self.previous, witness.measured_torque, params)
+        original_demand = witness.unlimited_raw - witness.final_raw
+        reference_demand = original_demand
+        if self.quality_contract != RECORDED_DEBT and not actual and not shadow:
+          reference_request = project_request(witness, witness.requested_torque, shape=shape)
+          if reference_request is None:
+            raise ValueError('paired native request support unavailable')
+          if witness.limiter_kind == 'driver':
+            reference_raw = apply_driver_steer_torque_limits(reference_request, self.previous,
+              witness.measured_torque, params, int(witness.effective_max))
+          else:
+            reference_raw = apply_meas_steer_torque_limits(reference_request, self.previous, witness.measured_torque, params)
+          reference_demand = reference_request - reference_raw
+        candidate_demand = requested_raw - raw
+        admitted = debt_is_admitted(original_demand, reference_demand, candidate_demand, self.quality_contract)
+        if not admitted and self.quality_contract in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY) and not shadow and event.limited:
+          admitted = native_relief_is_admitted(witness.unlimited_raw, reference_request, requested_raw,
+            witness.final_raw, reference_raw, raw, original_demand, reference_demand, candidate_demand)
+        if not admitted and self.quality_contract == EXACT_EMISSION_QUALITY and not actual and not shadow and event.limited:
+          admitted = exact_local_emission(witness, reference_raw, raw, original_demand, reference_demand, candidate_demand)
+        if not actual and not shadow and not admitted:
+          raise ValueError('candidate encoder clipping regression')
     if raw is None:
       raise ValueError('candidate changed an actual limiter/support')
     shaped = _shaped_input(witness, float32(request), shape) if witness.family == 'honda' else None
     if actual and (
       float32(request) != witness.requested_torque
       or raw != witness.final_raw
-      or witness.unlimited_raw != witness.final_raw
+      or witness.unlimited_raw != witness.final_raw and not event.limited
       or witness.family == 'honda'
       and shaped != witness.codec_input_torque
     ):
@@ -118,7 +239,7 @@ class EncoderBranch:
       if pressed:
         raise ValueError('candidate driver override')
       self.civic = (shaped, float32(request), filtered, pressed)
-    self.previous = shaped if witness.family == 'honda' else raw
+    self.previous = honda_limited_source if witness.family == 'honda' else raw
     self.last_frame, self.last_apply_ns = witness.frame, event.apply_ns
     value = normalized_applied_command(witness._replace(final_raw=raw))
     if value is None or not math.isfinite(value):
@@ -177,7 +298,7 @@ class EmissionHistory:
         or not 0 < output.state_ns <= output.apply_ns
         or output.override
         or output.fault
-        or output.limited
+        or output.limited and not bounded_context_output(output)
         or not output.active
         or not output.valid
         or not output.native_allowed
@@ -269,9 +390,10 @@ class EmissionHistory:
     features = tuple((self.one_apply(apply_ns, a) - self.one_apply(apply_ns, b)) / (2 * epsilon) for a, b in zip(plus, minus, strict=True))
     return base, features
 
-  def rollout(self, requests, start_ns, end_ns, windows=()):
+  def rollout(self, requests, start_ns, end_ns, windows=(), *, quality_contract=RECORDED_DEBT,
+              identification_policy=STRICT_IDENTIFICATION):
     """Advance on EVERY actual emission, including unscored warmup emissions."""
-    branch = EncoderBranch()
+    branch = EncoderBranch(quality_contract=quality_contract, identification_policy=identification_policy)
     values = {}
     previous = None
     last_window = None
@@ -282,7 +404,7 @@ class EmissionHistory:
         raise ValueError('missing consumed controller source')
       window = next((i for i, (a, b) in enumerate(windows) if a <= event.control_ns <= b), 0)
       if window != last_window:
-        branch = EncoderBranch()
+        branch = EncoderBranch(quality_contract=quality_contract, identification_policy=identification_policy)
         previous = None
       self.decode(event)
       value = branch.step(event, requests[event.control_ns])

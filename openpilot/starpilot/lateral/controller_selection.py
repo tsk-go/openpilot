@@ -226,8 +226,7 @@ def read_selection(params, CP) -> ControllerSelection:
 
 
 def controller_uses_native_learning(selection: ControllerSelection) -> bool:
-  # RAV4 adds only two shaping stages to the modern native controller.
-  return selection.mode == ControllerMode.STANDARD or selection.policy == "rav4_tss2"
+  return selection.mode in (ControllerMode.STANDARD, ControllerMode.STARPILOT) and selection.source != 'invalid'
 
 
 def learning_allowed(params, CP, *, selection: ControllerSelection | None = None) -> bool:
@@ -249,4 +248,10 @@ def learning_allowed(params, CP, *, selection: ControllerSelection | None = None
     return False
   if geometry.force_auto:
     return selected.source != 'invalid'
-  return controller_uses_native_learning(selected) and (selected.policy != "rav4_tss2" or selected.source != "invalid")
+  from openpilot.starpilot.lateral.torque_runtime import manual_overrides_present
+  if manual_overrides_present(CP, params):
+    return False
+  # Reuse the native estimator only in its existing brand scope. Actual
+  # controller parameter ownership still belongs to Controls or TorqueHost.
+  native_brand = str(CP.brand) in ('toyota', 'hyundai', 'rivian', 'honda', 'volkswagen')
+  return native_brand and controller_uses_native_learning(selected) and CP.lateralTuning.which() == 'torque'
