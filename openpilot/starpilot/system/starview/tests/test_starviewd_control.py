@@ -279,3 +279,23 @@ def test_galaxy_pairing_goes_through_local_galaxy():
   assert r["ok"] and r["paired"] and r["url"].endswith("ABCDEFGHijklmnop")
   assert ("/api/galaxy/pair", {"password": "long enough"}) in calls
   assert galaxy_local.remote("status", call=lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))["error"] == "Local Galaxy is unavailable"
+
+
+def test_galaxy_status_keeps_one_local_session(monkeypatch):
+  # Galaxy keeps 64 sessions and drops the oldest: a new one per check would log the phone out of Galaxy
+  from openpilot.starpilot.system.starview import galaxy_local
+  monkeypatch.setattr(galaxy_local, "_cookie", "")
+  minted, seen = [], []
+
+  def call(path, cookie="", payload=None, deadline=0):
+    if path == "/api/auth/session":
+      seen.append(cookie)
+      if not cookie:
+        minted.append(1)
+        cookie = f"galaxy_session=t{len(minted)}"
+      return 200, {"authenticated": True, "localAccess": True}, cookie
+    return 200, {"paired": False}, ""
+
+  for _ in range(5):
+    assert galaxy_local.remote("status", call=call)["ok"]
+  assert len(minted) == 1 and seen[1:] == ["galaxy_session=t1"] * 4

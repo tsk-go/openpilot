@@ -15,6 +15,9 @@ LOCAL_PORT = 8082
 LOCAL_ORIGIN = f"http://127.0.0.1:{LOCAL_PORT}"
 REMOTE_URL = re.compile(r"https://galaxy\.firestar\.link/[A-Za-z0-9]{16}\Z")
 TIMEOUT_S = 3.0
+# One local session, kept: Galaxy holds at most 64 sessions (galaxy/auth.py LocalSessions) and drops the oldest -
+# a new one per status check would push out the phone's and browser's Galaxy logins within the hour.
+_cookie = ""
 
 
 def _call(path: str, *, cookie: str = "", payload: dict | None = None, deadline: float) -> tuple[int, dict, str]:
@@ -45,11 +48,14 @@ def _call(path: str, *, cookie: str = "", payload: dict | None = None, deadline:
 
 def remote(action: str, password: str = "", call=_call) -> dict:
   """action: "status" | "pair" | "unpair" -> {"ok", "paired", "url", "error"}"""
+  global _cookie
   try:
     deadline = time.monotonic() + TIMEOUT_S
-    code, auth, cookie = call("/api/auth/session", deadline=deadline)
+    code, auth, new = call("/api/auth/session", cookie=_cookie, deadline=deadline)   # same session while it's valid
+    cookie = new or _cookie
     if code != 200 or not auth.get("authenticated") or not auth.get("localAccess") or not cookie.startswith("galaxy_session="):
       return {"ok": False, "paired": False, "url": "", "error": "Local Galaxy is unavailable"}
+    _cookie = cookie
     if action in ("pair", "unpair"):
       code, result, _ = call(f"/api/galaxy/{action}", cookie=cookie, payload={"password": password} if action == "pair" else {},
                              deadline=deadline)
@@ -57,7 +63,8 @@ def remote(action: str, password: str = "", call=_call) -> dict:
         err = result.get("error")
         return {"ok": False, "paired": False, "url": "",
                 "error": err if type(err) is str and len(err) <= 128 else "Galaxy pairing is unavailable"}
-      code, auth, cookie = call("/api/auth/session", deadline=deadline)
+      code, auth, new = call("/api/auth/session", cookie=cookie, deadline=deadline)
+      cookie = _cookie = new or cookie
       if code != 200 or not auth.get("authenticated"):
         return {"ok": False, "paired": False, "url": "", "error": "Local Galaxy is unavailable"}
     code, result, _ = call("/api/galaxy/status", cookie=cookie, deadline=deadline)
