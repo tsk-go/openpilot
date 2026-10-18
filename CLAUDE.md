@@ -7,6 +7,6 @@
 # Syncing upstream
 
 "Sync" means: merge https://github.com/firestar5683/StarPilot branch `SecretGoodStarPilot` into this repo's
-`SecretGoodStarPilot` with a merge commit (`git fetch https://github.com/firestar5683/StarPilot.git SecretGoodStarPilot
+`SecretGoodStarPilot_v2` with a merge commit (`git fetch https://github.com/firestar5683/StarPilot.git SecretGoodStarPilot
 && git merge --no-edit -m "Merge upstream StarPilot SecretGoodStarPilot" FETCH_HEAD`), then a normal push.
 Never rebase or force-push for a sync: the local commits must be kept as they are. On a conflict, stop and ask.
