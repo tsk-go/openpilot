@@ -19,6 +19,9 @@ Endpoints (default port 8090, env STARVIEW_PORT):
                          route (starpilot/navigation/waze_bridge.py); GET /waze = last result
   HTTP /fs/*             file browser API for the tablet's Files screen (same guard) -- see the files section
   GET  /techstream/     TechStream, Toyota diagnostics (techstream/, from toyopilot); its API is /api/toyota/*
+  Drive replay (replay.py): control actions "replay_list", "replay_start" {route, at}, "replay_control" {op, value};
+                         while it plays, the tablet gets a recorded drive instead of the live data (parked only), and
+                         the params push carries its state as "r".
   WS   /video/{road|wide|driver}
                          binary frames: 28-byte header | H.264 Annex-B (SPS/PPS prepended on keyframes)
                          header  = struct '<IQQIHH': frameId, timestampEof(ns mono), unixTimestampNanos, flags(bit0=key), width, height
@@ -55,7 +58,7 @@ from openpilot.cereal import messaging
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.swaglog import cloudlog
-from openpilot.starpilot.system.starview import compat, pairing
+from openpilot.starpilot.system.starview import compat, pairing, replay
 
 try:
   from openpilot.common.version import get_build_metadata
@@ -723,6 +726,26 @@ class VideoClient:
     self.q.put_nowait(frame)
 
 
+GUARD_SERVICES = ("selfdriveState", "deviceState", "starpilotCarState")
+
+
+def _want_key(c):
+  c.need_key = True
+
+
+def _num(v, default: float) -> float:
+  try:
+    v = float(v if v is not None else default)
+  except (TypeError, ValueError):
+    return default
+  return v if math.isfinite(v) else default
+
+
+def _openpilot_version():
+  from openpilot.common.version import get_version
+  return get_version()
+
+
 class Hub:
   """Owns msgq sockets + the reader thread. Fan-out happens on the asyncio loop via call_soon_threadsafe."""
 
@@ -785,6 +808,20 @@ class Hub:
     # newest raw message per service (time, bytes): TechStream's "parked?" check reads carState from here instead of
     # opening one more reader
     self.last_raw = {}
+    # drive replay (replay.py): a recorded drive to the tablet instead of the live data, parked only. Its own translator,
+    # so a replayed starpilotPlan never mixes with the live one; the memory params read the replay while it plays
+    # Parked = ignition off (pandaStates), or on with a fresh live carState in P and standing still. The reader keeps
+    # the ignition from one conflated pandaStates socket and stops a replay within 0.25 s of the car not being parked.
+    self._ps_sock = None
+    self._ign = None          # (monotonic time, ignition on) from the newest pandaStates
+    self._park_check_t = 0.0
+    self._was_replaying = False
+    self._blink_held_t = None  # a replay ended with the tablet still asking for a blinker: ignore it until "off"
+    self.replay = replay.DriveReplay(on_event=self._replay_event, on_video=self._replay_video, parked=self._parked_for_replay,
+                                     keep=self._replay_keep, version=_openpilot_version)
+    self.replay_translator = compat.Translator(self.params, toggles=self._toggles)
+    self._replay_routed = None
+    self.params_mem.source = lambda service: self.replay.latest(service) if self.replay.active else compat.NO_SOURCE
     self.thread = threading.Thread(target=self._reader, name="starview-reader", daemon=True)
     self.thread.start()
 
@@ -992,6 +1029,7 @@ class Hub:
       if not socks:
         time.sleep(0.2)
         now = time.monotonic()
+        self.replay_tick(now)
         self.tablet_flag_tick(now)
         if self.live and self.live_off_at is not None and now >= self.live_off_at:
           self.recompute_wanted()
@@ -1020,6 +1058,10 @@ class Hub:
         if now - rw[0] >= 2.0:
           self.rates_out[name] = (rw[1] / (now - rw[0]), rw[2] / (now - rw[0]))
           rw[0], rw[1], rw[2] = now, 0, 0
+        if name in GUARD_SERVICES:
+          self._guard(name, msgs[-1], now)
+        if self._replaying():
+          continue   # a recorded drive is playing to the tablet: live data only for the guards (above)
         if name in VIDEO_CAMS.values():
           self._fanout_video(name, msgs)
         if name in self.translator.by_source:
@@ -1027,6 +1069,7 @@ class Hub:
             if tname != name:
               self.last_raw[tname] = (now, tmsgs[-1])
             self._fanout_data(tname, tmsgs, now)
+      self.replay_tick(now)
       self.tablet_flag_tick(now)
       if self.live and self.live_off_at is not None and now >= self.live_off_at:
         self.recompute_wanted()
@@ -1065,23 +1108,126 @@ class Hub:
     except OSError:
       pass
 
+  # ---- drive replay ----
+  def _replaying(self) -> bool:
+    r = getattr(self, "replay", None)
+    return r is not None and r.active
+
+  IGN_FRESH_S = 1.5
+
+  def _ignition_tick(self, now):
+    """Reader thread only (one socket, one thread)."""
+    try:
+      if self._ps_sock is None:
+        self._ps_sock = messaging.sub_sock("pandaStates", conflate=True)
+      raw = self._ps_sock.receive(non_blocking=True)
+      if raw is not None:
+        pss = messaging.log_from_bytes(raw).pandaStates
+        self._ign = (now, any(p.ignitionLine or p.ignitionCan for p in pss))
+    except Exception as e:
+      cloudlog.warning(f"starview: pandaStates read failed: {e}")
+
+  def _parked_for_replay(self) -> bool:
+    """Ignition off, or on with the live carState in P and standing still. No fresh pandaStates (pandad not running,
+    openpilot stopped) can't tell what the car is doing: not parked."""
+    now = time.monotonic()
+    ign = self._ign
+    if ign is None or now - ign[0] > self.IGN_FRESH_S:
+      return False
+    if not ign[1]:
+      return True
+    got = self.last_raw.get("carState")
+    if got is None or now - got[0] > 1.0:
+      return False
+    try:
+      cs = messaging.log_from_bytes(got[1]).carState
+      return str(cs.gearShifter) == "park" and abs(cs.vEgo) < 0.3
+    except Exception:
+      return False
+
+  def replay_tick(self, now):
+    """Reader thread: ignition, the parked guard 4x a second (a segment load takes seconds on the replay thread),
+    and a clean video switch whenever a replay starts or ends."""
+    self._ignition_tick(now)
+    active = self._replaying()
+    if active and now - self._park_check_t >= 0.25:
+      self._park_check_t = now
+      if not self._parked_for_replay():
+        self.replay.request_stop("the car isn't parked - replay stopped")
+        active = False
+    if active != self._was_replaying:
+      self._was_replaying = active
+      if not active:
+        self._blink_held_t = now   # whatever the tablet still holds came from the replay
+      self._video_resync()
+      self.invalidate_params_snapshot()
+
+  def _video_resync(self):
+    """Replay <-> live: the road video clients wait for a keyframe of the new stream (other size, other encoder)."""
+    with self.lock:
+      clients = list(self.video_clients["road"])
+    for c in clients:
+      self.loop.call_soon_threadsafe(_want_key, c)
+    self.request_keyframe()
+
+  def _replay_keep(self):
+    """The 7.0 services the tablet asks for now: only these are read out of a replayed segment (None: all)."""
+    with self.lock:
+      wanted = set(self.wanted_services)
+    keep = {s for n in wanted for s in compat.sources(n)}
+    return keep or None
+
+  def _replay_event(self, name, raw, now):
+    with self.lock:
+      wanted = frozenset(self.wanted_services)
+    if wanted != self._replay_routed:
+      self._replay_routed = wanted
+      self.replay_translator.route(set(wanted))
+    if name in self.replay_translator.by_source:
+      for tname, tmsgs in self.replay_translator.feed(name, [raw], now):
+        self._fanout_data(tname, tmsgs, now)
+
+  def _replay_video(self, payload, key):
+    with self.lock:
+      clients = list(self.video_clients["road"])
+    for c in clients:
+      self.loop.call_soon_threadsafe(c.push, payload, key)
+
+  def replay_action(self, act, req) -> dict:
+    r = self.replay
+    if act == "replay_list":
+      return {"ok": True, "drives": r.drives(), "replay": r.status()}
+    if act == "replay_start":
+      ack = r.start(str(req.get("route", "")), _num(req.get("at"), 0.0), _num(req.get("speed"), 1.0))
+      if ack.get("ok"):
+        self.blinker.set("off")    # nothing of a live blinker hold carries into the replay
+        self._was_replaying = True
+        self._video_resync()
+    else:
+      ack = r.control(str(req.get("op", "")), _num(req.get("value"), 0.0))
+    self.invalidate_params_snapshot()
+    return ack
+
+  def _guard(self, name, raw, now):
+    """The newest live one, so the settings actions honour the engaged / onroad / Always On Lateral guards (read in the
+    reader, so they stay live while a recorded drive plays to the tablet)."""
+    try:
+      evt = messaging.log_from_bytes(raw)
+      if name == "selfdriveState":
+        self.engaged = bool(evt.selfdriveState.enabled)
+      elif name == "deviceState":
+        self.started = bool(evt.deviceState.started)
+      else:
+        self.aol_active, self._aol_t = bool(evt.starpilotCarState.alwaysOnLateralEnabled), now
+    except Exception:
+      pass
+
   def _fanout_data(self, name, msgs, now):
     with self.lock:
       clients = list(self.data_clients)
     if not clients:
       return
     prefix = bytes([len(name)]) + name.encode()
-    if name in ("selfdriveState", "deviceState", "starpilotCarState"):
-      try:  # parse the newest one so the settings actions can honour engaged / onroad / Always On Lateral guards
-        evt = messaging.log_from_bytes(msgs[-1])
-        if name == "selfdriveState":
-          self.engaged = bool(evt.selfdriveState.enabled)
-        elif name == "deviceState":
-          self.started = bool(evt.deviceState.started)
-        else:
-          self.aol_active, self._aol_t = bool(evt.starpilotCarState.alwaysOnLateralEnabled), now
-      except Exception:
-        pass
     # rate limiting: deliver at most `rate` Hz per client; always deliver the newest of a burst
     for c in clients:
       rate = c.rates.get(name)
@@ -1204,6 +1350,11 @@ class Hub:
         cloudlog.warning(f"starview: info: {e}")
     out["i"] = dict(self._info, engaged=self.engaged, onroad=self.started, encStall=round(self.enc_stall_s),
                     openpilot=not self.openpilot_down)
+    r = getattr(self, "replay", None)
+    if r is not None:
+      out["r"] = r.status()           # also tells the tablet this comma can replay drives
+      if r.active:
+        out["p"]["IsOnroad"] = True   # the tablet shows the drive screens, as when that drive was recorded
     return out
 
   def control(self, req: dict) -> dict:
@@ -1359,7 +1510,21 @@ class Hub:
         self._flag_t = 0.0
         return {"ok": True, "tablet_mode": self.tablet_mode}
       if act == "blink":  # {"side": "left" | "right" | "off", "why"?: "turn" | "lane"} - repeated every 250 ms while held
-        return self.blinker.set(str(req.get("side", "off")), str(req.get("why") or ""))
+        side = str(req.get("side", "off"))
+        if self._replaying():   # a replayed drive's blinker requests never reach the relay box (or desire_helper)
+          return {"ok": True, "signal": True, "replay": True, "side": side}
+        held = self._blink_held_t
+        if held is not None:
+          # the replay just ended and the tablet still holds a blinker it asked for on the replayed drive: not passed on
+          # until it lets go ("off") or stops asking for 2 s
+          now = time.monotonic()
+          if side != "off" and now - held < 2.0:
+            self._blink_held_t = now
+            return {"ok": True, "signal": False, "replay": True, "side": side}
+          self._blink_held_t = None
+        return self.blinker.set(side, str(req.get("why") or ""))
+      if act in ("replay_list", "replay_start", "replay_control"):
+        return self.replay_action(act, req)
       if act == "drive_state":  # "default" | "onroad" | "offroad"  (same as Galaxy / settings Force drive state)
         mode = req.get("mode", "default")
         # switching onroad/offroad starts or stops openpilot: never while engaged or while Always On Lateral steers (it
@@ -1412,6 +1577,7 @@ class Hub:
         "video_clients": {cam: [{"sent": c.sent, "dropped": c.dropped, "need_key": c.need_key} for c in cs]
                           for cam, cs in self.video_clients.items() if cs},
         "subscribed": sorted(self.socks),
+        "replay": self.replay.status() if getattr(self, "replay", None) is not None else None,
         "rates": {k: {"hz": round(v[0], 1), "kBps": round(v[1] / 1000, 1)} for k, v in self.rates_out.items()},
         "totals": {k: dict(v) for k, v in self.stats.items()},
       }

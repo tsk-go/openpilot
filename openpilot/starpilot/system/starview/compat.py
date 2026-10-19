@@ -208,6 +208,9 @@ def build_plan(slc, lp, toggles_json: str) -> bytes:
 
 
 # ------------------------------------------------------------------------------------------ memory params
+NO_SOURCE = object()   # MemParams.source: "not replaying, read msgq"
+
+
 class MemParams:
   """The old in-memory params the tablet reads and writes. Read: built from 7.0 messages (one conflated socket each,
   made on first use and kept). Write: kept in this process (only the tablet itself reads them back)."""
@@ -221,10 +224,20 @@ class MemParams:
     self._local: dict[str, object] = {}
     self.lock = threading.Lock()
     self.nav_extra = None     # callable(base state) -> dict merged into NavInstructionState (the Waze bridge's fields)
+    # callable(service) -> (time, event) | None, or NO_SOURCE: while a drive replay plays, its messages (or nothing)
+    # instead of msgq's live ones
+    self.source = None
 
   def _newest(self, service):
     if service not in SERVICE_LIST:
       return None
+    if self.source is not None:
+      try:
+        got = self.source(service)
+      except Exception:
+        got = None
+      if got is not NO_SOURCE:
+        return got
     now = time.monotonic()
     with self.lock:   # executor threads and the snapshot share these sockets: one reader at a time
       if now - self._read_t.get(service, -1e9) >= self.READ_EVERY:
