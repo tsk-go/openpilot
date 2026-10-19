@@ -165,8 +165,7 @@ class TestGMAutoIdentity(unittest.TestCase):
 
   def test_ambiguous_and_manual_identities_remain_unadvertised(self):
     for name in ('CHEVROLET_BOLT_ACC_2022_2023', 'CHEVROLET_BOLT_ACC_2022_2023_PEDAL',
-                 'CHEVROLET_BOLT_CC_2022_2023', 'CHEVROLET_TRAX',
-                 'CHEVROLET_VOLT_CC'):
+                 'CHEVROLET_BOLT_CC_2022_2023', 'CHEVROLET_TRAX'):
       self.assertNotIn('gm.' + name, self.inventory)
 
 

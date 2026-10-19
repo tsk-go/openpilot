@@ -23,12 +23,13 @@ def incoming(identity, *, frame=0):
   if identity != 'VOLVO_V40':
     return sources(identity, frame=frame)
   packer = CANPacker('volvo_v40_2017_pt')
-  return [packer.make_can_msg(name, bus, values) for name, bus, values in [
+  messages: list[tuple[str, int, dict[str, float]]] = [
     ('VehicleSpeed1', 0, {'VehicleSpeed': 72}), ('CCButtons', 0, {}),
     ('PSCM1', 0, {'SteeringAngleServo': 12.5, 'LKATorque': 10}),
     ('PedalandBrake', 0, {}), ('TCM0', 0, {'GearShifter': 3}), ('ACC', 0, {'SpeedTargetACC': 100}),
     ('MiscCarInfo', 0, {}), ('FSM0', 2, {'ACCStatusOnOff': 1, 'ACCStatusActive': 1}), ('FSM1', 2, {}),
-  ]]
+  ]
+  return [packer.make_can_msg(name, bus, values) for name, bus, values in messages]
 
 
 class TestVolvoActualStartup(unittest.TestCase):

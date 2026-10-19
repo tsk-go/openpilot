@@ -12,6 +12,7 @@ class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
     self.last_speed = V_CRUISE_MAX
+    self.toi_fault = self.toi_active = self.toi_unavailable = False
 
     self.acm_lka_hba_cmd: dict | None = None
     self.sccm_wheel_touch: dict | None = None
@@ -43,6 +44,11 @@ class CarState(CarStateBase):
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > 1.0, 5)
 
     ret.steerFaultTemporary = cp.vl["EPAS_AdasStatus"]["EPAS_EacErrorCode"] != 0
+
+    if self.CP.flags == 0:
+      self.toi_fault = cp.vl["EPAS_SystemStatus"]["H_CAN_EPSS_ToiFlt"] != 0
+      self.toi_active = cp.vl["EPAS_SystemStatus"]["H_CAN_EPSS_ToiActive"] != 0
+      self.toi_unavailable = cp.vl["EPAS_SystemStatus"]["H_CAN_EPS_ToiUnavailable"] != 0
 
     # Cruise state
     ret.cruiseState.enabled = cp_cam.vl["ACM_Status"]["ACM_FeatureStatus"] == 1

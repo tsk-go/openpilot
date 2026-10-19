@@ -22,10 +22,9 @@ from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice
 
 from openpilot.starpilot.ui.onroad_alerts import AlertRenderer
 from openpilot.starpilot.ui.onroad_border import render_compact_half_borders, render_large_half_borders
-from openpilot.starpilot.ui.onroad_compact_widgets import (CompactHudRenderer, MiciSidebarWidgets,
-                                                           draw_curve_road_icon, draw_lead_icon, draw_stop_light_icon)
+from openpilot.starpilot.ui.onroad_compact_widgets import CompactHudRenderer, MiciSidebarWidgets
 from openpilot.starpilot.ui.onroad_curve import controlling as curve_controlling, glow_color, intensity, render_glow, status_label
-from openpilot.starpilot.ui.onroad_conditional import status as conditional_status, stop_active, reason as conditional_reason
+from openpilot.starpilot.ui.onroad_conditional import stop_active
 from openpilot.starpilot.ui.onroad_corner import CornerHintCache, render_corner_hint
 from openpilot.starpilot.ui.onroad_large_widgets import CurrentSpeedHud, UnifiedSpeedWidget, SteeringWheelWidget
 from openpilot.starpilot.ui.onroad_cem_gauge import AetherGauge
@@ -422,23 +421,7 @@ class OnroadView:
         rl.Color(112, 192, 216, 255)
       self.fonts.draw(label, FontRole.SEMI_BOLD, 29, 1390 + right_shift, 56,
                       curve_color)
-    mode = conditional_status(state)
-    # The layout editor leaves out the mode caption; its CEM scenes are named in the editor itself.
-    sample = state.visual_preview is not None and state.visual_preview.layout_sample
-    if mode is not None and state.alert.size != AlertSize.FULL and not sample:
-      family, reason, mode_color = mode
-      mode_y = 101 if label is not None else 56
-      self.fonts.draw(f'{family} {reason}', FontRole.SEMI_BOLD, 25, 1390 + right_shift, mode_y, mode_color)
-      preview_reason = state.visual_preview.cem_reason if state.visual_preview is not None else None
-      live_reason = conditional_reason(state)
-      icon_rect = rl.Rectangle(1310 + right_shift, mode_y - 26, 60, 80)
-      if stop_active(state) or (family == 'CEM' and live_reason == 'cem_stop'):
-        draw_stop_light_icon(icon_rect)
-      elif family == 'CEM' and (preview_reason == 'CURVE' or live_reason == 'cem_curve'):
-        draw_curve_road_icon(icon_rect)
-      elif live_reason in ('cem_lead', 'ccm_lead'):
-        draw_lead_icon(icon_rect)
-    self._traffic_badge(state, 56 + 45 * (int(label is not None) + int(mode is not None)))
+    self._traffic_badge(state, 56 + 45 * int(label is not None))
     render_glow(content, state, border_width=30, time_s=state.observed_ns / 1e9 if state.observed_ns else rl.get_time())
     rl.draw_rectangle_lines_ex(frame, 30, rl.BLACK)
     rl.draw_rectangle_rounded_lines_ex(content, 0.12, 10, 30, edge)

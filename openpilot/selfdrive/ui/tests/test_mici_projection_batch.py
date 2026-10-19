@@ -231,6 +231,7 @@ def test_large_render_preserves_lead_cadence_and_lane_invalidation(renderer, mon
                 radarState=SimpleNamespace(leadOne=None))
   monkeypatch.setattr(model_renderer, "ui_state", SimpleNamespace(sm=sm, started_frame=0))
   view = object.__new__(LargeModelRenderer)
+  view.lead_display = None
   view._path = ModelPoints(raw_points=np.array([[10, 0, 0]], dtype=np.float32))
   view._longitudinal_control = True
   view._update_model = Mock()

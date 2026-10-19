@@ -1,5 +1,6 @@
 """Reason-qualified intent retention; this module never grants an axis."""
 from openpilot.cereal import log
+from openpilot.starpilot.aol.panda_faults import blocking_fault_mask, blocking_fault_list
 from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS, current_native, native_inventory_matches_cp
 from openpilot.starpilot.aol.wire import SafetyState, decode_intent
 
@@ -29,7 +30,7 @@ def _configured_transport_native(sm, cp, session, now_ns, native=None, *, requir
     # current_native already checked this exact inventory in this call.
     # Supplied native values still need structural validation here.
     if coherent and (not validated_here and not native_inventory_matches_cp(native, cp) or
-                     any(p.safetyRxChecksInvalid or p.heartbeatLost or p.faults or
+                     any(p.safetyRxChecksInvalid or p.heartbeatLost or blocking_fault_mask(p.faults, cp) or
                          (require_longitudinal and native.requestedLongitudinal and str(config.safetyModel) not in ('silent', 'noOutput') and
                           not p.controlsAllowed)
                          for p, config in zip(native.pandaInventory, cp.safetyConfigs, strict=True))):
@@ -45,7 +46,7 @@ def _configured_transport_native(sm, cp, session, now_ns, native=None, *, requir
       return None
     return native if all(int(p.safetyModel.raw) == int(c.safetyModel.raw) and p.safetyParam == c.safetyParam and
                p.alternativeExperience == cp.alternativeExperience and not p.safetyRxChecksInvalid and
-               not p.heartbeatLost and not p.faults and
+               not p.heartbeatLost and not blocking_fault_list(p.faults, cp) and
                (not require_longitudinal or not native.requestedLongitudinal or str(c.safetyModel) in ('silent', 'noOutput') or p.controlsAllowed)
                for p, c in zip(pandas, cp.safetyConfigs, strict=True)) else None
   except (AttributeError, KeyError, IndexError, TypeError, ValueError):
@@ -110,7 +111,7 @@ def stock_lateral_off(cp, cs, native):
   return bool(cp.pcmCruise and cs.cruiseState.available and not cs.cruiseState.enabled and
     cs.canValid and not cs.canTimeout and not cs.steerFaultPermanent and not cs.steerFaultTemporary and
     not cs.accFaulted and not cs.doorOpen and not cs.seatbeltUnlatched and
-    not cs.brakePressed and not cs.regenBraking and not cs.gasPressed and not physical_cancel(cs) and
+    not cs.brakePressed and not cs.regenBraking and not cs.gasPressed and not physical_cancel(cs, cp) and
     native is not None and native.requestedLateral and native.lateralAllowed and not native.requestedLongitudinal)
 
 
@@ -267,10 +268,44 @@ class TransportPauseFeedback:
     self.healthy_native_ns = 0
     self.healthy_inventory = None
 
+  def _native_long_withdrawal_lateral_current(self, sm, cp, cs, axis, now_ns, *, latched, producer):
+    """Retain existing LAT intent from a fresh independently granted LAT proof.
+
+    Requested but denied LONG is never an active combined-axis baseline. This
+    method neither grants outputs nor exempts any native or control fault.
+    """
+    from openpilot.starpilot.nostalgia import physical_cancel
+    if (not latched or self.failed or self.paused or self.pending_event or self.retention_started_ns or
+        not self.session or str(axis.sessionId) != self.session or
+        not producer or producer != self.availability_producer or
+        str(getattr(axis, 'intentProducerSessionId', '')) != producer or
+        int(getattr(axis, 'intentIntegrityEpoch', 0)) != self.availability_epoch or
+        not self.lateral_inventory or not self.lateral_baseline_ns or
+        str(axis.faultReason) != 'none' or str(axis.mode) != 'lateralOnly' or not axis.nativeAcknowledged or
+        not axis.desiredLateral or not axis.lateralActive or axis.longitudinalActive or
+        not 0 < self.lateral_source_ns <= axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
+        now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
+        not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted or
+        cs.steeringDisengage or physical_cancel(cs, cp) or
+        not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < int(sm.logMonoTime['onroadEvents']) <= now_ns or
+        now_ns - int(sm.logMonoTime['onroadEvents']) > 1_500_000_000 or
+        any(event.immediateDisable or event.softDisable or event.userDisable for event in sm['onroadEvents'])):
+      return None
+    native = independent_lateral_health(sm, cp, cs, self.session, now_ns)
+    if (native is None or not native.pandaInventory or not native.requestedLongitudinal or native.longitudinalAllowed or
+        native.observedMonoTime < self.lateral_native_ns or
+        (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != self.lateral_inventory):
+      return None
+    owners = [index for index, config in enumerate(cp.safetyConfigs)
+              if str(config.safetyModel) not in ('silent', 'noOutput')]
+    return native if (len(owners) == 1 and not native.pandaInventory[owners[0]].controlsAllowed and
+                      not sm['pandaStates'][owners[0]].controlsAllowed) else None
+
   def _temporary_host_intent_current(self, sm, cp, cs, axis, stamp, now_ns, *, latched, producer):
     """A fresh inactive proof may retain intent, never native/output authority."""
     from openpilot.starpilot.nostalgia import physical_cancel
-    if physical_cancel(cs) or cs.steeringDisengage:
+    if physical_cancel(cs, cp) or cs.steeringDisengage:
       return False
     events = sm['onroadEvents']
     faults = [event for event in events if event.immediateDisable or event.softDisable]
@@ -567,7 +602,7 @@ class TransportPauseFeedback:
     # every latest raw configuration/fault veto and exact producer-read inventory.
     current_pandas = all(int(p.safetyModel.raw) == int(c.safetyModel.raw) and p.safetyParam == c.safetyParam and
                          p.alternativeExperience == cp.alternativeExperience and not p.safetyRxChecksInvalid and
-                         not p.heartbeatLost and not p.faults and
+                         not p.heartbeatLost and not blocking_fault_list(p.faults, cp) and
                          (str(c.safetyModel) not in ('silent', 'noOutput') or not p.controlsAllowed)
                          for p, c in zip(pandas, cp.safetyConfigs, strict=True))
     return native if current_pandas else None
@@ -950,6 +985,17 @@ class TransportPauseFeedback:
                       0 < axis.sourceCarStateMonoTime <= stamp and
                       stamp - axis.sourceCarStateMonoTime <= AXIS_MAX_AGE_NS)
       native = _healthy_transport_native(sm, cp, cs, str(axis.sessionId), now_ns)
+      lateral_native = (self._native_long_withdrawal_lateral_current(sm, cp, cs, axis, now_ns,
+        latched=latched, producer=intent_producer_session)
+        if native is None and current and continuity and baseline else None)
+      if lateral_native is not None:
+        # Record only the genuinely current LAT proof. Do not renew a combined
+        # healthy baseline, change a lease or manufacture a LONG permission.
+        self.lateral_baseline_ns = stamp
+        self.lateral_source_ns = int(axis.sourceCarStateMonoTime)
+        self.lateral_native_ns = int(lateral_native.observedMonoTime)
+        self.sequence, self.signature = int(axis.sequence), signature
+        return False
       transport_healthy = native is not None
       cancel_native = (self._longitudinal_cancel_current(sm, cp, cs, axis, now_ns, latched=latched,
                                                         cancel_source_ns=cancel_source_ns)

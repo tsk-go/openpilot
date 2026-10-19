@@ -17,7 +17,7 @@ from openpilot.starpilot.flm.learner_factory import TorqueCollectionAdapter, RAW
 from openpilot.starpilot.flm.runtime_adapter_registry import baseline_values, baseline_revision, selected_descriptor, selected_identity
 from openpilot.starpilot.flm.tests.native_controls_fixture import native_frame
 from openpilot.starpilot.flm.tests.test_registered_controls_global import controls_for, published_cp
-from openpilot.starpilot.lateral.controller_selection import DOCUMENT_KEY as SELECTION_KEY, replace_mode
+from openpilot.starpilot.lateral.controller_selection import DOCUMENT_KEY as SELECTION_KEY, ControllerMode, replace_mode
 from openpilot.starpilot.lateral.learning_preferences import KEY, replace_preference
 from openpilot.starpilot.lateral.torque_settings import DOCUMENT_KEY, FieldChoice, PlatformProfile, serialize_document
 
@@ -104,14 +104,15 @@ def test_off_keeps_historical_controller_output_despite_qualified_native_packet(
 @contextmanager
 def manual_ioniq():
   cp = cp_for(HYUNDAI.HYUNDAI_IONIQ_6)
-  basis = tuple(float(getattr(cp.lateralTuning.torque, name)) for name in ('latAccelFactor', 'latAccelOffset', 'friction'))
+  torque = cp.lateralTuning.torque
+  basis = (float(torque.latAccelFactor), float(torque.latAccelOffset), float(torque.friction))
   document = serialize_document({str(cp.carFingerprint): PlatformProfile(basis, FieldChoice('custom', basis[0] * .95), FieldChoice())})
   with OpenpilotPrefix(), mock.patch.dict(os.environ, {'REPLAY': '1', 'SIMULATION': '0', 'TORQUE_REPLAY_RUNTIME': '0',
        'AOL_REPLAY_RUNTIME': '0', 'LANE_CENTERING_REPLAY_RUNTIME': '0'}), mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
     params = Params()
     params.put('CarParams', published_cp(cp, params).to_bytes(), block=True)
     params.put(KEY, replace_preference(None, cp, True), block=True)
-    params.put(SELECTION_KEY, json.loads(replace_mode(None, cp, 'starpilot')), block=True)
+    params.put(SELECTION_KEY, json.loads(replace_mode(None, cp, ControllerMode.STARPILOT)), block=True)
     params.put(DOCUMENT_KEY, json.loads(document), block=True)
     yield Controls(), document, basis
 

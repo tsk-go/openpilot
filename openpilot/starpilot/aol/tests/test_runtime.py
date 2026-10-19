@@ -887,6 +887,8 @@ class IpcAxisContractTests(unittest.TestCase):
       self.assertTrue(card.aol_card_intent.allowed_latch)
       self.assertFalse(step(11, latched=False, native_request_long=False)[0].lateralActive)
       cs = car_state()
+      from dataclasses import replace
+      card.aol_card_intent.settings = replace(card.aol_card_intent.settings, cancel_actions=(3, 0, 0))
       cs.buttonEvents = [car.CarState.ButtonEvent(type=car.CarState.ButtonEvent.Type.cancel, pressed=True)]
       card.aol_card_intent.update(cs, now_ns=now + 10_000_000)
       self.assertFalse(card.aol_card_intent.allowed_latch)
@@ -1050,6 +1052,8 @@ class IpcAxisContractTests(unittest.TestCase):
       self.assertFalse(axis.lateralActive or axis.longitudinalActive or command.latActive or command.longActive)
       self.assertFalse(sd.aol_authority_lost)
       cs = car_state()
+      from dataclasses import replace
+      card.aol_card_intent.settings = replace(card.aol_card_intent.settings, cancel_actions=(3, 0, 0))
       cs.buttonEvents = [car.CarState.ButtonEvent(type=car.CarState.ButtonEvent.Type.cancel, pressed=True)]
       card.aol_card_intent.update(cs, now_ns=10_090_000_000)
       self.assertFalse(card.aol_card_intent.allowed_latch)
@@ -2114,6 +2118,8 @@ class UiProcessIntentTests(unittest.TestCase):
     owner.update(state, now_ns=2_000_000_000, native_rejection_ns=1_990_000_000)
     self.assertFalse(owner.allowed_latch)
     owner.allowed_latch = True
+    from dataclasses import replace
+    owner.settings = replace(owner.settings, cancel_actions=(3, 0, 0))
     state.buttonEvents = [car.CarState.ButtonEvent(type=car.CarState.ButtonEvent.Type.cancel, pressed=True)]
     owner.update(state)
     self.assertFalse(owner.allowed_latch)  # Physical CANCEL remains intentional withdrawal.

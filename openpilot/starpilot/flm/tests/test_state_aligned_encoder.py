@@ -102,7 +102,10 @@ def test_honda_normalized_pre_lookup_comparison_and_modified_filter_shadow_is_pu
       assert observed_branch.civic == prior_civic  # paired evaluation never advances filter
       observed_shapes.append(shape)
       return _shaped_input(row, request, shape)
-    candidate_shape = None if not modified else before + tuple(witness.shape[4:])
+    candidate_shape = None
+    if modified:
+      assert before is not None
+      candidate_shape = before + tuple(witness.shape[4:])
     expected_source = _shaped_input(witness, witness.requested_torque, candidate_shape)
     params = dict(witness.limits)
     expected = rate_limit(expected_source, branch.previous,

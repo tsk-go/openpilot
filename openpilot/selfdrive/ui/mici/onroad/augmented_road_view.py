@@ -1,4 +1,6 @@
 import numpy as np
+from openpilot.starpilot.ui.camera_selection import (selected_camera_stream, WIDE_CAM_MAX_SPEED as WIDE_CAM_MAX_SPEED,
+                                                    ROAD_CAM_MIN_SPEED as ROAD_CAM_MIN_SPEED)
 import pyray as rl
 from openpilot.cereal import log
 from opendbc.car.structs import car
@@ -35,8 +37,6 @@ class BookmarkState(IntEnum):
   DRAGGING = 1
   TRIGGERED = 2
 
-WIDE_CAM_MAX_SPEED = 5.0  # m/s (11 mph)
-ROAD_CAM_MIN_SPEED = 10.0  # m/s (22 mph)
 
 CAM_Y_OFFSET = 20
 
@@ -370,25 +370,12 @@ class AugmentedRoadView(CameraView):
 
   def _switch_stream_if_needed(self, sm, camera_view: int = CAMERA_VIEW_AUTO,
                                reverse_driver: bool = False) -> VisionStreamType | None:
-    if camera_view == CAMERA_VIEW_NONE:
+    target = selected_camera_stream(camera_view, reverse_driver=reverse_driver, current=self.stream_type,
+      available=self.available_streams, experimental=sm['selfdriveState'].experimentalMode,
+      speed=sm['carState'].vEgo, narrow=NARROW_ROAD_CAM, wide=WIDE_CAM, driver=DRIVER_CAM)
+    if target is None:
       self._cancel_pending_switch()
       return None
-    if reverse_driver or camera_view == CAMERA_VIEW_DRIVER:
-      target = DRIVER_CAM
-    elif camera_view == CAMERA_VIEW_STANDARD:
-      target = NARROW_ROAD_CAM
-    elif camera_view == CAMERA_VIEW_WIDE:
-      target = WIDE_CAM if WIDE_CAM in self.available_streams else NARROW_ROAD_CAM
-    elif sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
-      v_ego = sm['carState'].vEgo
-      if v_ego < WIDE_CAM_MAX_SPEED:
-        target = WIDE_CAM
-      elif v_ego > ROAD_CAM_MIN_SPEED:
-        target = NARROW_ROAD_CAM
-      else:
-        target = self.stream_type if self.stream_type in (NARROW_ROAD_CAM, WIDE_CAM) else NARROW_ROAD_CAM
-    else:
-      target = NARROW_ROAD_CAM
     if target == DRIVER_CAM and DRIVER_CAM not in self.available_streams:
       self._cancel_pending_switch()
       return target

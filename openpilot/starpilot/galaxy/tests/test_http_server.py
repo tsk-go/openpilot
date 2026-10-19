@@ -17,9 +17,12 @@ from openpilot.starpilot.galaxy.recording_http import send_recording
 
 
 @pytest.fixture
-def server(tmp_path):
+def server(tmp_path, monkeypatch):
   session, client = '1' * 32, '2' * 32
-  directory = tmp_path / 'sessions' / session / 'media' / '1'
+  def ram_session(session_id):
+    return tmp_path / 'ram' / ('msgq_replay-' + session_id[:24]) / session_id
+  monkeypatch.setattr('openpilot.starpilot.replay.media.web_media_dir', ram_session)
+  directory = ram_session(session) / 'media' / '1'
   directory.mkdir(parents=True)
   media = directory / 'init.mp4'
   media.write_bytes(b'x' * (65536 + 5))

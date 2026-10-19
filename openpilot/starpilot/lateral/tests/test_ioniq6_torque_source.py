@@ -45,6 +45,7 @@ def ioniq_long_candidate(*, alternate=False):
 class LearnedFrame:
   def __init__(self, now_ns, *, factor, offset, friction):
     self.logMonoTime = {'lateralTorqueParameters': now_ns}
+    self.recv_time = {'lateralTorqueParameters': now_ns / 1e9}
     self.state = SimpleNamespace(useParams=True, valid=True, version=1, latAccelFactorFiltered=factor,
                                  latAccelOffsetFiltered=offset, frictionCoefficientFiltered=friction)
 

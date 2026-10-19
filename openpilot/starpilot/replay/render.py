@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, cast
 
 from openpilot.starpilot.replay.client import MAX_WORKER_STATUS
 from openpilot.starpilot.replay.frames import ReplayFramePublisher, SESSION
-from openpilot.starpilot.replay.media import MediaMux, MediaStore
+from openpilot.starpilot.replay.media import MediaMux, MediaStore, web_media_dir
 
 if TYPE_CHECKING:
   from openpilot.selfdrive.ui.mici.onroad.augmented_road_view import AugmentedRoadView as CompactRoadView
@@ -184,6 +184,8 @@ class Engine:
     self.write_lock = threading.Lock()
     self.last_request_id = None
     self.seek_request = None
+    self.resume_request = None
+    self.resume_epoch = 0
     self.closed = threading.Event()
     self.reader = threading.Thread(target=self._read, daemon=True, name='replay-engine-status')
     self.reader.start()
@@ -198,7 +200,12 @@ class Engine:
           raise ValueError('Invalid replay engine status')
         value = json.loads(line)
         if value.get('event') == 'status':
-          self.status = value
+          with self.write_lock:
+            self.status = value
+            if (self.resume_epoch == value.get('epoch') and self.resume_request == value.get('lastRequestId') and
+                (value.get('state') in ('playing', 'ended') or
+                 value.get('state') == 'buffering' and value.get('error') == 'recording_gap')):
+              self.resume_request = None
     except Exception as error:
       self.error = str(error)
 
@@ -209,9 +216,30 @@ class Engine:
       self.last_request_id = value.get('requestId')
       if value.get('op') == 'seek':
         self.seek_request = self.last_request_id
-      self.process.stdin.write(json.dumps(value, allow_nan=False, separators=(',', ':')) + '\n')
-      self.process.stdin.flush()
+        if self.resume_request is not None or self.status and not self.status['paused']:
+          # Prepare the compositor's first frame before the recorded clock resumes.
+          self.resume_request, self.resume_epoch = self.last_request_id, 0
+          self._write({'op': 'pause', 'paused': True, 'requestId': self.last_request_id})
+      elif value.get('op') in ('pause', 'stop'):
+        self.resume_request = None
+      elif self.resume_request is not None:
+        self.resume_request = self.last_request_id
+      self._write(value)
       return True
+
+  def _write(self, value):
+    self.process.stdin.write(json.dumps(value, allow_nan=False, separators=(',', ':')) + '\n')
+    self.process.stdin.flush()
+
+  def resume(self, epoch):
+    with self.write_lock:
+      status = self.status
+      if (self.resume_request is not None and status and status.get('epoch') == epoch and
+          status.get('lastRequestId') == self.resume_request == self.last_request_id and status.get('paused') is True and
+          self.resume_epoch != epoch):
+        self._write({'op': 'pause', 'paused': False, 'requestId': self.resume_request})
+        self.resume_epoch = epoch
+      return self.resume_request is not None
 
   def close(self):
     self.closed.set()
@@ -602,7 +630,7 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
   width, height = SIZES[target][profile]
   began = time.monotonic()
   with ExitStack() as resources:
-    engine = Engine(route_id, data_dir, wide=wide, cabin=cabin, start_segment=start_segment, preload_seek=target == 'native')
+    engine = Engine(route_id, data_dir, wide=wide, cabin=cabin, start_segment=start_segment, preload_seek=not export_budget)
     resources.callback(engine.close)
     core = Compositor(profile, width, height, nv12=target == 'web', wide=wide, cabin=cabin)
     resources.callback(core.close)
@@ -645,7 +673,11 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
       if not encoder.supports_nv12:
         raise RuntimeError('Replay requires the existing NV12 hardware encoder ABI')
       resources.callback(encoder.close)
-      media = None if export_budget else MediaStore(session_dir, session_dir.name, width, height)
+      if not export_budget:
+        # Playback fragments are bounded and disposable; avoid flash writeback stalls.
+        directory = web_media_dir(session_dir.name)
+        directory.mkdir(mode=0o700)
+        media = MediaStore(directory, session_dir.name, width, height)
       resources.callback(lambda: mux.close() if mux is not None else None)
     last_emit = last_draw = 0.0
     last_camera_frame = None
@@ -703,7 +735,6 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
             if publisher is not None:
               published_epoch = epoch
               published_at = captured_ns / 1e9
-              acknowledged = status.get('lastRequestId')
       if pending_frame is not None and valid and (status['paused'] or status['state'] == 'ended' or
                                                   now - pending_frame[4] / 1e9 >= 1):
         ready_frames.append((pending_frame, 50000))
@@ -714,7 +745,6 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
         fragment = mux.frame(packet, pts_us=pts_us, duration_us=duration, keyframe=keyframe)
         media.publish(fragment, position=position, keyframe=keyframe)
         published_epoch, published_at = epoch, captured_ns / 1e9
-        acknowledged = status.get('lastRequestId')
       if exporter is not None and status and exporter.advance(engine, status, core.readback.pending):
         final = {**status, 'error': None, 'frameReady': False, 'mediaReady': False, 'exportProgress': 1.}
         emit({**final, 'exportState': 'finalizing'})
@@ -736,6 +766,7 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
         if engine.command({'op': 'seek', 'position': status['position'], 'requestId': status.get('lastRequestId') or '0' * 32}, reprime=True):
           core.ui.replay_needs_reprime = False
           valid = False
+      handing_off = engine.resume(published_epoch if valid else 0)
       camera_frame = None
       interval = FRAME_INTERVAL
       client = core.camera.client
@@ -757,14 +788,16 @@ def run(session_dir: Path, route_id: str, data_dir: Path, target: str, profile: 
           last_draw = max(last_draw + interval, now - interval)
       if status and now - last_emit >= .1:
         # A production stall does not invalidate already published media in the same epoch.
-        ready = bool(published_epoch and published_epoch == status.get('epoch') and
+        ready = bool(not handing_off and published_epoch and published_epoch == status.get('epoch') and
                      status['state'] in ('playing', 'paused', 'buffering', 'ended') and
                      clock_epoch == published_epoch)
         fresh = ready and valid and (status['paused'] or now - published_at <= .5)
         value = {key: status.get(key) for key in ('event', 'state', 'position', 'start', 'end', 'rate', 'paused', 'epoch', 'lastRequestId', 'error')}
         if status['state'] not in ('failed', 'ended') and not fresh:
           value['state'] = 'buffering' if ready else 'seeking' if published_epoch else 'preparing'
-        if engine.seek_request == value.get('lastRequestId') and not ready:
+        if ready:
+          acknowledged = value.get('lastRequestId')
+        elif engine.seek_request == value.get('lastRequestId'):
           value['lastRequestId'] = acknowledged
         if 'seekRanges' in status:
           value['seekRanges'] = status['seekRanges']

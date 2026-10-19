@@ -155,7 +155,7 @@ assert.match(Home.template, /\{\{ day\.distance \}\}/)
 const manifest = JSON.parse(readFileSync(new URL("../web/manifest.webmanifest", import.meta.url), "utf8"))
 assert.equal(manifest.start_url, "./")
 assert.equal(manifest.scope, "./")
-assert.equal(manifest.icons[0].purpose, "any maskable")
+assert.ok(manifest.icons.every(icon => icon.purpose === "any"))
 for (const base of ["https://example.test/", "https://example.test/device-slug/"]) {
   assert.equal(new URL(manifest.icons[0].src, base).pathname, new URL("./assets/galaxy-icon.svg", base).pathname)
 }

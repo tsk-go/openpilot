@@ -16,7 +16,7 @@ from openpilot.starpilot.flm.event_windows import regroup_whole_events
 from openpilot.starpilot.flm.full_surface_profile import RESTORE_POLICY, envelope_from_dict
 from openpilot.starpilot.flm.physical_response import PhysicalRow
 from openpilot.starpilot.flm.runtime_adapter_registry import canonical_physical_context, physical_model_revision
-from openpilot.starpilot.flm.torque_eligibility import exact_unclipped_pair
+from openpilot.starpilot.flm.torque_eligibility import exact_unclipped_pair, consumed_sources_current
 from openpilot.starpilot.flm.torque_emission_replay import delivered
 from openpilot.starpilot.flm.torque_raw_fit import control_from_dict, output_from_dict
 
@@ -45,7 +45,7 @@ def _restore_original_evidence(payload, engine, objective):
           command.baseline_revision != engine.baseline_revision or command.source_epoch != envelope.source_epoch or
           not 0 < command.source_receipt_ns <= command.control_ns <= command.source_receipt_ns + 500_000_000 or
           not 0 < command.state_ns <= command.control_ns <= command.state_ns + 30_000_000 or
-          not command.state_ns <= output.state_ns <= output.apply_ns or output.state_ns - command.state_ns > 30_000_000 or
+          not consumed_sources_current(command, output) or
           not command.control_ns <= output.apply_ns <= command.control_ns + 100_000_000 or
           command.native_required and (not command.native_allowed or not command.native_identity or
             not 0 < command.native_observed_ns <= command.control_ns <= output.apply_ns <= command.native_expires_ns or
@@ -66,8 +66,8 @@ def _restore_original_evidence(payload, engine, objective):
 
 def prepare_fixed_restore_calibration(payload, engine, objective):
   from openpilot.starpilot.flm.clipping_quality import event_clipping_quality
-  if type(payload.get('event_version')) is not int or payload['event_version'] not in (4, 5):
-    raise ValueError('explicit fixed-map restore version4/5')
+  if type(payload.get('event_version')) is not int or payload['event_version'] not in (4, 5, 6):
+    raise ValueError('explicit fixed-map restore version4/5/6')
   event_clipping_quality(payload)
   envelope, context, packets, events = _restore_original_evidence(payload, engine, objective)
   _control_frame_index(engine.records)  # reject ambiguous original activation clocks
@@ -94,7 +94,7 @@ def _fixed_restore_rollout(payload, engine, coordinates, *, restore_target=False
   try:
     return engine._rollout(coordinates, restore_target=restore_target, restore_omit_group=restore_omit_group)
   except ValueError as error:
-    if payload.get('event_version') not in (4, 5):
+    if payload.get('event_version') not in (4, 5, 6):
       raise
     return unavailable('restore_actual_full_map_controller_replay', status='rejected', event_version=payload['event_version'],
       replay_phase='group-off' if restore_omit_group is not None else 'full-map' if restore_target else 'baseline',
@@ -106,7 +106,7 @@ def fit_event_restore(payload, engine, objective):
   frames = _control_frame_index(engine.records)
   if len(events) < 16:
     return unavailable('restore_whole_physical_event_support', wholeBlocks=len(events), requiredWholeBlocks=16)
-  declared = payload.get('event_version') in (4, 5)
+  declared = payload.get('event_version') in (4, 5, 6)
   if declared:
     from openpilot.starpilot.flm.event_activation import bind_activation_model
     from openpilot.starpilot.flm.restore_activation import build_restore_plan
@@ -195,14 +195,14 @@ def fit_event_restore(payload, engine, objective):
     for group in effects:
       # Joint group impact must be present in this actual supported trajectory.
       # No unobservable saved low-speed/window coordinate restores on faith.
-      if payload.get('event_version') == 5:
+      if payload.get('event_version') in (5, 6):
         group_gains[group].append(sum(group_errors[group]) / len(samples) - after_loss)
       elif sum(value > 1e-8 for value in signals[group]) < 40:
         group_gains[group].append(None)
       else:
         group_gains[group].append(sum(group_errors[group]) / len(samples) - after_loss)
   middle = len(blocks) // 2
-  if payload.get('event_version') == 5:
+  if payload.get('event_version') in (5, 6):
     from openpilot.starpilot.flm.restore_support import capped_group_credits, independent_half_supported, all_event_lower
     for group, trace in effects.items():
       evidence = tuple((event['block_id'], tuple((point['control_ns'], point['apply_ns'],
@@ -217,7 +217,7 @@ def fit_event_restore(payload, engine, objective):
             support_credits=half, required_credits=80, required_effectful_events=2)
   for group, gains in group_gains.items():
     for cohort in (gains[:middle], gains[middle:]):
-      if payload.get('event_version') == 5:
+      if payload.get('event_version') in (5, 6):
         if all_event_lower(cohort, _lower) is None:
           return unavailable('restore_group_independent_heldout_support', group=group)
       else:

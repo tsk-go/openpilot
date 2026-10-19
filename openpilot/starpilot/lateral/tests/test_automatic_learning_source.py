@@ -116,7 +116,9 @@ class TestAutomaticLearningSource(unittest.TestCase):
       sm = input_state(cp, params)
       for name in ('seen', 'alive', 'valid', 'freq_ok'):
         getattr(sm, name)['lateralTorqueParameters'] = True
-      sm.states['lateralTorqueParameters'] = SimpleNamespace(useParams=True, latAccelFactorFiltered=factor,
+      sm.logMonoTime = {'lateralTorqueParameters': NOW}
+      sm.recv_time['lateralTorqueParameters'] = NOW / 1e9
+      sm.states['lateralTorqueParameters'] = SimpleNamespace(useParams=True, valid=True, version=1, latAccelFactorFiltered=factor,
         latAccelOffsetFiltered=offset, frictionCoefficientFiltered=friction)
       step = .005 * basis.latAccelFactor
       for frame in range(55):
@@ -143,6 +145,8 @@ class TestAutomaticLearningSource(unittest.TestCase):
       self.assertEqual(controller.torque_params.friction, friction)
       # A fresh native update may change its own nonfactor parameters normally.
       sm.alive['lateralTorqueParameters'] = True
+      sm.logMonoTime['lateralTorqueParameters'] = NOW + 560_000_000
+      sm.recv_time['lateralTorqueParameters'] = (NOW + 560_000_000) / 1e9
       sm.states['lateralTorqueParameters'].latAccelOffsetFiltered = float32(-.02)
       sm.states['lateralTorqueParameters'].frictionCoefficientFiltered = float32(basis.friction * 1.2)
       host.apply(controller, host.sample(sm, now_ns=NOW + 560_000_000, lat_active=False))

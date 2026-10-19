@@ -4,6 +4,10 @@ static bool mazda_aol_enabled = false;
 static bool mazda_aol_token = false;
 static bool mazda_aol_neutral = false;
 static bool mazda_aol_buttons_neutral = false;
+static bool mazda_aol_cruise_neutral = false;
+static bool mazda_aol_pending = false;
+static bool mazda_aol_session = false;
+static uint32_t mazda_aol_grant_ts = 0U;
 static bool mazda_aol_requested = false;
 static bool mazda_aol_owned = false;
 static uint8_t mazda_aol_seen = 0U;
@@ -16,8 +20,11 @@ static uint32_t mazda_aol_accepted_ts = 0U;
 
 static void mazda_aol_clear(void) {
   mazda_aol_token = false;
+  mazda_aol_pending = false;
+  mazda_aol_session = false;
   mazda_aol_neutral = false;
   mazda_aol_buttons_neutral = false;
+  mazda_aol_cruise_neutral = false;
   mazda_aol_owned = false;
 }
 
@@ -32,6 +39,7 @@ static void mazda_aol_reset(void) {
   mazda_aol_eps_ts = 0U;
   mazda_aol_cam_ts = 0U;
   mazda_aol_accepted_ts = 0U;
+  mazda_aol_grant_ts = 0U;
 }
 
 static bool mazda_aol_current(void) {
@@ -47,15 +55,35 @@ static void mazda_aol_request(uint8_t mask) {
   mazda_aol_requested |= mask != 0U;
 }
 
+// A physical grant may arrive before pandad's engaged heartbeat. It remains
+// output-ineligible until a current host request from after this grant joins it.
+static void mazda_aol_grant(void) {
+  mazda_aol_token = true;
+  mazda_aol_pending = !heartbeat_engaged;
+  mazda_aol_session = heartbeat_engaged;
+  mazda_aol_grant_ts = microsecond_timer_get();
+}
+
 static uint8_t mazda_aol_request_mask(void) {
   uint8_t request = 0U;
+  const uint32_t now = microsecond_timer_get();
+  const uint32_t grant_age = safety_get_ts_elapsed(now, mazda_aol_grant_ts);
+  const bool pending_expired = mazda_aol_pending && (grant_age > AOL_HOST_REQUEST_TIMEOUT_US);
   const bool expired = mazda_aol_requested &&
-    (safety_get_ts_elapsed(microsecond_timer_get(), aol_host_request_ts) > AOL_HOST_REQUEST_TIMEOUT_US);
-  if (relay_malfunction || expired || safety_rx_checks_invalid ||
-      (!heartbeat_engaged || !aol_rx_healthy() || !mazda_aol_current())) {
+    (safety_get_ts_elapsed(now, aol_host_request_ts) > AOL_HOST_REQUEST_TIMEOUT_US);
+  if (relay_malfunction || expired || pending_expired || safety_rx_checks_invalid ||
+      (mazda_aol_session && !heartbeat_engaged) || !aol_rx_healthy() || !mazda_aol_current()) {
     mazda_aol_clear();
   } else if (heartbeat_engaged && aol_rx_healthy() && mazda_aol_current()) {
-    request = aol_host_axis_mask;
+    // Equal microsecond stamps cannot prove request-after-grant ordering.
+    // Wait for a strictly later request; the original grant deadline stays fixed.
+    const bool pending_ack = !mazda_aol_pending || ((aol_host_axis_mask != 0U) &&
+      (safety_get_ts_elapsed(now, aol_host_request_ts) < grant_age));
+    if (pending_ack) {
+      mazda_aol_pending = false;
+      mazda_aol_session = true;
+      request = aol_host_axis_mask;
+    }
   } else {
   }
   return request;
@@ -104,29 +132,52 @@ static void mazda_aol_rx(const CANPacket_t *msg) {
       mazda_aol_seen |= 1U;
       mazda_aol_main_ts = microsecond_timer_get();
       acc_main_on = GET_BIT(msg, 17U);
-      if (!heartbeat_engaged || !aol_rx_healthy() || !mazda_aol_current() || safety_rx_checks_invalid || ((mazda_aol_sources & 4U) != 0U)) {
+      if ((mazda_aol_session && !heartbeat_engaged) || !aol_rx_healthy() || !mazda_aol_current() || safety_rx_checks_invalid || ((mazda_aol_sources & 4U) != 0U)) {
         mazda_aol_clear();
       } else if (!acc_main_on) {
         mazda_aol_clear();
         mazda_aol_neutral = true;
       } else if (mazda_aol_neutral) {
-        mazda_aol_token = true;
+        mazda_aol_grant();
         mazda_aol_neutral = false;
       } else {
       }
     } else if (msg_matches(msg, 0x9DU, 0U, 8U)) {
       const bool press = (msg->data[0] & 0x34U) != 0U;
-      if (!heartbeat_engaged || !aol_rx_healthy() || !mazda_aol_current() || safety_rx_checks_invalid || ((mazda_aol_sources & 4U) != 0U)) {
+      if ((mazda_aol_session && !heartbeat_engaged) || !aol_rx_healthy() || !mazda_aol_current() || safety_rx_checks_invalid || ((mazda_aol_sources & 4U) != 0U)) {
         mazda_aol_clear();
       } else if ((msg->data[0] & 1U) != 0U) {
       } else if (!press) {
         mazda_aol_buttons_neutral = true;
       } else if (mazda_aol_buttons_neutral && acc_main_on) {
-        mazda_aol_token = true;
+        mazda_aol_grant();
         mazda_aol_buttons_neutral = false;
       } else {
       }
     } else {
+    }
+  }
+}
+
+// Observe the ordinary receiver's accepted cruise edge, not a host assertion.
+// A healthy inactive observation is required; startup-active and held-active
+// packets cannot create or restore an independent token after a disarming fault.
+static void mazda_aol_engagement(const CANPacket_t *msg, bool cruise_engaged, bool normal_engagement) {
+  if (mazda_aol_enabled && msg_matches(msg, 0x21CU, 0U, 8U)) {
+    const bool request_current = !mazda_aol_requested ||
+      (safety_get_ts_elapsed(microsecond_timer_get(), aol_host_request_ts) <= AOL_HOST_REQUEST_TIMEOUT_US);
+    const bool healthy = !(mazda_aol_session && !heartbeat_engaged) && acc_main_on && (mazda_aol_sources == 1U) &&
+      !brake_pressed && !gas_pressed && !relay_malfunction && !safety_rx_checks_invalid &&
+      request_current && aol_rx_healthy() && mazda_aol_current();
+    if (!healthy) {
+      mazda_aol_cruise_neutral = false;
+    } else if (!cruise_engaged) {
+      mazda_aol_cruise_neutral = true;
+    } else {
+      if (normal_engagement && mazda_aol_cruise_neutral) {
+        mazda_aol_grant();
+      }
+      mazda_aol_cruise_neutral = false;
     }
   }
 }

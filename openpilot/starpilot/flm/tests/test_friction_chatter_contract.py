@@ -1,5 +1,5 @@
 """Model noise remains ineligible even for explicitly retained controller chatter."""
-from dataclasses import asdict
+from dataclasses import replace
 
 import pytest
 
@@ -35,4 +35,4 @@ def test_exact_canonical_objective_only_retains_expected_chatter(group):
 def test_nonfriction_coordinates_cannot_claim_friction_contract():
   objective = EffectObjective('friction.left', GROUPS['friction.left'], 'a' * 64, 'b' * 64)
   with pytest.raises(ValueError, match='canonical event group'):
-    EffectObjective(**{**asdict(objective), 'names': GROUPS['ff.left']})
+    replace(objective, names=GROUPS['ff.left'])

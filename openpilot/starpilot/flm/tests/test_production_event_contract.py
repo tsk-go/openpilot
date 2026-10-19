@@ -8,7 +8,7 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.honda.values import CAR as HONDA
 from opendbc.car.hyundai.values import CAR as HKG
 from opendbc.car.toyota.values import CAR as TOYOTA
-from openpilot.starpilot.flm.clipping_quality import RECORDED_DEBT, STATE_ALIGNED_DEBT, QUALIFIED_EVENT_CLIPPING_QUALITY, event_clipping_quality
+from openpilot.starpilot.flm.clipping_quality import RECORDED_DEBT, STATE_ALIGNED_DEBT, ZERO_REFERENCE_QUALITY, event_clipping_quality
 from openpilot.starpilot.flm.event_fit_factory import fit_event_snapshot
 from openpilot.starpilot.flm.event_objective import EffectObjective
 from openpilot.starpilot.flm.learner_factory import from_evidence
@@ -44,7 +44,7 @@ def capture(controls):
         startup_rejections += 1
         continue
       return evidence, source, startup_rejections
-  pytest.fail('actual source-bound controller checkpoint was not captured')
+  raise pytest.fail.Exception('actual source-bound controller checkpoint was not captured')
 
 
 @pytest.mark.parametrize('platform,mode,domain', [
@@ -62,10 +62,10 @@ def test_actual_live_factory_adopts_both_domains_without_changing_legacy_default
     old = from_evidence(controls.CP, evidence, key, source=source)
     assert live is not None and old is not None
     assert controls.global_learning.descriptor.domain == domain
-    assert live.replay_version == 3 and live.clipping_quality == QUALIFIED_EVENT_CLIPPING_QUALITY
+    assert live.replay_version == 3 and live.clipping_quality == ZERO_REFERENCE_QUALITY
     assert old.replay_version == 2 and old.clipping_quality == RECORDED_DEBT
     live.select_objective(('event', 'deadband.high'))
-    assert live.replay_version == 3 and live.clipping_quality == QUALIFIED_EVENT_CLIPPING_QUALITY
+    assert live.replay_version == 3 and live.clipping_quality == ZERO_REFERENCE_QUALITY
     assert production_adapter_for_evidence(controls.CP, evidence, key, source=None) is None
     assert production_adapter_for_evidence(controls.CP, evidence, key, source=replace(source, enabled=False)) is None
     assert production_adapter_for_evidence(controls.CP, evidence, key, source=replace(source, manual=True)) is None

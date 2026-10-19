@@ -29,6 +29,24 @@ def bounded_context_output(output):
     return False
 
 
+def consumed_sources_current(control, output):
+  """Two actual consumption instants, never a cross-process source-age proxy.
+
+  Each state is fresh at its own consumer; the original command itself also
+  reaches Card within30ms. This is evidence qualification, not driving authority.
+  """
+  try:
+    stamps = control.state_ns, control.control_ns, output.state_ns, output.apply_ns
+    return bool(all(type(stamp) is int and stamp > 0 for stamp in stamps) and
+                control.state_ns <= control.control_ns <= output.apply_ns and
+                control.state_ns <= output.state_ns <= output.apply_ns and
+                control.control_ns - control.state_ns <= 30_000_000 and
+                output.apply_ns - output.state_ns <= 30_000_000 and
+                output.apply_ns - control.control_ns <= 30_000_000)
+  except (AttributeError, TypeError, ValueError, OverflowError):
+    return False
+
+
 def exact_unclipped_pair(control, output):
   """Resolve one async hint only from its original consumed source and leases."""
   try:
@@ -36,7 +54,7 @@ def exact_unclipped_pair(control, output):
     if (not asynchronous_hint(control) or not isinstance(witness, TorqueProjection) or
         not output.valid or not output.active or output.override or output.fault or output.limited or not output.native_allowed or
         output.domain != control.domain or output.control_ns != control.control_ns or
-        not control.state_ns <= output.state_ns <= output.apply_ns or output.state_ns - control.state_ns > 30_000_000 or
+        not consumed_sources_current(control, output) or
         not 0 < control.source_receipt_ns <= control.control_ns <= control.source_receipt_ns + 500_000_000 or
         witness.requested_torque != control.requested or witness.reported_torque != output.applied or
         not witness.steer_requested or witness.unlimited_raw != witness.final_raw):

@@ -57,11 +57,12 @@ class TestGmBoltPedalSafety(unittest.TestCase):
     return result
 
   def test_actual_parser_acc_drive_admission_keeps_paddle_low_only(self):
+    from opendbc.car.gm.interface import CarInterface
     for candidate in PEDAL_BOLT_CAR:
       cp = params(candidate, True, True)
       packer = CANPacker(DBC[candidate][Bus.pt])
-      cs = CarState(cp)
-      parsers = cs.get_can_parsers(cp)
+      ci = CarInterface(cp)
+      cs = ci.CS
       controller = CarController(DBC[candidate], cp)
       cc = structs.CarControl(longActive=True)
       for tick, (gear, manual) in enumerate(((4, 0), (6, 0), (4, 1), (0, 0), (1, 0), (2, 0), (3, 0)), start=1):
@@ -76,8 +77,7 @@ class TestGmBoltPedalSafety(unittest.TestCase):
           raw[4] = tick % 16
           raw[5] = pedal_crc(raw)
           frames[0] = (0x201, bytes(raw), 0)
-          parsers[Bus.pt].update([(now, frames)])
-          cs.out = cs.update(parsers)
+          cs.out = ci.update([(now, frames)])
           active, _, low = controller.bolt_pedal_admission(cc, cs, now + 1)
           expected = not manual and (gear == 6 or (candidate == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and gear == 4))
           self.assertEqual(active, expected)
@@ -85,16 +85,18 @@ class TestGmBoltPedalSafety(unittest.TestCase):
           self.assertFalse(controller.bolt_pedal_admission(cc, cs, now + 100_000_001)[0])
           raw[4] = (tick + 8) % 16
           raw[5] = pedal_crc(raw)
-          parsers[Bus.pt].update([(now + 110_000_000, [(0x201, bytes(raw), 0), frames[2], frames[3]])])
-          cs.out = cs.update(parsers)
+          cs.out = ci.update([(now + 110_000_000, [(0x201, bytes(raw), 0), frames[2], frames[3]])])
           self.assertTrue(cs.pedal_sensor_healthy)
-          self.assertEqual(controller.bolt_pedal_admission(cc, cs, now + 110_000_001)[0],
-                           expected and candidate != CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL)
+          # A fresh pedal sample cannot renew the independent physical gear receipt.
+          self.assertFalse(controller.bolt_pedal_admission(cc, cs, now + 110_000_001)[0])
+          raw[4] = (tick + 9) % 16
+          raw[5] = pedal_crc(raw)
+          cs.out = ci.update([(now + 120_000_000, [(0x201, bytes(raw), 0), frames[1], frames[2], frames[3]])])
+          self.assertEqual(controller.bolt_pedal_admission(cc, cs, now + 120_000_001)[0], expected)
           if candidate == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and expected:
-            raw[4] = (tick + 9) % 16
+            raw[4] = (tick + 10) % 16
             raw[5] = pedal_crc(raw)
-            parsers[Bus.pt].update([(now + 420_000_000, [(0x201, bytes(raw), 0), frames[1], frames[2]])])
-            cs.out = cs.update(parsers)
+            cs.out = ci.update([(now + 420_000_000, [(0x201, bytes(raw), 0), frames[1], frames[2]])])
             self.assertTrue(cs.pedal_sensor_healthy)
             self.assertTrue(cs.out.cruiseState.available)
             self.assertFalse(controller.bolt_pedal_admission(cc, cs, now + 420_000_001)[0])

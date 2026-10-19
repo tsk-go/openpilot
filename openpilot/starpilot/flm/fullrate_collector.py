@@ -5,8 +5,10 @@ Inputs are decoded custom evidence produced by actual owners; no Params/default
 controller selection is inferred here. Domain adapters qualify response inverse.
 """
 
+from typing import TypeGuard, cast
+
 from collections import Counter, OrderedDict, deque
-from openpilot.starpilot.flm.torque_eligibility import asynchronous_hint, bounded_context_output, exact_unclipped_pair
+from openpilot.starpilot.flm.torque_eligibility import asynchronous_hint, bounded_context_output, exact_unclipped_pair, consumed_sources_current
 
 from dataclasses import dataclass, replace
 import math
@@ -30,8 +32,8 @@ MAX_WIRE_BYTES = 32768
 MAX_SNAPSHOT_WIRE_BYTES = 131072
 
 
-def finite(value):
-  return type(value) in (int, float) and math.isfinite(value)
+def finite(value: object) -> TypeGuard[int | float]:
+  return (type(value) is int or type(value) is float) and math.isfinite(value)
 
 
 def replay_values(value, bound):
@@ -217,6 +219,10 @@ class FullrateCollector:
     self.dropped += 1
     self.split('fullrate_overrun')
 
+  def _retains_controller_chatter(self, value):
+    # Legacy/custom collection never opts into the event-only trial contract.
+    return False
+
   def control(self, value, now_ns):
     if isinstance(value, ControlEvidence) and value.effect_trace is not None:
       try:
@@ -323,7 +329,7 @@ class FullrateCollector:
       or value.saturated
       or value.limited and not (getattr(self.adapter, 'raw_collection', False) and asynchronous_hint(value))
       or value.model_wobble
-      or value.controller_chatter
+      or value.controller_chatter and not self._retains_controller_chatter(value)
       or now_ns < self.excluded_until
     ):
       self.split('ineligible_control')
@@ -408,10 +414,16 @@ class FullrateCollector:
         self._join_emission(command, output)
 
   def _join_emission(self, command, output):
-    if (
-      output.domain != self.adapter.command_domain or not command.state_ns <= output.state_ns <= output.apply_ns or output.state_ns - command.state_ns > JOIN_NS
-    ):
+    if output.domain != self.adapter.command_domain:
       self.split('consumed_source_mismatch', reset=True)
+      return
+    current_sources = (consumed_sources_current(command, output) if command.domain == 'normalized_torque' else
+                       command.state_ns <= output.state_ns <= output.apply_ns and output.state_ns - command.state_ns <= JOIN_NS)
+    if not current_sources:
+      # This pair is unusable, but it does not change the identity/provenance
+      # of independently sealed historical samples. Withdraw current admission
+      # and discard the partial window; real context changes still hard-reset.
+      self.split('consumed_source_mismatch', reset=command.domain != 'normalized_torque')
       return
     if command.domain == 'normalized_torque':
       projection = output.projection
@@ -586,7 +598,8 @@ class FullrateCollector:
       control = self.raw_points[0].control
       self.blocks.append(
         RawBlock(
-          control.identity, f'{self.session}:{self.block_sequence}', self.cohort, control.stage_revision, control.response_revision, tuple(self.raw_points)
+          control.identity, f'{self.session}:{self.block_sequence}', cast(str, self.cohort),
+          control.stage_revision, control.response_revision, tuple(self.raw_points)
         )
       )
       self.block_sequence += 1

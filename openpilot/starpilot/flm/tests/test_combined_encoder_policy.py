@@ -50,6 +50,7 @@ def test_real_driver_measured_unwind_relief_is_weaker_and_final_only(platform):
     EncoderBranch(quality_contract=STATE_ALIGNED_DEBT).step(event, candidate)
   branch = EncoderBranch(quality_contract=STATE_ALIGNED_RELIEF)
   assert branch.step(event, candidate) is not None
+  assert branch.previous is not None
   assert 0 < branch.previous <= witness.final_raw
   # Actual recorded no-clipping status cannot be bypassed by relief.
   with pytest.raises(ValueError, match='limiter/support'):

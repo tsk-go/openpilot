@@ -52,6 +52,18 @@ def _numeric(value):
 
 def _tree(values, path, value):
   """Container shape markers prevent stale factory shape from dropping gains."""
+  kind = type(value)
+  if kind is float or kind is int or kind is bool:
+    # Exact builtin leaves only. Preserve the original coercion, Float64 bits,
+    # nonfinite error and post-append cardinality guard. Subclasses/NumPy/native
+    # containers continue through the original generic traversal below.
+    number = float(value)
+    if not math.isfinite(number):
+      raise ValueError('snapshot requires finite numeric state')
+    values.append((path, number))
+    if len(values) > MAX_SNAPSHOT_VALUES:
+      raise ValueError('snapshot exceeds bounded primitive budget')
+    return
   if type(value).__module__.startswith('capnp') and 'List' in type(value).__name__:
     # Native PID gains contain Cap'n Proto list readers. Only scalar contents
     # cross the wire; reconstructing a builtin list preserves interpolation.
@@ -388,15 +400,57 @@ class SelectedControllerFactory:
     return controller, VehicleModel(self.cp)
 
 
-def _run(controller, vm, inputs, objective, coordinates, torque_values=(), centre=None, actual_stage_residual=None, effect_trial=None):
-  from opendbc.car import structs
+@dataclass(frozen=True)
+class _PreparedCarState:
+  inputs: tuple
+  reader: object
 
+
+def _car_state(values, *, first_segment_words=None):
+  # Keep the original Capnp conversions, including Float32 fields and enum.
+  from opendbc.car import structs
+  cs = (structs.CarState.new_message() if first_segment_words is None else
+        structs.CarState.new_message(num_first_segment_words=first_segment_words))
+  for name in _CS_FIELDS:
+    setattr(cs, name, bool(values[name]) if name in ('steeringPressed', 'standstill', 'steerFaultTemporary', 'steerFaultPermanent') else values[name])
+  cs.gearShifter = int(values['gearShifter'])
+  return cs
+
+
+class _PreparedCarStates:
+  """One child job only: immutable input tuple refs, never frame-object refs."""
+  def __init__(self):
+    self.__entries = {}
+
+  def get(self, inputs):
+    saved = self.__entries.get(id(inputs))
+    if saved is not None and saved.inputs is inputs:
+      return saved
+    if (len(self.__entries) >= 12000 or type(inputs) is not tuple or
+        any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not str or
+            type(row[1]) not in (bool, int, float, str) for row in inputs)):
+      return None
+    # Strongly retain the deeply immutable tuple: identity cannot be recycled.
+    prepared = _PreparedCarState(inputs, _car_state(dict(inputs), first_segment_words=32).as_reader())
+    self.__entries[id(inputs)] = prepared
+    return prepared
+
+
+def _replay_car_state(inputs, values, prepared):
+  if type(prepared) is _PreparedCarState and prepared.inputs is inputs:
+    return prepared.reader
+  return _car_state(values)
+
+
+def _run(controller, vm, inputs, objective, coordinates, torque_values=(), centre=None, actual_stage_residual=None, effect_trial=None,
+         _prepared_car_state=None):
   from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
   if type(controller) is LatControlPID:
     from openpilot.starpilot.flm.pid_controller_replay import run_pid
     if torque_values or any(coordinates) or centre is not None and any(centre.values):
       raise ValueError('PID cannot consume torque tuning or legacy residual coordinates')
-    return run_pid(controller, vm, inputs, effect_trial=effect_trial)
+    kwargs = {} if _prepared_car_state is None else {'_prepared_car_state': _prepared_car_state}
+    return run_pid(controller, vm, inputs, effect_trial=effect_trial, **kwargs)
   values = dict(inputs)
   if torque_values:
     tune = dict(torque_values)
@@ -410,10 +464,7 @@ def _run(controller, vm, inputs, objective, coordinates, torque_values=(), centr
     controller.torque_params.latAccelOffset = tune['offset']
     controller.torque_params.friction = tune['friction']
     controller.pid.set_limits(tune['pid_pos_limit'], tune['pid_neg_limit'])
-  cs = structs.CarState.new_message()
-  for name in _CS_FIELDS:
-    setattr(cs, name, bool(values[name]) if name in ('steeringPressed', 'standstill', 'steerFaultTemporary', 'steerFaultPermanent') else values[name])
-  cs.gearShifter = int(values['gearShifter'])
+  cs = _replay_car_state(inputs, values, _prepared_car_state)
   for name in _VM_FIELDS:
     setattr(vm, name, values['vm.' + name])
   params = SimpleNamespace(angleOffsetDeg=values['angleOffsetDeg'], roll=values['roll'])
@@ -472,6 +523,7 @@ class ReplayFrame:
   effect_trace: object | None = None
   effect_prepare_ns: int = 0
   controller_domain: str = 'torque'
+  desired_kinematic_accel: float | None = None
 
 
 @dataclass(frozen=True)
@@ -522,7 +574,7 @@ class ControllerReplay:
     self.recent_states = OrderedDict()
     self.cached_validation = None
     self.cached_key = None
-    self.replay_windows = ()
+    self.replay_windows: tuple[tuple[int, int], ...] = ()
     self.raw_mode = False
     self.actual_centre_friction_values = OrderedDict()
     from openpilot.starpilot.flm.torque_emission_replay import EmissionHistory
@@ -588,6 +640,40 @@ class ControllerReplay:
     return bool(frame.healthy and not frame.manual and
                 (not frame.limited or self.raw_mode and replay_context(frame)))
 
+  def _recorded_cp_digest(self):
+    """One successful canonical CP digest; reread ALL native bytes each lookup.
+
+    Only owned registered CarParams readers share this replay-local derived
+    value. No object identity shortcut, payload flag, global/current cache or
+    cached error. Unknown schemas/objects keep the original canonical function.
+    """
+    from capnp.lib.capnp import _DynamicStructReader
+    from opendbc.car import structs
+    from openpilot.starpilot.flm.pid_controller_replay import PidControllerFactory
+    from openpilot.starpilot.flm.runtime_adapter_registry import car_params_digest
+
+    cp = self.factory.cp
+    raw = None
+    try:
+      if ((type(self.factory) is SelectedControllerFactory or type(self.factory) is PidControllerFactory) and
+          type(cp) is _DynamicStructReader and cp.schema == structs.CarParams.schema):
+        raw = cp.as_builder().to_bytes()
+    except Exception:
+      pass  # Original digest below retains its own errors and unsupported behavior.
+    if type(raw) is not bytes:
+      return car_params_digest(cp)
+    saved = self.__dict__.get('_ControllerReplay__recorded_cp_digest_cache')
+    if type(saved) is tuple and len(saved) == 3 and saved[0] == raw and saved[2] is car_params_digest:
+      return saved[1]
+    value = car_params_digest(cp)
+    try:
+      unchanged = cp.as_builder().to_bytes() == raw
+    except Exception:
+      unchanged = False
+    if unchanged and type(value) is str and len(value) == 64 and all(char in '0123456789abcdef' for char in value):
+      self.__dict__['_ControllerReplay__recorded_cp_digest_cache'] = (raw, value, car_params_digest)
+    return value
+
   def normalize(self, frame, *, epsilon=0.0001, _verify_only=False):
     if (
       self.failed
@@ -615,10 +701,9 @@ class ControllerReplay:
       recorded_effect = None
       if frame.effect_trace is not None:
         from openpilot.starpilot.flm.selected_effects import EffectReplayRecordedSource
-        from openpilot.starpilot.flm.runtime_adapter_registry import car_params_digest
         if (frame.effect_trace.control_ns != frame.effect_prepare_ns or
             frame.effect_trace.envelope.selected_baseline_revision != self.baseline_revision or
-            frame.effect_trace.envelope.cp_sha256 != car_params_digest(self.factory.cp)):
+            frame.effect_trace.envelope.cp_sha256 != self._recorded_cp_digest()):
           raise ValueError('recorded full30 trace source/prepare clock mismatch')
         recorded_effect = EffectReplayRecordedSource(frame.effect_trace)
         _verify_only = True
@@ -1022,7 +1107,7 @@ class ControllerReplay:
         return None
       calibration_ids = set(model.train_blocks + model.heldout_blocks)
       gains = {'left': [], 'right': []}
-      points = {'left': 0, 'right': 0}
+      points: dict[str, float] = {'left': 0, 'right': 0}
       baseline_controller, baseline_vm = self.factory.create()
       candidate_controller, candidate_vm = self.factory.create()
       total_frames = 0
@@ -1284,11 +1369,11 @@ class ControllerReplay:
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
       return False
 
-  def to_snapshot(self, blocks=None, *, event_windows=None):
+  def to_snapshot(self, blocks=None, *, event_windows: tuple[tuple[int, int], ...] | None = None):
     """Primitive child-fitter payload, outside all100Hz controller processes."""
     from dataclasses import asdict
 
-    windows = []
+    windows: list[tuple[int, int]] = []
     if blocks is not None:
       if not 8 <= len(blocks) <= 24:
         raise ValueError('fit job maneuver bound')

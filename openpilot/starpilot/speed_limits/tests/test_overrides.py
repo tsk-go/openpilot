@@ -115,13 +115,18 @@ class OverrideTests(unittest.TestCase):
     self.decision(5, policy=display)
     self.assertIsNone(self.reduce(5, policy=display, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps)
 
-  def test_absent_uses_only_actual_fallback_decision(self):
-    self.arm()
-    fallback = acc.Policy(confirm_lower=False, confirm_higher=False, fallback_previous=True)
-    self.decision(3, source=acc.ObservationKind.ABSENT, policy=fallback)
-    self.assertEqual(self.reduce(3, policy=fallback, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps, 25.0)
-    self.decision(4, source=acc.ObservationKind.ABSENT)
-    self.assertIsNone(self.reduce(4, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps)
+  def test_source_gaps_preserve_override_only_with_actual_fallback_decision(self):
+    for kind in (acc.ObservationKind.ABSENT, acc.ObservationKind.UNKNOWN, acc.ObservationKind.STALE):
+      with self.subTest(kind=kind):
+        self.setUp()
+        self.arm()
+        fallback = acc.Policy(confirm_lower=False, confirm_higher=False, fallback_previous=True)
+        self.decision(3, source=kind, policy=fallback)
+        result = self.reduce(3, policy=fallback, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0))
+        self.assertEqual(result.contribution_mps, 25.0)
+        self.assertEqual(result.context, self.first.context)
+        self.decision(4, source=kind)
+        self.assertIsNone(self.reduce(4, selected=ov.SelectedEvidence(ov.EvidenceKind.VALID, 25.0)).contribution_mps)
 
   def test_delayed_acceptance_consumed_effect_cannot_arm_after_release(self):
     pending_policy = acc.Policy(confirm_lower=True, confirm_higher=True)

@@ -61,7 +61,7 @@ def create_longitudinal(packer, frame, accel, enabled):
   return packer.make_can_msg("ACM_longitudinalRequest", 0, values)
 
 
-def create_adas_status(packer, vdm_adas_status, interface_status):
+def create_adas_status(packer, vdm_adas_status, interface_status, cancel=False):
   values = {s: vdm_adas_status[s] for s in (
     "VDM_AdasStatus_Counter",
     "VDM_AdasDecelLimit",
@@ -77,6 +77,8 @@ def create_adas_status(packer, vdm_adas_status, interface_status):
 
   if interface_status is not None:
     values["VDM_AdasInterfaceStatus"] = interface_status
+    if cancel:
+      values["VDM_UserAdasRequest"] = 1  # real stock cancel request, UP_1
 
   return packer.make_can_msg("VDM_AdasSts", 2, values)
 

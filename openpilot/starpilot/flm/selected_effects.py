@@ -5,6 +5,8 @@
 No saved tune/PID/native writes; admission remains in the controls runtime.
 """
 
+from typing import cast
+
 from dataclasses import dataclass
 import math
 from openpilot.starpilot.flm.adaptive_profile import ProfileOwner, ReplayValidation
@@ -43,7 +45,7 @@ class EffectTrial:
     expected = original_anchor(self.selected_baseline_revision, names)
     if self.objective.anchor_digest != expected:
       raise ValueError('recentered or foreign effect objective')
-    payload = self.original_anchor
+    payload = cast(dict[str, object], self.original_anchor)
     fields = {
       'version',
       'manifest_sha256',
@@ -71,7 +73,7 @@ class EffectTrial:
       or payload['selected_baseline_revision'] != self.selected_baseline_revision
     ):
       raise ValueError('effect full-profile context')
-    entries = payload['accumulated']
+    entries = cast(tuple[tuple[str, float], ...], payload['accumulated'])
     if type(entries) is not tuple or len(entries) != len(NAMES) or tuple(n for n, _ in entries) != NAMES:
       raise ValueError('exact full30 prior profile required')
     accumulated = dict(entries)
@@ -439,11 +441,13 @@ class EffectReplayTransition:
       self.target.update(zip(self.names, trial.coordinates, strict=True))
     self.applied = None
     self.previous_ns = 0
+    self.__source_key = self.__source = None
 
   def reset(self):
     self.applied = None
     self.previous_ns = 0
     self.recorded_effects_seen = False
+    self.__source_key = self.__source = None
 
   def source_for_frame(self, control_ns, trace=None, *, new_owner=False):
     from openpilot.starpilot.flm.effect_trace import step_full
@@ -478,8 +482,17 @@ class EffectReplayTransition:
     self.applied = step_full(self.applied, self.target, now_ns=control_ns, previous_ns=self.previous_ns, qualified=qualified)
     self.previous_ns = control_ns
     source = EffectReplaySource.__new__(EffectReplaySource)
-    group = {n: self.applied[n] for n in self.names}
-    source.source = CanonicalSurfaceEffects(group, self.trial.selected_baseline_revision, accumulated=self.applied)
+    # Per-transition geometry only: trace validation and exact step_full above
+    # still run EVERY frame. Packed doubles preserve signed zero and full30.
+    import struct
+    key = self.trial.selected_baseline_revision, self.names, struct.pack('!30d', *(self.applied[n] for n in NAMES))
+    if key != self.__source_key:
+      group = {n: self.applied[n] for n in self.names}
+      self.__source = CanonicalSurfaceEffects(group, self.trial.selected_baseline_revision, accumulated=self.applied)
+      self.__source_key = key
+    source.source = self.__source
+    # The ordinary _run -> begin_frame path still resets ALL call counters and
+    # enforces the real frame clock. No mutable frame state crosses transitions.
     source.original_effect_anchor = source.source.original_effect_anchor
     source.applied_coordinates = source.source.applied_coordinates
     return source

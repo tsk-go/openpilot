@@ -221,7 +221,7 @@ def apply_switchback_gesture(owner, event, *, params, settings, sm, cp, now_ns: 
     snapshot = settings.refresh(now_ns)
     verdict = settings.verdict(snapshot, now_mono_ns=now_ns, drive_id=drive)
     fingerprint = settings_fingerprint(snapshot)
-    buttons = read_button_map(params, include_ioniq_media=True)
+    buttons = read_button_map(params, include_ioniq_media=True, cp=cp)
     if verdict.status != 'ready' or verdict.safe_mode is not False or fingerprint is None or buttons is None:
       return False
     session, sequence = str(wire.sessionId), int(wire.sequence)

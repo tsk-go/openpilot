@@ -6,7 +6,7 @@ from openpilot.starpilot.aol.intent import AolCardIntent, AOL_TOGGLE, ButtonType
 
 class StockEv6CardIntent(AolCardIntent):
   def __init__(self, settings):
-    super().__init__(settings, explicit_latch=True)
+    super().__init__(settings, explicit_latch=True, independent_cruise_buttons=True)
 
   def update(self, CS, *, consumed_buttons=frozenset(), fault_active=None, now_ns=0, native_rejection_ns=0,
              standard_enabled=False):

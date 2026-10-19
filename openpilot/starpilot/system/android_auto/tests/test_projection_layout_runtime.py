@@ -1,5 +1,6 @@
 """Saved projection layout loading, live reload after a Galaxy save, and frozen-state replacement regressions."""
 import copy
+from dataclasses import replace
 import fcntl
 import json
 import os
@@ -46,6 +47,7 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
           view.close()
 
   def test_saved_gamma_trial_reaches_only_projection_camera(self):
+    from openpilot.starpilot.ui.appearance_preferences import OnroadAppearance
     for enabled in (False, True):
       with self.subTest(enabled=enabled):
         helper = boundary.TestProjectionOnroad()
@@ -60,7 +62,8 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
           def render(*args, camera=view.camera, **kwargs):
             camera.stream_type = 2
           view.camera.render_camera_model_layer = render
-          view._camera_layer(None, SimpleNamespace(customization=default_document()))
+          view._camera_layer(None, SimpleNamespace(customization=default_document(), appearance=OnroadAppearance(),
+                                                   reverse_driver_camera=False))
           self.assertEqual(view.camera_stream, 2)
         finally:
           view.close()
@@ -278,7 +281,7 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
     view.render()
     self.assertEqual((rendered[-1].appearance.show_blindspot_border, rendered[-1].appearance.show_signal_border), (True, False))
 
-  def test_comma_display_choices_stay_on_the_comma(self):
+  def test_projection_display_choices_keep_the_shared_camera_choice(self):
     from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice, OnroadAppearance
     from openpilot.starpilot.ui.onroad_state import OnroadState, SpeedLimitObservation
     helper = boundary.TestProjectionOnroad()
@@ -299,7 +302,7 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
     appearance = rendered[-1].appearance
     self.assertEqual((appearance.hide_personality_alerts, appearance.wheel_pedal_feedback, appearance.camera_view,
                       appearance.driver_camera_on_reverse, rendered[-1].reverse_driver_camera),
-                     (False, False, CameraViewChoice.STANDARD, False, False))
+                     (False, False, CameraViewChoice.DRIVER, True, True))
     self.assertIs(adapter.appearance_override(comma).hide_personality_alerts, False, 'the adapter hides notices by AA choice')
     view.apply_layout({**layout, 'hidePersonalityAlerts': True, 'wheelPedalFeedback': True})
     self.assertEqual(invalidated, [1])
@@ -348,7 +351,8 @@ class TestProjectionLayoutRuntime(unittest.TestCase):
     self.addCleanup(view.close)
     view.onroad.render = rendered.append
     view.render()
-    self.assertIs(rendered[0], state)
+    # Only the canvas width changes: touch hit-tests must match where the view draws.
+    self.assertEqual(rendered[0], replace(state, viewport_width=2880))
 
 
 if __name__ == '__main__':

@@ -34,32 +34,35 @@ def saved(candidate: Candidate = HIGH) -> State:
 
 
 class TestAcceptance(unittest.TestCase):
-  def test_vision_requires_current_driver_confirmation_across_disengage_and_source_loss(self):
-    policy = Policy(confirm_lower=False, confirm_higher=False, fallback_previous=True,
-                    vision_driver_confirm=True)
-    first_sign = Candidate('vision', ObservationIdentity(IdentityKind.PRODUCER_EPISODE,
-                                                         value='drive:ioniq:camera:1'), 22.0)
-    next_sign = replace(first_sign, observation_identity=ObservationIdentity(
-      IdentityKind.PRODUCER_EPISODE, value='drive:ioniq:camera:2'), speed_mps=17.0)
-    stopped = step(new_session('drive'), valid(first_sign), DISENGAGED, policy, now_ns=0)
-    self.assertIsNone(stopped.history_write)
-    self.assertIsNone(stopped.state.accepted)
-    engaged = step(stopped.state, valid(first_sign), ACTIVE, policy, now_ns=NS)
-    self.assertEqual(engaged.basis, 'pending')
-    self.assertIsNone(engaged.control_target_mps)
-    action = DriverAction('drive', 1, engaged.state.pending.decision_id, ActionKind.ACCEPT)
-    confirmed = step(engaged.state, valid(first_sign), ACTIVE, policy, now_ns=2 * NS, action=action)
-    self.assertEqual(confirmed.basis, 'driver_accept')
-    self.assertEqual(confirmed.control_target_mps, 22.0)
-    continued = step(confirmed.state, valid(first_sign), ACTIVE, policy, now_ns=3 * NS)
-    self.assertEqual(continued.control_target_mps, 22.0)
-    changed = step(continued.state, valid(next_sign), ACTIVE, policy, now_ns=4 * NS)
-    self.assertIsNone(changed.control_target_mps)
-    self.assertIsNone(changed.state.accepted)
-    lost = step(changed.state, Observation(ObservationKind.STALE), ACTIVE, policy, now_ns=5 * NS)
-    returned = step(lost.state, valid(first_sign), ACTIVE, policy, now_ns=6 * NS)
-    self.assertEqual(returned.basis, 'pending')
-    self.assertIsNone(returned.control_target_mps)
+  def test_sources_share_confirmation_across_disengage_and_source_loss(self):
+    for source, confirmation, fallback in itertools.product(('dashboard', 'map', 'vision', 'online', 'future-source'),
+                                                            (False, True), (False, True)):
+      with self.subTest(source=source, confirmation=confirmation, fallback=fallback):
+        policy = Policy(confirm_lower=confirmation, confirm_higher=confirmation, fallback_previous=fallback)
+        first = Candidate(source, ObservationIdentity(IdentityKind.PRODUCER_EPISODE, value='episode-1'), 22.0)
+        next_limit = replace(first, observation_identity=ObservationIdentity(
+          IdentityKind.PRODUCER_EPISODE, value='episode-2'), speed_mps=17.0)
+        stopped = step(new_session('drive'), valid(first), DISENGAGED, policy, now_ns=0)
+        self.assertEqual(stopped.state.accepted is None, confirmation)
+        self.assertEqual(stopped.history_write is None, confirmation)
+        self.assertIsNone(stopped.control_target_mps)
+        engaged = step(stopped.state, valid(first), ACTIVE, policy, now_ns=NS)
+        self.assertEqual(engaged.state.pending is not None, confirmation)
+        approved = (self.act(engaged.state, ActionKind.ACCEPT, now_ns=2 * NS, policy=policy)
+                    if confirmation else engaged)
+        self.assertEqual(approved.control_target_mps, first.speed_mps)
+        changed = step(approved.state, valid(next_limit), ACTIVE, policy, now_ns=3 * NS)
+        self.assertEqual(changed.state.pending is not None, confirmation)
+        accepted = first if confirmation else next_limit
+        self.assertEqual(changed.state.accepted.candidate, accepted)
+        self.assertEqual(changed.control_target_mps, accepted.speed_mps)
+        lost = step(changed.state, Observation(ObservationKind.STALE), ACTIVE, policy, now_ns=4 * NS)
+        self.assertEqual(lost.state.accepted, changed.state.accepted)
+        self.assertEqual(lost.control_target_mps, accepted.speed_mps if fallback else None)
+        returned = step(lost.state, valid(accepted), ACTIVE, policy, now_ns=5 * NS)
+        self.assertIsNone(returned.state.pending)
+        self.assertIsNone(returned.history_write)
+        self.assertEqual(returned.control_target_mps, accepted.speed_mps)
 
   def pending(self, candidate=LOW, authority=ACTIVE, policy=DEFAULT_POLICY, state=None, now_ns=0):
     decision = step(saved() if state is None else state, valid(candidate), authority, policy, now_ns=now_ns)
@@ -78,13 +81,14 @@ class TestAcceptance(unittest.TestCase):
 
   def test_reject_then_source_loss_never_activates_rejected_limit(self):
     policy = Policy(fallback_previous=True)
-    initial = step(new_session("drive"), valid(HIGH), DISENGAGED, policy, now_ns=0)
+    first = step(new_session("drive"), valid(HIGH), ACTIVE, policy, now_ns=0)
+    initial = self.act(first.state, ActionKind.ACCEPT, policy=policy, now_ns=NS)
     self.assertEqual(initial.history_write.candidate, HIGH)
-    proposed = self.pending(state=initial.state, policy=policy, now_ns=NS)
+    proposed = self.pending(state=initial.state, policy=policy, now_ns=2 * NS)
     self.assertEqual(proposed.control_target_mps, HIGH.speed_mps)
-    rejected = self.act(proposed.state, ActionKind.REJECT, policy=policy, now_ns=2 * NS)
-    lost = step(rejected.state, ABSENT, ACTIVE, policy, now_ns=3 * NS)
-    returned = step(lost.state, valid(LOW), ACTIVE, policy, now_ns=4 * NS)
+    rejected = self.act(proposed.state, ActionKind.REJECT, policy=policy, now_ns=3 * NS, sequence=1)
+    lost = step(rejected.state, ABSENT, ACTIVE, policy, now_ns=4 * NS)
+    returned = step(lost.state, valid(LOW), ACTIVE, policy, now_ns=5 * NS)
     for decision in (rejected, lost, returned):
       self.assertEqual(decision.control_target_mps, HIGH.speed_mps)
       self.assertEqual(decision.state.accepted, initial.history_write)
@@ -94,15 +98,45 @@ class TestAcceptance(unittest.TestCase):
     self.assertTrue(rejected.action_receipt.consumed)
     self.assertEqual(returned.basis, "rejected")
 
-  def test_absence_fallback_is_explicit_unknown_and_stale_suppress_it(self):
-    for kind, fallback in itertools.product((ObservationKind.ABSENT, ObservationKind.UNKNOWN, ObservationKind.STALE), (False, True)):
-      with self.subTest(kind=kind, fallback=fallback):
-        result = step(saved(), Observation(kind), ACTIVE, Policy(fallback_previous=fallback), now_ns=0)
-        self.assertEqual(result.control_target_mps, HIGH.speed_mps if kind is ObservationKind.ABSENT and fallback else None)
+  def test_previous_limit_survives_all_source_gaps_only_when_enabled(self):
+    for source, kind, fallback in itertools.product(('dashboard', 'map', 'vision', 'online', 'future-source'),
+        (ObservationKind.ABSENT, ObservationKind.UNKNOWN, ObservationKind.STALE), (False, True)):
+      with self.subTest(source=source, kind=kind, fallback=fallback):
+        prior = saved(replace(HIGH, source=source))
+        policy = Policy(fallback_previous=fallback)
+        result = step(prior, Observation(kind), ACTIVE, policy, now_ns=300 * NS)
+        self.assertEqual(result.control_target_mps, HIGH.speed_mps if fallback else None)
+        self.assertEqual(result.state.accepted, prior.accepted)
+        self.assertEqual(result.state.observation.kind, kind)
         self.assertIsNone(result.display_candidate)
         self.assertIsNone(result.history_write)
-    result = step(new_session("drive"), ABSENT, ACTIVE, Policy(fallback_previous=True), now_ns=0)
-    self.assertIsNone(result.control_target_mps)
+        empty = step(new_session("drive"), Observation(kind), ACTIVE, policy, now_ns=300 * NS)
+        self.assertIsNone(empty.control_target_mps)
+
+  def test_confirmed_vision_is_retained_until_changed_limit_is_accepted(self):
+    policy = Policy(fallback_previous=True)
+    first = replace(HIGH, source='vision')
+    previous = saved(first)
+    for kind in (ObservationKind.ABSENT, ObservationKind.UNKNOWN, ObservationKind.STALE):
+      lost = step(previous, Observation(kind), ACTIVE, policy, now_ns=NS)
+      self.assertEqual(lost.control_target_mps, first.speed_mps)
+      self.assertEqual(lost.state.accepted, previous.accepted)
+    next_sign = replace(LOW, source='vision')
+    pending = step(lost.state, valid(next_sign), ACTIVE, policy, now_ns=2 * NS)
+    self.assertEqual(pending.control_target_mps, first.speed_mps)
+    self.assertIsNotNone(pending.state.pending)
+    recovered = step(pending.state, valid(first), ACTIVE, policy, now_ns=3 * NS)
+    self.assertIsNone(recovered.state.pending)
+    self.assertFalse(step(recovered.state, valid(first), ACTIVE, policy, now_ns=4 * NS).errors)
+    for kind in ActionKind:
+      action = DriverAction('drive', 1, pending.state.pending.decision_id, kind)
+      acted = step(pending.state, valid(next_sign), ACTIVE, policy, now_ns=3 * NS, action=action)
+      target = next_sign.speed_mps if kind is ActionKind.ACCEPT else first.speed_mps
+      gap = step(acted.state, Observation(ObservationKind.UNKNOWN), ACTIVE, policy, now_ns=300 * NS)
+      self.assertEqual(gap.control_target_mps, target)
+    timeout = step(pending.state, valid(next_sign), ACTIVE, policy, now_ns=33 * NS)
+    self.assertEqual(timeout.basis, 'timeout_reject')
+    self.assertEqual(timeout.control_target_mps, first.speed_mps)
 
   def test_unknown_stale_and_absence_clear_pending_and_restart_decision_identity(self):
     for kind in (ObservationKind.UNKNOWN, ObservationKind.STALE, ObservationKind.ABSENT):
@@ -122,8 +156,9 @@ class TestAcceptance(unittest.TestCase):
   def test_rejection_survives_other_sources_and_fully_disengaged_return(self):
     rejected = self.act(self.pending().state, ActionKind.REJECT)
     other = Candidate("map", geographic("another-road"), 25.0)
-    accepted_other = step(rejected.state, valid(other), DISENGAGED, Policy(), now_ns=2 * NS)
-    returned = step(accepted_other.state, valid(LOW), DISENGAGED, Policy(), now_ns=3 * NS)
+    proposed_other = step(rejected.state, valid(other), DISENGAGED, Policy(), now_ns=2 * NS)
+    accepted_other = self.act(proposed_other.state, ActionKind.ACCEPT, authority=DISENGAGED, now_ns=3 * NS, sequence=1)
+    returned = step(accepted_other.state, valid(LOW), DISENGAGED, Policy(), now_ns=4 * NS)
     self.assertIn(LOW, returned.state.rejected)
     self.assertEqual(returned.state.accepted.candidate, other)
     self.assertEqual(returned.basis, "rejected")
@@ -209,7 +244,7 @@ class TestAcceptance(unittest.TestCase):
       self.assertEqual(result.control_target_mps, None if higher else LOW.speed_mps)
       self.assertEqual(result.history_write is None, higher)
 
-  def test_near_equal_values_are_exact_and_source_identity_updates_history(self):
+  def test_unchanged_speed_keeps_approval_without_silently_accepting_new_identity(self):
     for toward in (0.0, math.inf):
       near = replace(HIGH, speed_mps=math.nextafter(HIGH.speed_mps, toward))
       result = self.pending(candidate=near)
@@ -217,19 +252,26 @@ class TestAcceptance(unittest.TestCase):
     same_speed = replace(HIGH, source="map", observation_identity=geographic("mapped-road"))
     result = step(saved(), valid(same_speed), ACTIVE, Policy(), now_ns=0)
     self.assertIsNone(result.state.pending)
-    self.assertEqual(result.history_write.candidate, same_speed)
+    self.assertIsNone(result.history_write)
+    self.assertEqual(result.state.accepted.candidate, HIGH)
     unchanged = step(result.state, valid(same_speed), ACTIVE, Policy(), now_ns=NS)
     self.assertIsNone(unchanged.history_write)
+    automatic = step(saved(), valid(same_speed), ACTIVE, Policy(False, False), now_ns=0)
+    self.assertEqual(automatic.history_write.candidate, same_speed)
 
-  def test_disengaged_acceptance_has_no_control_and_needs_no_button(self):
+  def test_disengaged_autoacceptance_requires_confirmations_off(self):
     for mode, owner in itertools.product(Mode, LongitudinalOwner):
       with self.subTest(mode=mode, owner=owner):
         authority = Authority(mode, owner, False, False, False, True)
-        result = step(saved(), valid(LOW), authority, Policy(), now_ns=0)
+        result = step(saved(), valid(LOW), authority, Policy(False, False), now_ns=0)
         self.assertEqual(result.state.accepted.candidate, LOW)
         self.assertIsNotNone(result.history_write)
         self.assertIsNone(result.state.pending)
         self.assertIsNone(result.control_target_mps)
+        manual = step(saved(), valid(LOW), authority, Policy(), now_ns=0)
+        self.assertEqual(manual.state.accepted.candidate, HIGH)
+        self.assertIsNotNone(manual.state.pending)
+        self.assertIsNone(manual.history_write)
 
   def test_zero_active_axes_does_not_imply_fully_disengaged(self):
     result = self.pending(authority=PAUSED)
@@ -237,7 +279,7 @@ class TestAcceptance(unittest.TestCase):
     self.assertIsNone(result.history_write)
     self.assertIsNone(result.control_target_mps)
 
-  def test_modes_stock_owner_and_inactive_long_never_gain_control_or_consume_action(self):
+  def test_modes_stock_owner_and_inactive_long_never_gain_control_but_driver_is_still_asked(self):
     contexts = [
       Authority(Mode.OFF, LongitudinalOwner.NONE, False, False, False, False),
       Authority(Mode.LATERAL_ONLY, LongitudinalOwner.SYSTEM, True, False, False, False),
@@ -253,9 +295,10 @@ class TestAcceptance(unittest.TestCase):
         lost = step(acted.state, ABSENT, authority, Policy(fallback_previous=True), now_ns=2 * NS)
         for decision in (pending, acted, lost):
           self.assertIsNone(decision.control_target_mps)
-          self.assertIsNone(decision.history_write)
-        self.assertTrue(acted.action_receipt.acknowledged)
-        self.assertFalse(acted.action_receipt.consumed)
+        self.assertIsNone(pending.history_write)
+        # The driver's choice is recorded even though nothing here may act on it.
+        self.assertTrue(acted.action_receipt.consumed)
+        self.assertEqual(acted.state.accepted.candidate, LOW)
         self.assertEqual(acted.state.last_action_sequence, 0)
 
   def test_combined_and_long_only_have_equal_longitudinal_decisions(self):
@@ -297,14 +340,16 @@ class TestAcceptance(unittest.TestCase):
 
   def test_repeated_and_out_of_order_actions_are_seen_but_not_consumed(self):
     pending = self.pending()
-    ineligible = self.act(pending.state, ActionKind.ACCEPT, sequence=10, authority=PAUSED)
+    first = self.act(pending.state, ActionKind.ACCEPT, sequence=10, authority=PAUSED)
+    self.assertTrue(first.action_receipt.consumed)
+    seen = replace(pending.state, last_action_sequence=10)
     for sequence in (10, 9):
-      result = self.act(ineligible.state, ActionKind.ACCEPT, sequence=sequence, now_ns=2 * NS)
+      result = self.act(seen, ActionKind.ACCEPT, sequence=sequence, now_ns=2 * NS)
       self.assertFalse(result.action_receipt.consumed)
       self.assertEqual(result.action_receipt.status, "already_seen")
       self.assertEqual(result.state.last_action_sequence, 10)
       self.assertEqual(result.state.accepted.candidate, HIGH)
-    accepted = self.act(ineligible.state, ActionKind.ACCEPT, sequence=11, now_ns=2 * NS)
+    accepted = self.act(seen, ActionKind.ACCEPT, sequence=11, now_ns=2 * NS)
     self.assertTrue(accepted.action_receipt.consumed)
     self.assertEqual(accepted.state.accepted.candidate, LOW)
 
@@ -471,7 +516,7 @@ class TestAcceptance(unittest.TestCase):
                   ObservationIdentity(IdentityKind.SESSION_VALUE, session_id="drive"))
     for identity in identities:
       candidate = replace(HIGH, observation_identity=identity)
-      result = step(saved(), valid(candidate), ACTIVE, Policy(), now_ns=0)
+      result = step(saved(), valid(candidate), ACTIVE, Policy(False, False), now_ns=0)
       self.assertEqual(result.errors, ())
       self.assertEqual(result.state.accepted.candidate, candidate)
     self.assertEqual(len({replace(HIGH, observation_identity=identity) for identity in identities}), 3)
@@ -593,7 +638,7 @@ class TestAcceptance(unittest.TestCase):
       self.assertEqual(result.adoption_receipt.status, "different_presentation")
       self.assertIsNone(result.adoption)
 
-  def test_adopt_requires_active_system_long_authority_and_control_policy(self):
+  def test_adopt_is_recorded_for_any_authority_but_only_commands_with_system_long(self):
     rejected = self.act(self.pending().state, ActionKind.REJECT)
     request = self.adopt_request(rejected.state, sequence=1)
     contexts = [PAUSED, DISENGAGED, Authority(Mode.OFF, LongitudinalOwner.NONE, False, False, False, False),
@@ -603,11 +648,11 @@ class TestAcceptance(unittest.TestCase):
     for authority in contexts:
       with self.subTest(authority=authority):
         result = step(rejected.state, valid(LOW), authority, Policy(), now_ns=2 * NS, adopt=request)
-        self.assertFalse(result.adoption_receipt.consumed)
-        self.assertEqual(result.adoption_receipt.status, "no_longitudinal_authority")
-        self.assertIn(LOW, result.state.rejected)
+        self.assertTrue(result.adoption_receipt.consumed)
+        self.assertEqual(result.adoption_receipt.status, "adopt")
+        self.assertNotIn(LOW, result.state.rejected)
+        self.assertEqual(result.state.accepted.candidate, LOW)
         self.assertIsNone(result.adoption)
-        self.assertIsNone(result.history_write)
         self.assertIsNone(result.control_target_mps)
         self.assertEqual(result.state.last_action_sequence, 1)
     display = step(rejected.state, valid(LOW), ACTIVE, Policy(display_only=True), now_ns=2 * NS, adopt=request)
@@ -629,7 +674,7 @@ class TestAcceptance(unittest.TestCase):
 
   def test_adoption_and_confirmation_share_seen_sequence_watermark(self):
     shown = self.pending()
-    request = self.adopt_request(shown.state, sequence=5)
+    request = replace(self.adopt_request(shown.state, sequence=5), presentation_id=999)
     paused = step(shown.state, valid(LOW), PAUSED, Policy(), now_ns=NS, adopt=request)
     repeated_action = DriverAction("drive", 5, paused.state.pending.decision_id, ActionKind.ACCEPT)
     repeated = step(paused.state, valid(LOW), ACTIVE, Policy(), now_ns=2 * NS, action=repeated_action)

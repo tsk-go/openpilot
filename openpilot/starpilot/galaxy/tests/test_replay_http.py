@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from openpilot.starpilot.galaxy.access import GalaxyAccessOwner
 from openpilot.starpilot.galaxy.server import make_server
@@ -20,7 +21,12 @@ class ReplayHTTPTest(unittest.TestCase):
   def setUp(self):
     self.temp = tempfile.TemporaryDirectory()
     self.root = Path(self.temp.name)
-    self.media = self.root / 'sessions' / SESSION / 'media' / '1'
+    def ram_session(session_id):
+      return self.root / 'ram' / ('msgq_replay-' + session_id[:24]) / session_id
+    override = patch('openpilot.starpilot.replay.media.web_media_dir', ram_session)
+    override.start()
+    self.addCleanup(override.stop)
+    self.media = ram_session(SESSION) / 'media' / '1'
     self.media.mkdir(parents=True)
     (self.media / 'init.mp4').write_bytes(b'initialization')
     for sequence in range(1, 10):
@@ -251,6 +257,23 @@ class ReplayHTTPTest(unittest.TestCase):
     outside = self.root / 'outside'
     outside.write_bytes(b'initialization')
     path.symlink_to(outside)
+    status, body, _ = self.request(f'/api/replay/media?sessionId={SESSION}&clientId={CLIENT}&epoch=1&sequence=0', cookie=self.login())
+    self.assertEqual(status, 409)
+    self.assertNotIn(b'initialization', body)
+
+  def test_persistent_session_path_cannot_replace_ram_media(self):
+    path = self.root / 'sessions' / SESSION / 'media' / '1' / 'init.mp4'
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'initialization')
+    self.path_override = path
+    status, body, _ = self.request(f'/api/replay/media?sessionId={SESSION}&clientId={CLIENT}&epoch=1&sequence=0', cookie=self.login())
+    self.assertEqual(status, 503)
+    self.assertNotIn(b'initialization', body)
+
+  def test_symlink_media_directory_is_rejected(self):
+    outside = self.root / 'outside'
+    self.media.rename(outside)
+    self.media.symlink_to(outside, target_is_directory=True)
     status, body, _ = self.request(f'/api/replay/media?sessionId={SESSION}&clientId={CLIENT}&epoch=1&sequence=0', cookie=self.login())
     self.assertEqual(status, 409)
     self.assertNotIn(b'initialization', body)

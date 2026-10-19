@@ -7,7 +7,18 @@ import subprocess
 from typing import NoReturn, cast
 import pytest
 
-from openpilot.starpilot.replay.media import MediaMux, MediaStore, codec_string, media_descriptor
+from openpilot.starpilot.replay.media import MediaMux, MediaStore, codec_string, media_descriptor, web_media_dir
+
+
+def test_web_media_path_is_fixed_inside_the_session_ipc_namespace():
+  sid = 'a' * 32
+  assert web_media_dir(sid) == Path('/dev/shm') / ('msgq_replay-' + sid[:24]) / sid
+
+
+@pytest.mark.parametrize('session', ('../outside', 'a' * 31, 'A' * 32, '', None))
+def test_web_media_path_rejects_invalid_sessions(session):
+  with pytest.raises(ValueError):
+    web_media_dir(session)
 
 
 def store(tmp_path):

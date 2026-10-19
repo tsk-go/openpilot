@@ -103,6 +103,7 @@ private:
   bool publishMessage(const Event *e);
   void publishFrame(const Event *e);
   void checkSeekProgress();
+  bool preloadReady() const;
   bool publishSnapshot();
   void fail(const std::string &message);
   bool loadMachineRoute();

@@ -79,7 +79,7 @@ class TestHyundaiIoniq6StockAol(unittest.TestCase):
           self.assertFalse(self.safety.safety_tx_hook(self.packet(name, bus, values)))
         self.assertFalse(self.safety.safety_tx_hook(libsafety_py.make_CANPacket(0x730, 1, b"\x02\x3e\x80\0\0\0\0\0")))
 
-  def test_cancel_heartbeat_expiry_and_reset_revoke_latch(self):
+  def test_cancel_retains_claimed_lateral_but_faults_revoke_latch(self):
     for raw in (0x811, 0x891):
       for cause in ("cancel", "heartbeat", "expiry", "reset", "relay"):
         with self.subTest(raw=raw, cause=cause):
@@ -97,8 +97,9 @@ class TestHyundaiIoniq6StockAol(unittest.TestCase):
             self.safety.set_relay_malfunction(True)
           else:
             self.mode(raw)
-          self.assertEqual(self.safety.aol_get_permission_mask(), 0)
-          self.assertFalse(self.tx(1, 1))
+          expected = 1 if cause == "cancel" else 0
+          self.assertEqual(self.safety.aol_get_permission_mask(), expected)
+          self.assertEqual(self.tx(1, 1), cause == "cancel")
 
 
 if __name__ == "__main__":

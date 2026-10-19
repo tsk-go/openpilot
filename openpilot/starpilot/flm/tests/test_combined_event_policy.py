@@ -20,7 +20,7 @@ from openpilot.starpilot.flm.tests.test_event_fd_boundary import engine
 def test_exact_unwind_witnesses_and_partial_order_negatives():
   assert native_relief_is_admitted(-76, -76, -75, -80, -79, -79, 4, 3, 4)
   assert native_relief_is_admitted(-19, -19, -18, -28, -28, -28, 9, 9, 10)
-  valid = [-76, -76, -75, -80, -79, -79, 4, 3, 4]
+  valid: list[float] = [-76, -76, -75, -80, -79, -79, 4, 3, 4]
   for index, value in ((2, -77), (2, 0), (2, 1), (5, -81), (5, 79), (6, -4), (7, -3), (8, -4), (8, 0), (1, float('nan'))):
     changed = valid.copy()
     changed[index] = value

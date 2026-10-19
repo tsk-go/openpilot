@@ -414,7 +414,8 @@ class TestGmAol(unittest.TestCase):
       settings.put('MainCruiseButtonControl', 9, block=True)
       owner = self.card(cp, settings).aol_card_intent
       owner.update(cs)
-      self.assertFalse(owner.allowed_latch)
+      self.assertTrue(owner.allowed_latch)
+      self.assertEqual(settings.get('MainCruiseButtonControl'), 9)
       cs.buttonEvents = [structs.CarState.ButtonEvent(type='mainCruise', pressed=True)]
       owner.update(cs)
       self.assertTrue(owner.allowed_latch)
@@ -1106,7 +1107,9 @@ class TestGmAol(unittest.TestCase):
       policy = policy_for(cp)
       self.assertTrue(policy.intent_supported, (cp.carFingerprint, cp.safetyConfigs[-1].safetyParam))
       selected = create_intent(cp, settings, policy)
-      reference = AolCardIntent(settings, explicit_latch=policy.explicit_latch)
+      from openpilot.starpilot.car.hyundai.aol import independent_cruise_buttons_supported
+      reference = AolCardIntent(settings, explicit_latch=policy.explicit_latch,
+                                independent_cruise_buttons=cp.brand == 'hyundai' and independent_cruise_buttons_supported(cp))
       self.assertIs(type(selected), AolCardIntent)
       for main, permanent, temporary, gear in ((True, False, False, 'drive'),
                                              (True, False, True, 'drive'),

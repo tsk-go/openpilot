@@ -10,7 +10,7 @@ from openpilot.starpilot.flm.event_physical import fit_event_physical
 from openpilot.starpilot.flm.event_windows import regroup_whole_events
 from openpilot.starpilot.flm.physical_response import PhysicalRow
 from openpilot.starpilot.flm.runtime_adapter_registry import canonical_physical_context, physical_model_revision
-from openpilot.starpilot.flm.torque_eligibility import exact_unclipped_pair
+from openpilot.starpilot.flm.torque_eligibility import exact_unclipped_pair, consumed_sources_current
 from openpilot.starpilot.flm.torque_emission_replay import delivered
 from openpilot.starpilot.flm.torque_raw_fit import control_from_dict, output_from_dict
 
@@ -63,6 +63,7 @@ def original_event_evidence(payload, engine, objective):
           command.limited and not exact_unclipped_pair(command, output) or command.model_wobble or
           command.controller_chatter and not retain_chatter or any(command.applied_coordinates) or
           not output.valid or not output.active or output.override or output.fault or output.limited or not output.native_allowed or
+          not consumed_sources_current(command, output) or
           output.control_ns != command.control_ns or point['control_ns'] != command.control_ns or point['apply_ns'] != output.apply_ns or
           canonical_physical_context(point['physical_context']) != context or
           not engine.applied_matches(command, output) or delivered(output) != point['physical']['applied_command']):
@@ -143,7 +144,7 @@ def fit_event_torque(payload, engine, objective):
           break
     if model is None:
       return _unavailable('event_independent_physical_model', wholeBlocks=len(events), modelPoints=len(rows))
-  engine.rebuild_causal_features()
+  engine.ensure_causal_features()
   blocks, stage_events = [], []
   unexcited_stage_blocks = 0
   previous = cutoff
@@ -176,9 +177,13 @@ def fit_event_torque(payload, engine, objective):
     return _unavailable('event_disjoint_stage_support', wholeBlocks=len(events), stageBlocks=len(blocks), unexcitedStageBlocks=unexcited_stage_blocks)
   episodes = tracking_episodes(engine, tuple(stage_events), model, objective)
   prior = None if payload.get('prior') is None else tuple(payload['prior'])
+  from openpilot.starpilot.flm.event_activation import ZERO_REFERENCE_ACTIVATION_VERSION
+  native_feasible = (engine.native_feasible if engine.activation_plan is not None and
+    engine.activation_plan.version == ZERO_REFERENCE_ACTIVATION_VERSION else None)
   result = evaluate_event(engine.identity, objective.parameters, tuple(blocks), episodes=episodes,
                           now_ns=payload['now_ns'], required_cohorts=objective.required_cohorts,
-                          response_revision='event-independent-physical-v2', sequence=payload['sequence'], prior=prior, effect_envelope=envelope)
+                          response_revision='event-independent-physical-v2', sequence=payload['sequence'], prior=prior,
+                          effect_envelope=envelope, native_feasible=native_feasible)
   validation = None
   if result.profile is not None:
     current, applied = control_from_dict(payload['control']), output_from_dict(payload['output'])

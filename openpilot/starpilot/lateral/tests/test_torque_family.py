@@ -31,6 +31,7 @@ def learner(now_ns, base):
 
   class Sample:
     logMonoTime = {'lateralTorqueParameters': now_ns}
+    recv_time = {'lateralTorqueParameters': now_ns / 1e9}
 
     def all_checks(self, _names):
       return True

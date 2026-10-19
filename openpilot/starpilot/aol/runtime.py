@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from opendbc.car.structs import car
+from openpilot.starpilot.aol.panda_faults import blocking_fault_mask
 from openpilot.starpilot.aol.vehicle import native_admission_key, native_matches_cp, native_profile_supported
 from openpilot.starpilot.aol.wire import INTENT_SERVICE, SAFETY_SERVICE, IntentState, decode_intent, decode_safety
 
@@ -89,7 +90,7 @@ def native_inventory_matches_cp(state, CP) -> bool:
       return False
     owners = []
     for index, (slot, config) in enumerate(zip(slots, configs, strict=True)):
-      if slot.safetyRxChecksInvalid or slot.heartbeatLost or slot.faults:
+      if slot.safetyRxChecksInvalid or slot.heartbeatLost or blocking_fault_mask(slot.faults, CP):
         return False
       if (slot.slotIndex != index or slot.safetyModel != int(config.safetyModel.raw) or
           slot.safetyParam != int(config.safetyParam) or slot.alternativeExperience != int(CP.alternativeExperience)):

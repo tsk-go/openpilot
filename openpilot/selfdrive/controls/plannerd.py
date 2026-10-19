@@ -2,6 +2,7 @@
 import os
 import json
 from collections import deque
+from dataclasses import replace
 
 from opendbc.car.structs import car
 from openpilot.common.params import Params
@@ -45,7 +46,7 @@ from openpilot.starpilot.speed_limits.runtime_settings import read_params as rea
 
 
 class SavedSlcLifecycle:
-  """Refresh saved admission; each replacement starts an independent SLC session."""
+  """Refresh saved admission; offset-only edits preserve the accepted drive limit."""
 
   def __init__(self, params, cp, environment):
     self.params, self.cp, self.environment = params, cp, dict(environment)
@@ -68,17 +69,22 @@ class SavedSlcLifecycle:
                      feature_enabled(self.params, self.cp, 'vision', {}, saved_slc=saved_slc))
     if configuration == self.configuration:
       return self.runtime, False
-    if self.runtime is not None:
-      self.runtime.reset()
+    if (self.runtime is not None and self.configuration is not None and
+        configuration == (self.configuration[0], replace(self.runtime.settings, offsets=settings.offsets),
+                          *self.configuration[2:])):
+      self.runtime.update_offsets(settings.offsets)
+    else:
+      if self.runtime is not None:
+        self.runtime.reset()
+      self.runtime = (SlcRuntime(settings, vision_enabled=vision,
+                                 vision_control_qualified=configuration[3],
+                                 vision_display_qualified=configuration[4])
+                      if configuration[0] else None)
     self.configuration = configuration
     if pending_actions is not None:
       pending_actions.clear()
     if pending_cruise is not None:
       pending_cruise.clear()
-    self.runtime = (SlcRuntime(settings, vision_enabled=vision,
-                               vision_control_qualified=configuration[3],
-                               vision_display_qualified=configuration[4])
-                    if configuration[0] else None)
     return self.runtime, True
 
 

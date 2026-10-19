@@ -20,11 +20,11 @@ def test_response_after_command_is_fresh_only_at_a_trusted_later_decision():
 
 @pytest.mark.parametrize('index', (0, 1, 2))
 def test_each_original_stream_must_be_nonfuture_and_within_100ms(index):
-  valid = [NOW - 2_000_000, NOW - 1_000_000, NOW]
+  valid: list[int | float] = [NOW - 2_000_000, NOW - 1_000_000, NOW]
   for stamp in (NOW + 1, NOW - 101_000_000, 0, -1, True, float(NOW)):
     values = valid.copy()
     values[index] = stamp
-    assert not _fresh_current_physical(*values, NOW)
+    assert not _fresh_current_physical(values[0], values[1], values[2], NOW)
   assert not _fresh_current_physical(NOW, NOW - 1, NOW, NOW)
 
 
@@ -45,6 +45,9 @@ class ClockedBoundaryAdapter(BoundaryAdapter, EventCollectionAdapter):
   # a registered physical/native qualification. readmit is blocked below.
   raw_collection = False
   decisions = None
+
+  def physical_observable(self, row=None, *, value=None):
+    return super().physical_observable(row if value is None else value)
 
   def current_admission(self, profile, control, output, context, *, now_ns=None):
     self.decisions = now_ns

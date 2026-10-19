@@ -1,11 +1,26 @@
 """Exact original-frame join; no synthetic replay qualification."""
 from types import SimpleNamespace
+from typing import TypedDict
 from unittest import mock
 
 import pytest
 
 from openpilot.starpilot.flm.event_raw_fit import _control_frame_index, fit_event_torque
 from openpilot.starpilot.flm.tests.test_event_activation import fitted_model
+
+
+class StageSample(TypedDict):
+  control_ns: int
+  apply_ns: int
+  mono_ns: int
+  control: dict[str, int]
+  output: dict[str, int]
+  physical: dict[str, float]
+
+
+class StageEvent(TypedDict):
+  block_id: str
+  samples: tuple[StageSample, ...]
 
 
 def test_index_preserves_original_frame_identity_and_missing_timestamp():
@@ -29,12 +44,12 @@ def test_actual_fit_missing_stage_frame_is_fail_closed():
   # Isolate the stage join after its independently checked upstream operations.
   # The model comes from the real measured-row fitter, never a qualification flag.
   model = fitted_model()
-  events = tuple({'block_id': str(index), 'samples': ({'control_ns': index * 1_000_000_000,
+  events: tuple[StageEvent, ...] = tuple({'block_id': str(index), 'samples': ({'control_ns': index * 1_000_000_000,
     'apply_ns': index * 1_000_000_000 + 1, 'mono_ns': index * 1_000_000_000 + 2,
     'control': {'stamp': index * 1_000_000_000}, 'output': {'stamp': index * 1_000_000_000 + 1},
     'physical': {'lateral_accel': .02}},)} for index in range(1, 17))
   first_stage = events[8]['samples'][0]
-  engine = SimpleNamespace(records=(), identity=model.identity, projected={}, rebuild_causal_features=lambda: None)
+  engine = SimpleNamespace(records=(), identity=model.identity, projected={}, ensure_causal_features=lambda: None)
   objective = SimpleNamespace(names=('center',), required_cohorts=('center',))
   envelope = SimpleNamespace(prior_coordinates=(('center', 0.),))
   with mock.patch('openpilot.starpilot.flm.event_raw_fit.original_event_evidence',

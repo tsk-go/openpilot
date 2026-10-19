@@ -47,12 +47,13 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
     self.clipping_quality = validate_clipping_quality(clipping_quality)
     if replay_version != 3 and self.clipping_quality != RECORDED_DEBT:
       raise ValueError('state-aligned quality requires explicit event version3')
-    from openpilot.starpilot.flm.clipping_quality import QUALIFIED_EVENT_CLIPPING_QUALITY
-    if type(restore_version) is not int or restore_version not in (2, 4, 5) or (restore_version in (4, 5) and
-        (replay_version != 3 or self.clipping_quality != QUALIFIED_EVENT_CLIPPING_QUALITY)):
+    from openpilot.starpilot.flm.clipping_quality import restore_quality
+    if type(restore_version) is not int or restore_version not in (2, 4, 5, 6) or (restore_version in (4, 5, 6) and
+        (replay_version != 3 or self.clipping_quality != restore_quality(restore_version))):
       raise ValueError('explicit whole-map restore producer contract')
     self.restore_version = restore_version
     self.replay_version = replay_version
+    self.snapshot_readiness = None
     self._event_initialized = False
     super().__init__(cp, evidence, ('feedforward', 'high', 'steady'), source=source, event_capture=True)
     self._event_initialized = True
@@ -79,6 +80,8 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
       raise ValueError('actual event group')
     unchanged = getattr(self, 'key', None) == key
     self.key = key
+    if not unchanged:
+      self.snapshot_readiness = None
     if unchanged and self.event_objective is not None:
       return
     if self.envelope is not None:
@@ -156,8 +159,9 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
     return super().prepare_control(evidence)
 
   def physical_observable(self, value):
-    floor = 2 if self.key[1] in ('angle.assist', 'deadband.low') else 15
-    return value.speed_mps >= floor and abs(value.roll_rad) < .3
+    # Raw storage is shared by all scheduled groups, including crawl FF.
+    # Per-coordinate excitation and independent model/admission stay in child.
+    return value.speed_mps >= 2 and abs(value.roll_rad) < .3
 
   def cohort(self, control, physical):
     if self.envelope is None or control.identity != self.identity or control.source_epoch != self.source_epoch:
@@ -176,12 +180,25 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
     return False
 
   def fit_job_snapshot(self, blocks, now_ns, sequence, prior, *, control, output, physical_context):
+    self.snapshot_readiness = None
     if self.envelope is None or self.event_objective is None or len(blocks) < 8:
+      self.snapshot_readiness = {'reason': 'event_objective_unavailable' if self.envelope is None or self.event_objective is None
+                                 else 'event_storage_packet_support', 'storageBlocks': len(blocks), 'requiredStorageBlocks': 8}
       return None
     from opendbc.car.steering_projection import projection_to_dict
     from openpilot.starpilot.flm.event_storage import select_whole_event_snapshot
     packets = tuple(asdict(block) for block in blocks)
-    rows, windows = select_whole_event_snapshot(self.replay, packets, self.event_objective)
+    diagnostics = {}
+    rows, windows = select_whole_event_snapshot(self.replay, packets, self.event_objective, diagnostics=diagnostics)
+    # Parent selection counts are not child physical-model or fit qualification.
+    self.snapshot_readiness = {
+      'reason': ('snapshot_preparing' if len(rows) >= 16 else
+                 'whole_event_export_support' if diagnostics['wholeBlocks'] >= 16 else 'whole_physical_event_support'),
+      'wholeBundles': diagnostics['wholeBlocks'], 'selectedBundles': len(rows),
+      'requiredBundles': 16, 'requiredCalibrationBundles': 8, 'requiredLaterBundles': 8,
+      'missingCheckpoint': diagnostics['missingCheckpoint'], 'frameBudget': diagnostics['frameBudget'],
+      'windowBudget': diagnostics['windowBudget'], 'childQualification': 'not_yet_evaluated',
+    }
     if len(rows) < 16:
       return None
     # Complete source windows include the original maneuver boundary and its
@@ -212,14 +229,14 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
       envelope = self.envelope.for_trial(self.event_objective.names).restore_from_history(self.optimizer_prior)
       envelope.validate()
       operation = 'restore'
-    from openpilot.starpilot.flm.clipping_quality import FIXED_MAP_IDENTIFICATION, RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION
+    from openpilot.starpilot.flm.clipping_quality import FIXED_MAP_IDENTIFICATION, restore_policy
     payload = {'version': 1, 'family': self.command_family,
       'event_version': self.replay_version if operation == 'trial' else self.restore_version, 'event_operation': operation,
       **({'event_clipping_quality': self.clipping_quality, 'event_identification_policy': identification_for_quality(self.clipping_quality)}
          if self.replay_version == 3 and operation == 'trial' else {}),
       **({'event_clipping_quality': self.clipping_quality, 'event_identification_policy': FIXED_MAP_IDENTIFICATION,
-          'event_restore_policy': {4: RESTORE_ACTIVATION_VERSION, 5: RESTORE_AGGREGATE_ACTIVATION_VERSION}[self.restore_version]}
-         if operation == 'restore' and self.restore_version in (4, 5) else {}),
+          'event_restore_policy': restore_policy(self.restore_version)}
+         if operation == 'restore' and self.restore_version in (4, 5, 6) else {}),
       'event_objective': asdict(self.event_objective),
       'effect_envelope': asdict(envelope), 'objective': asdict(self.objective),
       'now_ns': now_ns, 'sequence': sequence, 'prior': tuple(dict(envelope.prior_coordinates)[name] for name in self.event_objective.names),
@@ -227,7 +244,9 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
       'restoration_required_groups': list(envelope.restoration_groups) if operation == 'restore' else [],
       'replay': self.replay.to_snapshot(selected, event_windows=windows), 'raw_blocks': rows, 'control': asdict(control),
       'output': output_row, 'physical_context': tuple(physical_context)}
-    return {'version': 1, 'family': self.command_family, 'snapshot_b64': base64.b64encode(pack_primitive_snapshot(payload)).decode('ascii')}
+    snapshot = {'version': 1, 'family': self.command_family, 'snapshot_b64': base64.b64encode(pack_primitive_snapshot(payload)).decode('ascii')}
+    self.snapshot_readiness['reason'] = 'snapshot_ready'
+    return snapshot
 
   def install_fit(self, report, result, validation, *, physical_context):
     from openpilot.starpilot.flm.full_surface_profile import FullSurfaceEnvelope
@@ -265,12 +284,13 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
             not set(result.profile.train_ids + result.profile.heldout_ids).issubset(plan.stage_blocks) or
             not activation_matches_model(plan, model)):
           return False
-      elif report_version in (4, 5):
+      elif report_version in (4, 5, 6):
         from openpilot.starpilot.flm.restore_activation import restore_plan_from_dict, restore_plan_matches
-        from openpilot.starpilot.flm.clipping_quality import RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION
+        from openpilot.starpilot.flm.clipping_quality import restore_policy
         plan = restore_plan_from_dict(report['restore_activation_plan'])
-        expected_policy = {4: RESTORE_ACTIVATION_VERSION, 5: RESTORE_AGGREGATE_ACTIVATION_VERSION}[report_version]
+        expected_policy = restore_policy(report_version)
         if (self.restore_version != report_version or plan.version != expected_policy or
+            report_version == 6 and plan.clipping_quality != self.clipping_quality or
             envelope.operation != 'restore' or 'activation_plan' in report or
             plan.identity != self.identity or plan.baseline_revision != self.baseline_revision or
             plan.source_epoch != self.source_epoch or plan.cutoff_ns != report['model_cutoff_ns'] or
@@ -289,7 +309,7 @@ class EventCollectionAdapter(TorqueCollectionAdapter):
           physical_model_revision(model) != validation.physical_model_revision or validation.baseline_revision != self.baseline_revision):
         return False
       self.event_objective = EffectObjective(self.key[1], envelope.trial_names, envelope.trial_anchor, self.source_epoch)
-      if report_version in (3, 4, 5) and self.model != model:
+      if report_version in (3, 4, 5, 6) and self.model != model:
         self.current_physical_valid = False
         self.last_physical_ns = 0
       self.model, self.model_cutoff_ns = model, report['model_cutoff_ns']

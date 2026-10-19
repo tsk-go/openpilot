@@ -716,7 +716,7 @@ static safety_config hyundai_init(uint16_t param) {
       {0x50, 0, 16, .check_relay = true},
       {0x4F1, 1, 4, .check_relay = false},
       {0x2A4, 0, 24, .check_relay = true},
-      {0x485, 1, 8, .check_relay = true},
+      {0x485, 1, 8, .check_relay = false},
     };
     static const CanMsg blended_hda2_aol_tx[] = {
       {0x50, 0, 16, .check_relay = true, .disable_static_blocking = true},

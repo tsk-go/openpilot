@@ -5,6 +5,7 @@ from opendbc.car.honda.values import CAR as HONDA
 from opendbc.car.hyundai.values import CAR as HKG
 from opendbc.car.toyota.values import CAR as TOYOTA
 from openpilot.starpilot.flm.learner_factory import from_evidence
+from openpilot.starpilot.flm.clipping_quality import ZERO_REFERENCE_QUALITY, QUALIFIED_EVENT_CLIPPING_QUALITY
 from openpilot.starpilot.flm.runtime_adapter_registry import baseline_values
 from openpilot.starpilot.flm.steerlearnerd import production_adapter_for_evidence
 from openpilot.starpilot.flm.tests.test_production_event_contract import capture
@@ -20,9 +21,14 @@ def test_actual_registered_producer_explicit_restore_version_and_legacy_default(
     before = controls.CP.as_builder().to_bytes(), baseline_values(controls.LaC)
     live = production_adapter_for_evidence(controls.CP, evidence, ('event', 'center'), source=source)
     old = from_evidence(controls.CP, evidence, ('event', 'center'), source=source)
-    assert live is not None and live.replay_version == 3 and live.restore_version == 5
+    assert live is not None and live.replay_version == 3 and live.restore_version == 6
+    assert live.clipping_quality == ZERO_REFERENCE_QUALITY
+    for version in (4, 5):
+      legacy = from_evidence(controls.CP, evidence, ('event', 'center'), source=source,
+        event_replay_version=3, event_clipping_quality=QUALIFIED_EVENT_CLIPPING_QUALITY, event_restore_version=version)
+      assert legacy is not None and legacy.restore_version == version and legacy.clipping_quality == QUALIFIED_EVENT_CLIPPING_QUALITY
     assert old is not None and old.replay_version == 2 and old.restore_version == 2
     assert from_evidence(controls.CP, evidence, ('event', 'center'), source=source, event_restore_version=4) is None
     live.select_objective(('event', 'deadband.high'))
-    assert live.restore_version == 5
+    assert live.restore_version == 6
     assert (controls.CP.as_builder().to_bytes(), baseline_values(controls.LaC)) == before

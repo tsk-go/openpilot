@@ -105,7 +105,6 @@
 
   --content-width: 1200px;
     --panel-padding: var(--sp-5);
-  --gx-para-x: 0px;
 }
 
 [data-theme="light"] {
@@ -222,16 +221,18 @@ body {
     radial-gradient(ellipse at 85% 75%, rgba(85, 45, 180, 0.18) 0%, transparent 60%),
     radial-gradient(circle at 75% 15%, rgba(77, 232, 232, 0.12) 0%, transparent 48%);
   pointer-events: none;
-  transform: translateZ(0);
-  will-change: transform;
   isolation: isolate;
   contain: strict;
 }
 
-#galaxy-bg::before {
+#galaxy-bg::before,
+#galaxy-bg::after {
   content: "";
   position: absolute;
-  top: 0; left: 0; width: 100%; height: 200%;
+  inset: 0;
+}
+
+#galaxy-bg::before {
   background-image:
     radial-gradient(1px 1px at 30px 40px, #ffffff, rgba(255,255,255,0)),
     radial-gradient(1px 1px at 110px 220px, rgba(220, 200, 255, 0.8), rgba(255,255,255,0)),
@@ -242,14 +243,9 @@ body {
     radial-gradient(1px 1px at 890px 180px, #ffffff, rgba(255,255,255,0));
   background-size: 800px 400px;
   opacity: 0.5;
-  will-change: transform;
-  transform: translate3d(var(--gx-para-x), 0, 0);
 }
 
 #galaxy-bg::after {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; width: 100%; height: 200%;
   background-image:
     radial-gradient(1.5px 1.5px at 80px 140px, #ffffff, rgba(255,255,255,0)),
     radial-gradient(2px 2px at 240px 390px, rgba(190, 235, 255, 0.9), rgba(255,255,255,0)),
@@ -258,29 +254,29 @@ body {
     radial-gradient(1.5px 1.5px at 730px 220px, rgba(255, 255, 255, 0.9), rgba(255,255,255,0));
   background-size: 900px 450px;
   opacity: 0.6;
-  will-change: transform;
-  transform: translate3d(var(--gx-para-x), 0, 0);
 }
 
 #galaxy-bg .galaxy-hero {
   position: absolute;
-  width: 3px;
-  height: 3px;
+  width: 8px;
+  height: 8px;
+  margin: calc((var(--galaxy-star-core) - 8px) / 2);
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+  background: radial-gradient(circle,
+    #fff 0 calc(var(--galaxy-star-core) / 2),
+    rgba(255, 255, 255, 0.15) calc(var(--galaxy-star-core) / 2 + 0.3px),
+    rgba(255, 255, 255, 0.04) calc(var(--galaxy-star-core) / 2 + 1.5px),
+    transparent 4px);
   animation: galaxy-twinkle 6s ease-in-out infinite alternate;
 }
 
 @keyframes galaxy-twinkle {
-  0%, 100% { opacity: 0.3; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.2); }
+  0%, 100% { opacity: 0.3; transform: rotateZ(0.05deg) scale(0.9); }
+  50% { opacity: 1; transform: rotateZ(0.05deg) scale(1.2); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #galaxy-bg, #galaxy-bg::before, #galaxy-bg::after, #galaxy-bg .galaxy-hero {
-    animation: none !important;
-  }
+  #galaxy-bg .galaxy-hero { animation: none !important; }
 }
 
 /* Keep decorative animation out of route viewers, modal backdrops and drawer content. */
@@ -1402,11 +1398,13 @@ input[type="checkbox"]:disabled { opacity: .4; cursor: not-allowed; }
 .gx-camera-status, .gx-tool-footer { font-size: var(--fs-xs); color: var(--text-muted); }
 
 .gx-boot { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-4); padding: var(--panel-padding); text-align: center; background: radial-gradient(ellipse at center, #382054 0%, #151020 65%, #0c0a14 100%); color: #f5edff; transition: opacity 460ms cubic-bezier(0.16, 1, 0.3, 1); }
+.gx-boot--restart { isolation: isolate; overflow: hidden; background: url("../assets/restart-background.webp") center 42% / cover no-repeat #0c0a14; }
+.gx-boot--restart::before { content: ""; position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse at center, #38205499 0%, #151020c7 65%, #0c0a14f2 100%); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .gx-boot--done { opacity: 0; }
 .gx-boot h1, .gx-boot p { margin: 0; }
 .gx-boot h1 { font-size: clamp(2rem, 7vw, 3rem); letter-spacing: .08em; }
 .gx-boot p { max-width: 30rem; color: #c9b6e3; }
-.gx-boot__logo { width: clamp(120px, 28vw, 180px); height: auto; border-radius: 26%; corner-shape: squircle; filter: drop-shadow(0 0 35px #b37cff66); }
+.gx-boot__logo { width: clamp(120px, 28vw, 180px); height: auto; filter: drop-shadow(0 0 35px #b37cff66); }
 .gx-boot__orbit { width: 36px; height: 36px; border: 2px solid #cba3ff33; border-top-color: #cba3ff; border-radius: 50%; animation: gx-spin 1.2s linear infinite; }
 .gx-boot--failed .gx-boot__orbit { display: none; }
 .gx-boot [hidden] { display: none; }
@@ -1741,3 +1739,12 @@ progress { max-width: 100%; accent-color: var(--primary); }
   .gx-replay__controls { gap: 4px; }
   .gx-replay__player:fullscreen .gx-replay__video { min-height: 0; flex: 1; }
 }
+
+/* Auto Learn results use existing cards and plot colors. */
+.gx-flm__facts { display: flex; flex-wrap: wrap; gap: 1rem 2rem; }
+.gx-flm__facts dd { margin: .3rem 0 0; }
+.gx-flm__table-wrap { overflow-x: auto; max-width: 100%; }
+.gx-flm__table { width: 100%; border-collapse: collapse; text-align: left; }
+.gx-flm__table th, .gx-flm__table td { padding: .65rem; border-bottom: 1px solid var(--outline-variant); vertical-align: top; }
+.gx-flm__table td:nth-child(2), .gx-flm__table td:nth-child(3), .gx-flm__table td:nth-child(4) { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gx-flm__table tbody th { font-weight: 500; min-width: 12rem; }

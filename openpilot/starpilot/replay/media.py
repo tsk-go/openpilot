@@ -14,6 +14,12 @@ MAX_FRAGMENTS = 40
 START_CODE = re.compile(b'\x00\x00(?:\x00)?\x01')
 
 
+def web_media_dir(session_id: str) -> Path:
+  if type(session_id) is not str or re.fullmatch(r'[a-f0-9]{32}', session_id) is None:
+    raise ValueError('Invalid replay media session')
+  return Path('/dev/shm') / ('msgq_replay-' + session_id[:24]) / session_id
+
+
 def codec_string(access_unit: bytes) -> str:
   for match in START_CODE.finditer(access_unit):
     if match.end() + 4 <= len(access_unit) and access_unit[match.end()] & 31 == 7:

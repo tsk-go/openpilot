@@ -153,16 +153,14 @@ class ReplayHTTP:
     send_recording(handler, lease, filename=receipt['filename'])
 
   def read_media(self, value, args):
+    from openpilot.starpilot.replay.media import web_media_dir
     if (value.get('epoch') != args['epoch'] or value.get('sequence') != args['sequence'] or
         type(value.get('length')) is not int or not 0 < value['length'] <= MAX_MEDIA_BYTES or
         type(value.get('mediaPath')) is not str):
       raise ReplayHTTPError('invalid_media', 'Replay media identity is invalid', 503)
-    if self.root is None:
-      from openpilot.starpilot.replay.client import replay_root
-      root = replay_root()
-    else:
-      root = self.root
-    directory = Path(root) / 'sessions' / args['sessionId'] / 'media' / str(args['epoch'])
+    session = web_media_dir(args['sessionId'])
+    root = session.parent.parent
+    directory = session / 'media' / str(args['epoch'])
     filename = 'init.mp4' if args['sequence'] == 0 else f"{args['sequence']}.m4s"
     if Path(value['mediaPath']) != directory / filename:
       raise ReplayHTTPError('invalid_media', 'Replay media source is invalid', 503)
@@ -170,7 +168,7 @@ class ReplayHTTP:
     try:
       parent = os.open(root, DIR_FLAGS)
       fds.append(parent)
-      for part in ('sessions', args['sessionId'], 'media', str(args['epoch'])):
+      for part in (session.parent.name, args['sessionId'], 'media', str(args['epoch'])):
         parent = os.open(part, DIR_FLAGS, dir_fd=parent)
         fds.append(parent)
       fd = os.open(filename, FILE_FLAGS, dir_fd=parent)

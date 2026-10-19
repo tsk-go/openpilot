@@ -348,7 +348,7 @@ class Controls:
         automatic.prepare(self.sm, now_ns=time.monotonic_ns(), active=bool(CC.latActive),
           healthy=bool(CS.canValid and not CS.canTimeout and not CS.steerFaultTemporary and
                        not CS.steerFaultPermanent and not CS.accFaulted and not CS.steeringPressed and
-                       not CS.brakePressed and not CS.gasPressed and not CS.regenBraking and
+                       not CS.brakePressed and not CS.regenBraking and
                        not any(str(button.type) == 'cancel' for button in CS.buttonEvents) and
                        not any(event.softDisable or event.immediateDisable for event in self.sm['onroadEvents']) and
                        not self.sm['driverMonitoringState'].noResponseForceDecel), controller=self.LaC,
