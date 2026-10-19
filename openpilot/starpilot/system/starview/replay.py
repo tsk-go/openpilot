@@ -16,6 +16,10 @@ it: nothing is published on msgq, and starviewd doesn't pass the tablet's blinke
 from __future__ import annotations
 
 import bz2
+import ctypes
+import gc
+import mmap
+import os
 import struct
 import threading
 import time
@@ -30,6 +34,8 @@ from openpilot.starpilot.system.starview import compat
 SEGMENT_S = 60
 QCAM_W, QCAM_H = 526, 330
 VIDEO_IDX = "qNarrowRoadEncodeIdx"
+FULL_IDX = "narrowRoadEncodeIdx"     # fcamera.hevc: the road camera at full size (the comma's own recording)
+FLAG_KEY, FLAG_HEVC = 1, 2           # video header flags (the tablet reads bit 1 since 2.45.1)
 # never kept: large, and nothing on the tablet's road screens reads them
 DENY = {"can", "sendcan", "accelerometer", "gyroscope", "magnetometer", "temperatureSensor", "lightSensor",
         "logMessage", "errorLogMessage", "operatingSystemLog", "procLog", "qcomGnss", "ubloxRaw", "gnssMeasurements",
@@ -230,6 +236,103 @@ def ts_frames(path: Path) -> list[tuple[int, bytes, bool]]:
 
 
 # ------------------------------------------------------------------------------------------ segments
+# ------------------------------------------------------------------------------------------ fcamera.hevc
+HEVC_PS = {32, 33, 34}       # VPS SPS PPS
+
+
+def _rbsp(nal: bytes) -> bytes:
+  out, zeros = bytearray(), 0
+  for b in nal:
+    if zeros >= 2 and b == 3:
+      zeros = 0
+      continue
+    out.append(b)
+    zeros = zeros + 1 if b == 0 else 0
+  return bytes(out)
+
+
+class _Bits:
+  def __init__(self, data: bytes):
+    self.d, self.i = data, 0
+
+  def u(self, n: int) -> int:
+    v = 0
+    for _ in range(n):
+      v = (v << 1) | ((self.d[self.i >> 3] >> (7 - (self.i & 7))) & 1)
+      self.i += 1
+    return v
+
+  def ue(self) -> int:
+    zeros = 0
+    while self.u(1) == 0:
+      zeros += 1
+    return (1 << zeros) - 1 + self.u(zeros)
+
+
+def hevc_size(sps_nal: bytes) -> tuple[int, int] | None:
+  """Picture size from an HEVC SPS (NAL without start code)."""
+  try:
+    b = _Bits(_rbsp(sps_nal[2:]))
+    b.u(4)
+    max_sub = b.u(3)
+    b.u(1)
+    b.u(96)                                   # general profile_tier_level
+    flags = [(b.u(1), b.u(1)) for _ in range(max_sub)]
+    if max_sub:
+      b.u(2 * (8 - max_sub))
+    for prof, lvl in flags:
+      b.u(88 if prof else 0)
+      b.u(8 if lvl else 0)
+    b.ue()
+    if b.ue() == 3:
+      b.u(1)
+    return b.ue(), b.ue()
+  except IndexError:
+    return None
+
+
+def hevc_frames(path: Path) -> tuple[bytes, list[tuple[int, int, bool]], tuple[int, int] | None]:
+  """Splits an fcamera.hevc (raw HEVC: VPS/SPS/PPS, then one access unit per frame) into frames without reading it into
+  memory: (parameter sets, [(offset, length, keyframe)], (w, h))."""
+  with open(path, "rb") as fh:
+    size = os.fstat(fh.fileno()).st_size
+    if size == 0:
+      return b"", [], None
+    with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+      starts = []          # (nal start incl. start code, payload start)
+      i = mm.find(b"\x00\x00\x01")
+      while i >= 0:
+        s0 = i - 1 if i > 0 and mm[i - 1] == 0 else i
+        starts.append((s0, i + 3))
+        i = mm.find(b"\x00\x00\x01", i + 3)
+      header, wh = bytearray(), None
+      frames: list[tuple[int, int, bool]] = []
+      cur, cur_key, pending = None, False, None
+      for k, (s0, p) in enumerate(starts):
+        if p + 2 >= size:
+          break
+        t = (mm[p] >> 1) & 0x3F
+        end = starts[k + 1][0] if k + 1 < len(starts) else size
+        if t in HEVC_PS and not frames and cur is None:
+          header += mm[s0:end]
+          if t == 33 and wh is None:
+            wh = hevc_size(bytes(mm[p:end]))
+        if t < 32:
+          if mm[p + 2] & 0x80:                 # first slice of a picture: a new frame
+            if cur is not None:
+              frames.append((cur, (pending if pending is not None else s0) - cur, cur_key))
+            cur = pending if pending is not None and cur is not None else (0 if cur is None else s0)
+            cur_key = 16 <= t <= 21
+          elif 16 <= t <= 21:
+            cur_key = True
+          pending = None
+        elif pending is None and cur is not None:
+          pending = s0                           # SEI / parameter sets ahead of the next frame belong to it
+      if cur is not None:
+        frames.append((cur, size - cur, cur_key))
+  return bytes(header), frames, wh
+
+
 @dataclass
 class Segment:
   number: int
@@ -238,6 +341,11 @@ class Segment:
   t0: int = 0
   t1: int = 0
   full: bool = True
+  # fcamera.hevc instead of qcamera.ts: frames hold (offset, length) into this file, read as they're sent
+  hevc_path: Path | None = None
+  hevc_header: bytes = b""
+  w: int = QCAM_W
+  h: int = QCAM_H
 
 
 def keep_services() -> set[str]:
@@ -247,8 +355,9 @@ def keep_services() -> set[str]:
   return (keep | set(MEM_SOURCES)) - DENY
 
 
-def load_segment(seg_dir: Path, number: int, keep: set[str] | None = None) -> Segment:
-  """keep: the 7.0 services to keep (default: all a tablet can ask for). Only those are copied out of the log."""
+def load_segment(seg_dir: Path, number: int, keep: set[str] | None = None, hevc: bool = False) -> Segment:
+  """keep: the 7.0 services to keep (default: all a tablet can ask for). Only those are copied out of the log.
+  hevc: play the full-size fcamera.hevc when it's there (the tablet decodes HEVC), else the small qcamera.ts."""
   keep = keep_services() if keep is None else (set(keep) | set(MEM_SOURCES)) - DENY
   seg = Segment(number)
   logf = next((seg_dir / n for n in ("rlog.zst", "rlog.bz2", "rlog") if (seg_dir / n).is_file()), None)
@@ -259,11 +368,19 @@ def load_segment(seg_dir: Path, number: int, keep: set[str] | None = None) -> Se
     raise FileNotFoundError(f"no log in {seg_dir}")
   buf = read_log(logf)
   u = _union()
-  idx = []
-  for s, e in iter_messages(buf):
+  idx, full_idx = [], []
+  for n, (s, e) in enumerate(iter_messages(buf)):
+    if n % 2000 == 1999:
+      time.sleep(0.001)     # a segment is ~100k messages: let the playing thread and the tablet's sockets run
     name, mono = u.which(buf, s)
     if name is None or mono == 0:
       continue
+    if name == FULL_IDX and hevc:
+      try:
+        ei = messaging.log_from_bytes(bytes(buf[s:e])).narrowRoadEncodeIdx
+        full_idx.append((int(ei.segmentIdEncode), int(ei.timestampEof) or mono, int(ei.frameId)))
+      except Exception:
+        pass
     if name == VIDEO_IDX:
       try:
         ei = messaging.log_from_bytes(bytes(buf[s:e])).qNarrowRoadEncodeIdx
@@ -277,6 +394,20 @@ def load_segment(seg_dir: Path, number: int, keep: set[str] | None = None) -> Se
   seg.events.sort(key=lambda x: x[0])
   if seg.events:
     seg.t0, seg.t1 = seg.events[0][0], seg.events[-1][0]
+  fcam = seg_dir / "fcamera.hevc"
+  if hevc and full_idx and fcam.is_file():
+    try:
+      header, hframes, wh = hevc_frames(fcam)
+    except Exception as e:
+      cloudlog.warning(f"starview replay: {fcam}: {e}")
+      hframes, wh = [], None
+    full_idx.sort()
+    if hframes and wh and abs(len(hframes) - len(full_idx)) <= 2:
+      seg.hevc_path, seg.hevc_header, (seg.w, seg.h) = fcam, header, wh
+      for (_sid, t, fid), (off, ln, key) in zip(full_idx, hframes, strict=False):
+        seg.frames.append((t, fid, (off, ln), key))
+      seg.frames.sort(key=lambda x: x[0])
+      return seg
   qcam = seg_dir / "qcamera.ts"
   if qcam.is_file():
     try:
@@ -368,7 +499,7 @@ def list_drives(root: Path, limit: int = 40) -> list[dict]:
     except OSError:
       start = 0.0
     out.append({"route": route, "segments": len(usable), "minutes": len(usable), "first": first, "last": max(usable),
-                "start": start, "video": all((p / "qcamera.ts").is_file() for p in usable.values()),
+                "start": start, "video": all((p / "qcamera.ts").is_file() or (p / "fcamera.hevc").is_file() for p in usable.values()),
                 "full": all(any((p / f).is_file() for f in ("rlog.zst", "rlog.bz2", "rlog")) for p in usable.values())})
   out.sort(key=lambda d: d["start"], reverse=True)
   for d in out:
@@ -385,13 +516,14 @@ class DriveReplay:
   generation is the current one, so a slow old thread (a segment load takes seconds) can never touch the next replay."""
 
   def __init__(self, on_event, on_video, parked, root: str | Path | None = None, clock_ns=time.monotonic_ns, sleep=time.sleep,
-               keep=None, version=None):
+               keep=None, version=None, hevc=None):
     if root is None:
       from openpilot.common.hardware.hw import Paths
       root = Paths.log_root()
     self.root = Path(root)
     self.on_event, self.on_video, self.parked = on_event, on_video, parked
     self.keep = keep
+    self.hevc = hevc                # callable -> the tablet decodes HEVC (full-size fcamera.hevc instead of qcamera)
     self.version = version          # callable -> current openpilot version (None: don't check)
     self.clock_ns, self.sleep = clock_ns, sleep
     self.lock = threading.Lock()    # status, commands, latest
@@ -525,6 +657,23 @@ class DriveReplay:
     except Exception as e:
       cloudlog.exception("starview replay")
       self._end(gen, f"replay failed: {e}")
+    finally:
+      release_memory()
+
+  def _load_ahead(self, gen, seg_dir, number, keep, hevc=False):
+    """Read-ahead on the pool thread: a load that finishes after its replay ended is dropped and its memory given back."""
+    seg = load_segment(seg_dir, number, keep, hevc)
+    if not self._mine(gen):
+      del seg
+      release_memory()
+      return None
+    return seg
+
+  def _hevc(self) -> bool:
+    try:
+      return bool(self.hevc()) if self.hevc else False
+    except Exception:
+      return False
 
   def _wanted(self):
     try:
@@ -547,11 +696,13 @@ class DriveReplay:
         self._set(gen, loading=True)
         fut = ahead.pop(number, None)
         current = None
-        current = fut.result() if fut is not None else load_segment(segs[number], number, self._wanted())
+        current = fut.result() if fut is not None else None
+        if current is None:
+          current = load_segment(segs[number], number, self._wanted(), self._hevc())
       ahead.clear()
       nxt = next((n for n in numbers if n > number), None)
       if nxt is not None:
-        ahead[nxt] = self._pool.submit(load_segment, segs[nxt], nxt, self._wanted())
+        ahead[nxt] = self._pool.submit(self._load_ahead, gen, segs[nxt], nxt, self._wanted(), self._hevc())
       if not self._set(gen, loading=False, video=bool(current.frames), full=current.full):
         return
       result = self._play_segment(gen, current, offset_ns, speed, paused, stop_ev)
@@ -562,6 +713,32 @@ class DriveReplay:
 
   def _play_segment(self, gen, seg: Segment, offset_ns: int, speed: float, paused: bool, stop_ev):
     """Plays one segment. Returns None (stopped), ("seek", seconds, speed, paused) or ("next", 0, speed, paused)."""
+    fd = None
+    if seg.hevc_path is not None:
+      try:
+        fd = os.open(seg.hevc_path, os.O_RDONLY)
+      except OSError as e:
+        cloudlog.warning(f"starview replay: {seg.hevc_path}: {e}")
+        seg.frames = []
+    try:
+      return self._play_segment_fd(gen, seg, offset_ns, speed, paused, stop_ev, fd)
+    finally:
+      if fd is not None:
+        os.close(fd)
+
+  def _frame_data(self, seg: Segment, fd, data, key) -> bytes | None:
+    if isinstance(data, bytes):
+      return data
+    off, ln = data
+    try:
+      raw = os.pread(fd, ln, off)
+    except OSError:
+      return None
+    if key and seg.hevc_header and off != 0:
+      return seg.hevc_header + raw     # every keyframe can start a decoder (a seek, a tablet that just connected)
+    return raw
+
+  def _play_segment_fd(self, gen, seg: Segment, offset_ns: int, speed: float, paused: bool, stop_ev, fd):
     if not seg.events:
       return "next", 0.0, speed, paused
     rec_anchor = seg.t0 + offset_ns
@@ -622,9 +799,13 @@ class DriveReplay:
           key_seen = True
           if not self._mine(gen):
             return None
+          payload = self._frame_data(seg, fd, data, key)
+          if payload is None:
+            continue
+          flags = (FLAG_KEY if key else 0) | (FLAG_HEVC if seg.hevc_path is not None else 0)
           hdr = struct.pack("<IQQIHH", fid & 0xFFFFFFFF, dev_anchor + int((t - rec_anchor) / speed), time.time_ns(),
-                            1 if key else 0, QCAM_W, QCAM_H)
-          self.on_video(hdr + data, key)
+                            flags, seg.w, seg.h)
+          self.on_video(hdr + payload, key)
       if not self._set(gen, t=round(seg.number * SEGMENT_S + (rec_now - seg.t0) / 1e9, 1), paused=paused, speed=speed):
         return None
       if i >= len(seg.events) and j >= len(seg.frames) and not paused:
@@ -642,6 +823,23 @@ class DriveReplay:
       self._latest[name] = b
     self.on_event(name, b, now)
     return True
+
+
+_libc = None
+
+
+def release_memory() -> None:
+  """Give a finished replay's memory back to the system. Freed messages otherwise stay in starviewd's heap: on 10-19
+  it sat at 300 MB after a replay, and at the next start Chestnut's big model (its loader starts a compile process per
+  CPU core) ran past modeld's 60 s limit with ~800 MB left."""
+  global _libc
+  gc.collect()
+  try:
+    if _libc is None:
+      _libc = ctypes.CDLL("libc.so.6")
+    _libc.malloc_trim(0)
+  except (OSError, AttributeError):
+    pass
 
 
 def _clamp_speed(v) -> float:

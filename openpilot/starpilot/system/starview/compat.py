@@ -123,6 +123,8 @@ class Translator:
     self._plan_t = 0.0
     self._toggles = "{}"
     self._toggles_t = -1e9
+    self._v_ego = 0.0
+    self._v_ego_t = -1e9
     self.lock = threading.Lock()
 
   def route(self, wanted: set[str]) -> set[str]:
@@ -144,9 +146,23 @@ class Translator:
         built = self._build(name, service, msgs[-1], now)
         if built is not None:
           out.append((name, [built]))
+      elif name == "starpilotRadarState":
+        out.append((name, [adjacent_leads(m, self._v_ego) for m in msgs]))
       else:
+        if name == "carState":
+          self._note_v_ego(msgs[-1], now)
         out.append((name, msgs))
     return out
+
+  def _note_v_ego(self, raw, now):
+    """For the adjacent leads' relative speed (5 Hz is plenty)."""
+    if now - self._v_ego_t < 0.2:
+      return
+    self._v_ego_t = now
+    try:
+      self._v_ego = float(messaging.log_from_bytes(raw).carState.vEgo)
+    except Exception:
+      pass
 
   # ---- starpilotPlan ----
   def _build(self, name, service, raw, now):
@@ -172,6 +188,42 @@ class Translator:
     return build_plan(self._slc, self._lp, self._toggles)
 
 
+def slc_reading(slc, source: str) -> float:
+  """7.0's qualified reading of one speed limit source (dashboard / map / vision), m/s; 0 when it has none."""
+  try:
+    for r in slc.sourceReadings:
+      if str(r.source) == source and str(r.observationKind) == "valid":
+        return _f(r.speedLimit)
+  except Exception:
+    pass
+  return 0.0
+
+
+def adjacent_leads(raw: bytes, v_ego: float = 0.0) -> bytes:
+  """7.0 leaves starpilotRadarState.leadLeft / leadRight empty and reports the adjacent-lane cars in qualifiedAdjacent:
+  copy those into the old fields (what the tablet's Scene, lane tracker and road view draw). Same yRel convention
+  (radard's track yRel); speedMps is the car's own speed."""
+  try:
+    evt = messaging.log_from_bytes(raw)
+    q = evt.starpilotRadarState.qualifiedAdjacent
+    if not (q.left.present or q.right.present) or evt.starpilotRadarState.leadLeft.status or evt.starpilotRadarState.leadRight.status:
+      return raw
+    msg = messaging.new_message("starpilotRadarState", valid=evt.valid)
+    msg.logMonoTime = evt.logMonoTime
+    out = msg.starpilotRadarState
+    out.qualifiedAdjacent = q
+    for cand, lead in ((q.left, out.leadLeft), (q.right, out.leadRight)):
+      if cand.present:
+        lead.status, lead.radar, lead.modelProb = True, True, 1.0
+        lead.dRel, lead.yRel = _f(cand.distanceM), _f(cand.lateralM)
+        lead.vLead = lead.vLeadK = _f(cand.speedMps)
+        lead.vRel = _f(cand.speedMps) - _f(v_ego)
+        lead.radarTrackId = int(cand.trackId) & 0x7FFFFFFF
+    return msg.to_bytes()
+  except Exception:
+    return raw
+
+
 def build_plan(slc, lp, toggles_json: str) -> bytes:
   """An old-layout starpilotPlan (7.0's customReserved6) from slcState + starpilotLongitudinalPlan."""
   msg = messaging.new_message("customReserved6", valid=True)
@@ -185,6 +237,7 @@ def build_plan(slc, lp, toggles_json: str) -> bytes:
         p.slcSpeedLimit = _f(slc.speedLimit)
       p.slcSpeedLimitOffset = _f(slc.offset)
       p.slcSpeedLimitSource = str(slc.acceptedSource or slc.source or "")
+      p.slcMapSpeedLimit = slc_reading(slc, "map")      # the tablet's speed limit sources card
       if slc.hasPending:
         p.slcNextSpeedLimit = _f(slc.pendingSpeedLimit)
       if slc.driverOverrideActive and slc.hasCeiling:
@@ -269,6 +322,9 @@ class MemParams:
       return bool(s.switchbackMode.effective) if s is not None else default
     if key == "NavInstructionState":
       return self.nav_state()
+    if key == "VisionSpeedLimit":
+      s = self._slc()
+      return slc_reading(s, "vision") if s is not None else default
     return default
 
   def get_bool(self, key, *_a, **_k):
