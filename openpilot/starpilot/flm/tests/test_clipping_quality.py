@@ -49,9 +49,9 @@ def test_recorded_contract_is_exact_original_comparison_for_all_signs():
 def test_bad_support_versions_and_unversioned_optin_fail_closed():
   for position in range(3):
     for bad in (math.nan, math.inf, True):
-      values = [-17, -18, -18]
+      values: list[float] = [-17, -18, -18]
       values[position] = bad
-      assert not debt_is_admitted(*values, STATE_ALIGNED_DEBT)
+      assert not debt_is_admitted(values[0], values[1], values[2], STATE_ALIGNED_DEBT)
   rejects(lambda: clipping_quality('unknown'))
   rejects(lambda: event_clipping_quality({'event_version': 2, 'event_clipping_quality': STATE_ALIGNED_DEBT}))
   rejects(lambda: event_clipping_quality({'event_version': 3, 'event_clipping_quality': 'unknown'}))

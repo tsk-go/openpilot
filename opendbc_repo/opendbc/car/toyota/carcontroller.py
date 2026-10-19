@@ -256,6 +256,8 @@ class CarController(CarControllerBase):
         if CS.pcm_acc_status != 8 or CC.cruiseControl.resume:
           self.standstill_req = False
         self.last_standstill = CS.out.standstill
+        if not long_active and CS.out.standstill:
+          self.standstill_req = True
       elif not self.CP.flags & ToyotaFlags.HYBRID.value:
         should_resume = actuators.accel > 0
         if should_resume:
@@ -275,6 +277,8 @@ class CarController(CarControllerBase):
 
         # internal PCM gas command can get stuck unwinding from negative accel so we apply a generous rate limit
         pcm_accel_cmd = actuators.accel if filter_allowed else 0.
+        if self.prius_longitudinal and not long_active:
+          pcm_accel_cmd = 0.
         if long_active:
           pcm_accel_cmd = rate_limit(pcm_accel_cmd, self.prev_accel, ACCEL_WINDDOWN_LIMIT, ACCEL_WINDUP_LIMIT)
         self.prev_accel = pcm_accel_cmd

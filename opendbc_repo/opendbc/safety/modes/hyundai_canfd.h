@@ -185,7 +185,7 @@ static bool aol_optional_release_pending = false;
 static bool aol_optional_release_latch = false;
 static uint32_t aol_optional_release_ts = 0U;
 static bool aol_optional_release_counter_seen = false;
-static bool hyundai_torque_long_aol_cancel_preserves_lateral = false;
+static bool hyundai_torque_aol_cancel_preserves_lateral = false;
 static bool hyundai_canfd_torque_ev_long = false;
 static bool aol_ioniq6_lateral_latch = false;
 static bool aol_ioniq6_buttons_seen = false;
@@ -241,7 +241,7 @@ static void aol_ioniq6_reset(void) {
   aol_optional_release_pending = false;
   aol_optional_release_latch = false;
 
-  hyundai_torque_long_aol_cancel_preserves_lateral = false;
+  hyundai_torque_aol_cancel_preserves_lateral = false;
   hyundai_canfd_torque_ev_long = false;
   aol_ioniq6_lateral_latch = false;
   aol_ioniq6_buttons_seen = false;
@@ -610,10 +610,12 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
       const bool gesture = main_button || (hyundai_canfd_alt_buttons ? GET_BIT(msg, 39U) : GET_BIT(msg, 23U)); // LDA/LKAS button
       if (cruise_button == HYUNDAI_BTN_CANCEL) {
         aol_ioniq6_enable_reset();
-        // Exact DEBUG torque LONG AOL keeps only previously authorized lateral.
-        // Common cruise handling above still withdraws ordinary LONG; CANCEL
-        // cannot create a gesture, refresh a lease, or claim a lateral token.
-        if (!hyundai_torque_long_aol_cancel_preserves_lateral) {
+        // Keep only a claimed torque lateral token. CANCEL cannot turn an
+        // unclaimed gesture/release into authority or renew any source lease.
+        // Ordinary LONG cancellation above remains independent of this token.
+        aol_optional_release_pending = false;
+        if (!hyundai_torque_aol_cancel_preserves_lateral ||
+            (!aol_ioniq6_lateral_token_claimed && !aol_optional_release_latch)) {
           aol_ioniq6_lateral_latch = false;
           aol_optional_release_policy = false;
           aol_optional_release_neutral = false;
@@ -627,9 +629,9 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
       } else if (!aol_ioniq6_buttons_seen) {
         // A held button at safety init is not a fresh deliberate gesture.
         aol_ioniq6_buttons_seen = !gesture;
-      } else if (gesture && !aol_ioniq6_button_prev) {
-        // Idempotent native authorization: host request remains the on/off
-        // toggle, so an RX/heartbeat reset cannot invert the two phases.
+      } else if (gesture && !aol_ioniq6_button_prev && !aol_ioniq6_lateral_latch && !aol_optional_release_latch) {
+        // Host owns the configured on/off toggle. A later MAIN/LKAS edge
+        // cannot refresh an existing token or its original claim deadline.
         aol_ioniq6_lateral_latch = true;
         aol_ioniq6_lateral_token_claimed = false;
         aol_ioniq6_gesture_ts = microsecond_timer_get();
@@ -1372,7 +1374,8 @@ static safety_config hyundai_canfd_init_validated(uint16_t param) {
   hyundai_canfd_ioniq6_long = ioniq6_long_requested;
   hyundai_canfd_torque_ev_long = (param == 0x0015U) || (param == 0x0095U) || torque_long_aol_requested;
 #endif
-  hyundai_torque_long_aol_cancel_preserves_lateral = torque_long_aol_requested;
+  hyundai_torque_aol_cancel_preserves_lateral = ioniq6_stock_aol_requested || torque_long_aol_requested ||
+                                               (param == 0x8815U) || (param == 0x8895U);
   aol_optional_release_capable = torque_long_aol_requested;
   aol_ioniq6_long = ioniq6_stock_aol_requested || torque_long_aol_requested || (param == 0x8815U) || (param == 0x8895U);
   if (aol_ioniq6_long) {

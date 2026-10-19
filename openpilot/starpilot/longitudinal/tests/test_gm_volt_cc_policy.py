@@ -130,7 +130,9 @@ class TestVoltCc(unittest.TestCase):
         invalid = cp.as_reader().as_builder()
         setattr(invalid, field, value)
         self.assertFalse(is_volt_cc_longitudinal(invalid))
-    self.assertNotIn(CAR.CHEVROLET_VOLT_CC, FINGERPRINTS)
+    cc_source_signatures = [fingerprint for fingerprint in FINGERPRINTS[CAR.CHEVROLET_VOLT_CC]
+                            if all(fingerprint.get(addr) == size for addr, size in REQUIRED.items())]
+    self.assertEqual(len(cc_source_signatures), 1)
     self.assertNotIn(CAR.CHEVROLET_VOLT_CC, FW_VERSIONS)
     self.assertEqual(CAR.CHEVROLET_VOLT_CC.config.car_docs[0].package,
                      "Manual development configuration; installation must be verified")

@@ -165,7 +165,7 @@ def instrument(render, trace, *, flush=None):
       for target, method, stage in (
         (core.ui, 'update', 'replay_update'), (core.ui.sm, 'update', 'messages'),
         (type(core.ui.replay_clock), 'sample', 'clock_sample'), (type(core.adapter), 'build', 'snapshot'),
-        (core.placement, 'maintain', 'placement'), (core.context, 'begin_frame', 'frame_clock'),
+        (core.context, 'begin_frame', 'frame_clock'),
         (gpu_nv12, 'compose_rgba', 'rgba_conversion'), (gpu_nv12.Nv12Converter, 'convert', 'nv12_conversion'),
         (type(core.pip_stream), 'poll', 'pip_acquisition'), (type(core.pip), 'render', 'pip'),
         (type(core.monitor), 'render', 'driver_monitor'),
@@ -173,6 +173,8 @@ def instrument(render, trace, *, flush=None):
         (core.rl, 'begin_texture_mode', 'texture_begin'), (core.rl, 'end_texture_mode', 'texture_end'),
       ):
         wrap(target, method, stage)
+      if getattr(core, 'placement', None) is not None:
+        wrap(core.placement, 'maintain', 'placement')
       def phase(name, callback, *args, **kwargs):
         with trace.span('model' if name == 'model' else 'camera_phase'):
           return original_phase(name, callback, *args, **kwargs)

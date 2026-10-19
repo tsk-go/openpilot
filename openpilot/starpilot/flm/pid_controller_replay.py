@@ -1,5 +1,6 @@
 """Registered torque-actuated PID replay; never reads inactive torque tuning."""
 import math
+from openpilot.starpilot.flm.physical_response import request_force_accel
 from types import SimpleNamespace
 
 PID_SNAPSHOT_REVISION = 'selected-pid-frozen-state-v1'
@@ -87,15 +88,11 @@ class PidControllerFactory:
     return controller, VehicleModel(self.cp)
 
 
-def run_pid(controller, vm, inputs, *, effect_trial=None):
-  from opendbc.car import structs
-  from openpilot.starpilot.flm.controller_replay import _CS_FIELDS, _VM_FIELDS
+def run_pid(controller, vm, inputs, *, effect_trial=None, _prepared_car_state=None):
+  from openpilot.starpilot.flm.controller_replay import _VM_FIELDS, _replay_car_state
   from openpilot.starpilot.flm.selected_effects import EffectReplaySource
   values = dict(inputs)
-  cs = structs.CarState.new_message()
-  for name in _CS_FIELDS:
-    setattr(cs, name, bool(values[name]) if name in ('steeringPressed', 'standstill', 'steerFaultTemporary', 'steerFaultPermanent') else values[name])
-  cs.gearShifter = int(values['gearShifter'])
+  cs = _replay_car_state(inputs, values, _prepared_car_state)
   for name in _VM_FIELDS:
     setattr(vm, name, values['vm.' + name])
   params = SimpleNamespace(angleOffsetDeg=values['angleOffsetDeg'], roll=values['roll'])
@@ -125,7 +122,9 @@ def pid_frame(evidence):
   stage = dict(evidence.stage_values)
   return ReplayFrame(evidence.control_ns, evidence.replay_inputs, evidence.requested, evidence.applied_coordinates,
     frame_sequence=int(dict(evidence.replay_inputs)['control_frame']), actual_lac_command=stage['selected_command'],
-    torque_values=(), actual_stage_residual=(0., 0.), centre_values=(0., 0.), desired_physical_accel=stage['setpoint'],
+    torque_values=(), actual_stage_residual=(0., 0.), centre_values=(0., 0.),
+    desired_physical_accel=request_force_accel(evidence.replay_inputs),
+    desired_kinematic_accel=stage['setpoint'],
     healthy=evidence.valid and not evidence.fault and not evidence.override, manual=evidence.manual, limited=evidence.limited,
     applied_parameter_names=tuple(evidence.applied_parameter_names), effect_trace=evidence.effect_trace,
     effect_prepare_ns=evidence.effect_prepare_ns, controller_domain='torque_pid')

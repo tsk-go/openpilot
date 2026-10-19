@@ -463,13 +463,12 @@ class FeatureSettingsOwnerTests(unittest.TestCase):
     self.assertTrue(self._row("profiles", "LeadApproachBuffer").available)
 
   def test_parent_and_units_guards(self):
-    child = self._row("slc", "SLCConfirmationLower")
-    self.assertFalse(child.available)
-    self.assertFalse(self.owner.apply(FeatureSettingsRequest(child.key, child.source, "On", vehicle_fingerprint=child.vehicle_fingerprint)))
+    self.assertFalse(any(row.key in ('SLCConfirmationLower', 'SLCConfirmationHigher') for row in
+                         self.owner.snapshot('slc', parked=True, system_long=True, lateral_context=True, metric=False).rows))
+    self.assertFalse(self.owner.apply(FeatureSettingsRequest('SLCConfirmationLower', None, 'On', vehicle_fingerprint=self.fingerprint)))
     parent = self._row("slc", "SLCConfirmation")
     self.assertTrue(self.owner.apply(required_change(parent)))
-    child = self._row("slc", "SLCConfirmationLower")
-    self.assertTrue(self.owner.apply(required_change(child)))
+    self.assertTrue(self.params.get_bool('SLCConfirmation'))
     authority = self._row("lane", "LaneCenteringE2EAuthority")
     self.assertEqual(authority.value, "100.0")
     self.assertTrue(self.owner.apply(required_change(authority, -1)))

@@ -45,10 +45,13 @@ def payload():
 def plan_for(restored):
   model = fitted_model()
   base = primitive_plan(model)
-  values = {**asdict(base), 'version': RESTORE_ACTIVATION_VERSION,
-    'baseline_revision': restored.selected_baseline_revision, 'source_epoch': restored.source_epoch,
-    'cutoff_ns': 2_005_000_000, 'windows': ((2_000_000_000, 2_020_000_000, 2_010_000_000, 2_010_000_000),)}
-  return WholeMapRestorePlan(**values, restore_envelope_sha256=restore_envelope_digest(restored)).validate()
+  return WholeMapRestorePlan(
+    version=RESTORE_ACTIVATION_VERSION, identity=base.identity,
+    baseline_revision=restored.selected_baseline_revision, source_epoch=restored.source_epoch, physical_context=base.physical_context,
+    calibration_train_blocks=base.calibration_train_blocks, calibration_heldout_blocks=base.calibration_heldout_blocks,
+    cutoff_ns=2_005_000_000, stage_blocks=base.stage_blocks,
+    windows=((2_000_000_000, 2_020_000_000, 2_010_000_000, 2_010_000_000),),
+    restore_envelope_sha256=restore_envelope_digest(restored)).validate()
 
 
 def test_restore_only_payload_has_no_shadow_or_operation_fallback():

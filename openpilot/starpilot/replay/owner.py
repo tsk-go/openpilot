@@ -12,6 +12,7 @@ from pathlib import Path
 import queue
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import socket
@@ -193,7 +194,7 @@ class ReplayOwner:
       result['export'] = {key: value for key, value in self.export.items() if key != 'expires'}
       result['export']['owned'] = client == self.export_client
       if 'expires' in self.export:
-        result['export']['expiresInSeconds'] = max(0., self.export['expires'] - self.clock())
+        result['export']['expiresInSeconds'] = max(0., cast(float, self.export['expires']) - self.clock())
     if not owned:
       for key in ('framePath', 'media', 'codec'):
         result.pop(key, None)
@@ -201,9 +202,9 @@ class ReplayOwner:
 
   def _expire_export(self, *, replace=False):
     if (self.export is None or self.worker is not None and self.status.get('purpose') == 'export' or
-        not replace and self.clock() < self.export.get('expires', float('inf'))):
+        not replace and self.clock() < cast(float, self.export.get('expires', float('inf')))):
       return True
-    directory = self.root / 'exports' / self.export['id']
+    directory = self.root / 'exports' / cast(str, self.export['id'])
     path = directory / 'replay.mp4'
     try:
       fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -414,11 +415,11 @@ class ReplayOwner:
       raise Rejected('not_offroad')
     if self.status.get('target') != 'web' or request['epoch'] != self.status['epoch'] or not self.status.get('mediaReady'):
       raise Rejected('epoch_changed')
-    from openpilot.starpilot.replay.media import media_descriptor
+    from openpilot.starpilot.replay.media import media_descriptor, web_media_dir
     directory = self.session_dir
     if directory is None:
       raise Rejected('session_changed')
-    return media_descriptor(directory, request['epoch'], request['sequence'], count)
+    return media_descriptor(web_media_dir(directory.name), request['epoch'], request['sequence'], count)
 
   def _stop(self, reason):
     if self.worker is not None:
@@ -592,8 +593,16 @@ class ReplayOwner:
         if current_birth == birth or _group_active(pid):
           try:
             if current_birth == birth:
-              command = Path(f'/proc/{pid}/cmdline').read_bytes()
-              if b'openpilot.starpilot.replay.render' not in command or os.getpgid(pid) != pid:
+              command = os.fsdecode(Path(f'/proc/{pid}/cmdline').read_bytes()).rstrip('\0').split('\0')
+              if len(command) == 1:
+                # Some device process titles flatten argv into one field.
+                try:
+                  command = shlex.split(command[0])
+                except ValueError:
+                  raise Rejected('stop_unconfirmed') from None
+              known_worker = (len(command) >= 3 and command[1] == '-m' and command[2] in (
+                'openpilot.starpilot.replay.render', 'tools.diagnostics.replay_render'))
+              if not known_worker or os.getpgid(pid) != pid:
                 raise Rejected('stop_unconfirmed')
             os.killpg(pid, signal.SIGKILL)
           except ProcessLookupError:

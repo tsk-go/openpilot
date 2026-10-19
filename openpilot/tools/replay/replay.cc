@@ -282,7 +282,11 @@ void Replay::seekTo(double seconds, bool relative) {
   interruptStream([&]() {
     current_segment_.store(target_segment);
     cur_mono_time_ = route_start_ts_ + target_time * 1e9;
-    if (hasFlag(REPLAY_FLAG_LOCAL_MACHINE)) wall_minus_mono_ns_ = 0;
+    if (hasFlag(REPLAY_FLAG_LOCAL_MACHINE)) {
+      wall_minus_mono_ns_ = 0;
+      // A failed camera may still borrow these events until worker cleanup.
+      if (!camera_server_ || !camera_server_->failed()) event_data_.reset();
+    }
     display_clock_.seek(cur_mono_time_);
     cur_which_ = cereal::Event::Which::INIT_DATA;
     seeking_to_.store(target_time, std::memory_order_relaxed);
@@ -298,12 +302,12 @@ void Replay::checkSeekProgress() {
   if (hasFlag(REPLAY_FLAG_LOCAL_MACHINE)) {
     const int previous = seg_mgr_->previousSegment(current_segment_);
     if (seeking_to_ >= 0 && previous >= 0 && !seg_mgr_->getEventData()->isSegmentLoaded(previous)) return;
-    if (seeking_to_ >= 0 && hasFlag(REPLAY_FLAG_PRELOAD_SEEK) && segmentCacheLimit() >= 3) {
-      // Finish the next cached segment before playback can reach its boundary.
-      const int next = seg_mgr_->nextSegment(current_segment_);
-      if (next == current_segment_ + 1 && !seg_mgr_->getEventData()->isSegmentLoaded(next)) return;
-    }
-    interruptStream([]() { return true; });
+    // Prepare paused output alongside preloading; only playback waits for both.
+    if (!user_paused_ && (seeking_to_ >= 0 || state_ == State::Buffering) && !preloadReady()) return;
+    interruptStream([this]() {
+      if (state_ == State::Buffering && !user_paused_) display_clock_.pause(false);
+      return true;
+    });
     return;
   }
 
@@ -314,6 +318,12 @@ void Replay::checkSeekProgress() {
 
   // Resume the interrupted stream
   interruptStream([]() { return true; });
+}
+
+bool Replay::preloadReady() const {
+  if (!hasFlag(REPLAY_FLAG_LOCAL_MACHINE) || !hasFlag(REPLAY_FLAG_PRELOAD_SEEK) || segmentCacheLimit() < 3) return true;
+  const int current = current_segment_, next = seg_mgr_->nextSegment(current);
+  return next != current + 1 || seg_mgr_->getEventData()->isSegmentLoaded(next);
 }
 
 void Replay::seekToFlag(FindFlag flag) {
@@ -328,11 +338,12 @@ void Replay::pause(bool pause) {
     interruptStream([=]() {
       rWarning("%s at %.2f s", pause ? "paused..." : "resuming", currentSeconds());
       user_paused_ = pause;
-      display_clock_.pause(pause);
+      const bool ready = preloadReady();
+      display_clock_.pause(pause || !ready);
       if (hasFlag(REPLAY_FLAG_LOCAL_MACHINE) && state_ != State::Seeking && state_ != State::Preparing && state_ != State::Ended) {
-        state_ = pause ? State::Paused : State::Playing;
+        state_ = pause ? State::Paused : ready ? State::Playing : State::Buffering;
       }
-      return !pause;
+      return !pause && ready;
     });
   }
 }

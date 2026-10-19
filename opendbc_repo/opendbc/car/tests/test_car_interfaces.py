@@ -7,6 +7,9 @@ from opendbc.car.fingerprints import FW_VERSIONS
 from opendbc.car.fw_versions import FW_QUERY_CONFIGS
 from opendbc.car.interfaces import CarInterfaceBase, get_interface_attr
 from opendbc.car.values import PLATFORMS
+from opendbc.car.volvo.cma_carcontroller import CarControllerCMA
+from opendbc.car.volvo.cma_carstate import CarStateCMA
+from opendbc.car.volvo.values import CAR as VOLVO
 from opendbc.testing import Fuzzy, fuzzy_test
 
 ALL_ECUS = tuple(sorted({ecu for ecus in FW_VERSIONS.values() for ecu in ecus} |
@@ -112,8 +115,12 @@ def _make_optional_hardware_test(car_name):
           self.assertEqual(params.carFingerprint, car_name)
           self.assertEqual(fingerprint, gen_empty_fingerprint())
           interface = interface_type(params)
-          self.assertIsInstance(interface.CS, interface_type.CarState)
-          self.assertIsInstance(interface.CC, interface_type.CarController)
+          if car_name in (VOLVO.VOLVO_XC40_RECHARGE, VOLVO.VOLVO_S60_RECHARGE, VOLVO.POLESTAR_2):
+            self.assertIsInstance(interface.CS, CarStateCMA)
+            self.assertIsInstance(interface.CC, CarControllerCMA)
+          else:
+            self.assertIsInstance(interface.CS, interface_type.CarState)
+            self.assertIsInstance(interface.CC, interface_type.CarController)
 
   return test
 

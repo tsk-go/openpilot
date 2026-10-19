@@ -170,18 +170,21 @@ def create_acc_hud(packer, bus, CP, enabled, pcm_speed, pcm_accel, hud_control, 
 
 def create_lkas_hud(packer, bus, CP, hud_control, lat_active, steering_available, alert_steer_required, lkas_hud):
   commands = []
+  # Classic/radarless AOL can steer while normal engagement is off.
+  # Keep the upstream CAN-FD indication and ALT_RADAR overrides below.
+  lanes_visible = bool(hud_control.lanesVisible or (lat_active and not (CP.flags & HondaFlags.BOSCH_CANFD)))
 
   lkas_hud_values = {
     'LKAS_READY': 1,
     'LKAS_STATE_CHANGE': 1,
     'STEERING_REQUIRED': alert_steer_required,
-    'SOLID_LANES': hud_control.lanesVisible,
+    'SOLID_LANES': lanes_visible,
     'BEEP': 0,
   }
 
   if CP.flags & (HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD):
     lkas_hud_values['LANE_LINES'] = 3
-    lkas_hud_values['DASHED_LANES'] = hud_control.lanesVisible
+    lkas_hud_values['DASHED_LANES'] = lanes_visible
 
     # car likely needs to see LKAS_PROBLEM fall within a specific time frame, so forward from camera
     # TODO: needed for Bosch CAN FD?

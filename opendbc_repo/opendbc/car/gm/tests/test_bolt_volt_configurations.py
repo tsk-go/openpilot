@@ -25,7 +25,8 @@ def ordinary_params(candidate, *, alpha=False, sascm=False, radar=False, acceler
 
 
 def controller_messages(cp, frame, controller=None, *, stock_acc_enabled=False, accel=1.0,
-                        speed=12.0, stopping=False, resume=False, long_active=True, buttons_counter=0, standstill=False):
+                        speed=12.0, stopping=False, resume=False, long_active=True, buttons_counter=0, standstill=False,
+                        gear_age_ns=50_000_000):
   controller = controller or CarController(DBC[cp.carFingerprint], cp)
   controller.frame = frame
   controller.last_steer_frame = frame
@@ -48,7 +49,7 @@ def controller_messages(cp, frame, controller=None, *, stock_acc_enabled=False, 
   cs.pedal_sensor_healthy = True
   cs.pedal_sensor_ts_nanos = now_nanos - 50_000_000
   cs.stock_acc_status_ts_nanos = now_nanos - 50_000_000
-  cs.bolt_pedal_gear_ts_nanos = now_nanos - 50_000_000
+  cs.bolt_pedal_gear_ts_nanos = now_nanos - gear_age_ns
   cs.bolt_pedal_main_ts_nanos = now_nanos - 50_000_000
   cs.cam_lka_steering_cmd_counter = 0
   cs.loopback_lka_steering_cmd_updated = False
@@ -64,6 +65,24 @@ def controller_messages(cp, frame, controller=None, *, stock_acc_enabled=False, 
 
 
 class TestBoltVoltConfigurations(unittest.TestCase):
+  def test_all_bolt_pedal_generations_withdraw_on_missing_stale_or_future_gear(self):
+    for candidate in PEDAL_BOLT_CAR:
+      for alpha in (False, True):
+        cp = pedal_params(candidate, setting=True, pedal=True, alpha_long=alpha)
+        for age in (0, 100_000_000, 100_000_001, -1, 1_000_000_000):
+          with self.subTest(candidate=candidate, alpha=alpha, gear_age_ns=age):
+            controller, messages = controller_messages(cp, 4, accel=.5, gear_age_ns=age)
+            pedal = next(message for message in messages if message[0] == 0x200)
+            admitted = 0 <= age <= 100_000_000
+            self.assertEqual(bool(pedal[1][4] & 0x80), admitted)
+            self.assertEqual(controller.apply_gas > 0, admitted)
+            if not admitted:
+              self.assertEqual(pedal[1][:4], bytes(4))
+              self.assertEqual(controller.apply_brake, 0)
+            # Recovery needs a fresh physical gear receipt, not a MAIN cycle.
+            controller, recovered = controller_messages(cp, 8, controller, accel=.5, gear_age_ns=0)
+            self.assertTrue(next(message for message in recovered if message[0] == 0x200)[1][4] & 0x80)
+
   def test_volt_bsm_survives_absent_startup_fingerprint_and_decodes_pt_frame(self):
     self.assertEqual(len(VOLT_BSM_CAR), 4)
     for candidate in VOLT_BSM_CAR:

@@ -43,7 +43,7 @@ def applied_snapshot(owner, cc, cs, output, *, apply_ns, state_ns):
     valid = bool(sm.valid['carControl'] and sm.alive['carControl'] and sm.seen['carControl'])
     fault = bool(not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent or cs.accFaulted)
     override = bool(
-      cs.steeringPressed or cs.brakePressed or cs.gasPressed or cs.regenBraking or any(str(button.type) == 'cancel' for button in cs.buttonEvents)
+      cs.steeringPressed or cs.brakePressed or cs.regenBraking or any(str(button.type) == 'cancel' for button in cs.buttonEvents)
     )
     native_allowed = bool(sm.seen['pandaStates'] and sm.alive['pandaStates'] and sm.valid['pandaStates'])
     projection = None

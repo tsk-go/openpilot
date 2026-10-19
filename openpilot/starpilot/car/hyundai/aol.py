@@ -277,7 +277,9 @@ def create_intent(CP, settings):
     return ForteCardIntent(CP, settings)
   from openpilot.starpilot.aol.intent import AolCardIntent
 
-  return AolCardIntent(settings, explicit_latch=policy_for(CP).explicit_latch)
+  independent_cruise_buttons = independent_cruise_buttons_supported(CP)
+  return AolCardIntent(settings, explicit_latch=policy_for(CP).explicit_latch,
+                       independent_cruise_buttons=independent_cruise_buttons)
 
 
 def ordinary_axis_request_allowed(CP, CS) -> bool:
@@ -292,3 +294,118 @@ def allow_lateral_onset(CP, *, requested, normal_enabled, steering_pressed, prev
 
 def retain_on_native_denial(CP, native, state):
   return bool(qualified_angle_aol(CP, marked_only=True) and native.requestedLateral and not native.lateralAllowed and temporary_restriction(CP, state))
+
+
+def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
+  # Dedicated EV6 LONG raw-button/optional-release behavior stays unchanged.
+  if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
+    return False
+  return bool(qualified_canfd_stock(CP, marked_only=marked_only) or
+              qualified_canfd_long(CP, marked_only=marked_only) or
+              qualified_ioniq6(CP) or _stock_ioniq6(CP, marked_only=marked_only))
+
+
+def physical_cancel_lateral_allowed(CP, CS, intent, native, *, settings, previous,
+                                    source_ns, now_ns, axis_session_id) -> bool:
+  """Retain current HKG torque lateral through only the CANCEL no-entry event."""
+  from openpilot.starpilot.aol.runtime import (INTENT_MAX_AGE_NS, AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS,
+                                               native_inventory_matches_cp)
+  try:
+    return bool(settings is not None and settings.enabled and not any(settings.cancel_actions) and
+      (settings.lkas_action == 9 or settings.main_action == 9) and
+      independent_cruise_buttons_supported(CP, marked_only=True) and
+      previous is not None and previous.lateral_active and previous.native_acknowledged and
+      intent is not None and intent.settingsQualified and intent.allowedLatch and intent.lateralArmed and
+      not intent.pauseLateral and intent.producerSessionId and intent.carStateLogMonoTime == source_ns and
+      0 < source_ns <= intent.observedMonoTime <= now_ns <= intent.validUntilMonoTime and
+      now_ns - source_ns <= AXIS_MAX_AGE_NS and now_ns - intent.observedMonoTime <= INTENT_MAX_AGE_NS and
+      intent.validUntilMonoTime - intent.observedMonoTime <= SAFETY_MAX_AGE_NS and
+      CS.canValid and not CS.canTimeout and not CS.steerFaultTemporary and not CS.steerFaultPermanent and
+      not CS.accFaulted and not CS.doorOpen and
+      any(e.type == car.CarState.ButtonEvent.Type.cancel for e in CS.buttonEvents) and
+      native is not None and native.compatible and int(native.protocolVersion) == 1 and
+      axis_session_id and native.axisSessionId == axis_session_id and
+      native.requestedLateral and native.lateralAllowed and native.pandaInventory and
+      native_inventory_matches_cp(native, CP) and
+      0 < native.observedMonoTime <= now_ns <= native.validUntilMonoTime and
+      now_ns - native.observedMonoTime <= SAFETY_MAX_AGE_NS and
+      native.validUntilMonoTime - native.observedMonoTime <= SAFETY_MAX_AGE_NS)
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return False
+
+
+def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_source_ns, now_ns, producer):
+  """Keep existing mapped intent for one current physical CANCEL/FULL-proof join.
+
+  This returns no axis grant and changes no feedback/native/source deadline.
+  The next actual LAT-only publication must establish its own normal baseline.
+  """
+  from opendbc.car.hyundai.canfd_stock_aol import LONG_EV_CARS
+  from openpilot.cereal import log
+  from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS
+  from openpilot.starpilot.aol.transport_pause import cp_identity, independent_lateral_health
+  try:
+    if (CP.carFingerprint not in LONG_EV_CARS or not qualified_canfd_long(CP, marked_only=True) or
+        owner is None or not owner.explicit_latch or not owner.independent_cruise_buttons or
+        not owner.allowed_latch or owner.pause_lateral or owner.pause_longitudinal or owner._fault_inhibit):
+      return False
+    settings = owner.settings
+    if (not settings.enabled or not (settings.lkas_action == 9 or settings.main_action == 9) or
+        any(settings.cancel_actions) or cp_identity(CP) != feedback.cp or
+        feedback.failed or feedback.paused or feedback.pending_event or feedback.qualified or feedback.awaiting or
+        feedback.retention_started_ns or feedback.retention_pending or feedback.retention_qualified or
+        feedback.source_retention_started_ns or feedback.temporary_host_qualified or
+        not feedback.session or not producer or producer != feedback.availability_producer or
+        not CS.canValid or CS.canTimeout or CS.accFaulted or CS.steerFaultTemporary or CS.steerFaultPermanent or
+        CS.steeringDisengage or CS.doorOpen or CS.seatbeltUnlatched or CS.brakePressed or CS.gasPressed or
+        CS.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
+                              car.CarState.GearShifter.low, car.CarState.GearShifter.brake) or
+        not any(event.type == car.CarState.ButtonEvent.Type.cancel and event.pressed for event in CS.buttonEvents) or
+        not 0 < cancel_source_ns <= now_ns or now_ns - cancel_source_ns > AXIS_MAX_AGE_NS):
+      return False
+    prior = feedback.signature
+    if (prior is None or len(prior) != 16 or prior[0] != feedback.session or prior[1] != feedback.sequence or
+        prior[2] != prior[3] or prior[5] != 'none' or prior[7] != feedback.session or
+        not all(prior[index] for index in (9, 10, 11, 12, 13)) or
+        prior[14] != producer or prior[15] != feedback.availability_epoch or
+        not 0 < prior[8] <= prior[3] <= feedback.lateral_baseline_ns <= now_ns <= prior[4] or
+        prior[4] - prior[3] > AXIS_MAX_AGE_NS or prior[8] != feedback.lateral_source_ns or
+        now_ns - feedback.lateral_baseline_ns > AXIS_MAX_AGE_NS or feedback.lateral_only_baseline or
+        not 0 < feedback.healthy_feedback_ns <= now_ns or now_ns - feedback.healthy_feedback_ns > AXIS_MAX_AGE_NS or
+        not 0 < feedback.lateral_native_ns <= feedback.healthy_native_ns <= now_ns or
+        now_ns - feedback.healthy_native_ns > SAFETY_MAX_AGE_NS or
+        feedback.lateral_inventory is None or feedback.lateral_inventory != feedback.healthy_inventory):
+      return False
+    axis = sm['aolAxisState']
+    stamp = int(sm.logMonoTime['aolAxisState'])
+    signature = (str(axis.sessionId), int(axis.sequence), stamp, int(axis.observedMonoTime),
+                 int(axis.validUntilMonoTime), str(axis.faultReason), int(axis.faultEventMonoTime), str(axis.faultSessionId),
+                 int(axis.sourceCarStateMonoTime), bool(axis.lateralActive), bool(axis.longitudinalActive),
+                 bool(axis.desiredLateral), bool(axis.desiredLongitudinal), bool(axis.nativeAcknowledged),
+                 str(axis.intentProducerSessionId), int(axis.intentIntegrityEpoch))
+    if (not sm.seen['aolAxisState'] or not sm.valid['aolAxisState'] or not sm.alive['aolAxisState'] or
+        not axis.qualified or axis.sessionId != feedback.session or axis.faultSessionId != feedback.session or
+        str(axis.faultReason) != 'none' or str(axis.mode) != 'combined' or not axis.nativeAcknowledged or
+        not axis.desiredLateral or not axis.lateralActive or not axis.desiredLongitudinal or not axis.longitudinalActive or
+        axis.intentProducerSessionId != producer or axis.intentIntegrityEpoch != feedback.availability_epoch or
+        axis.sequence < feedback.sequence or axis.sequence == feedback.sequence and
+          signature != prior or
+        not 0 < axis.sourceCarStateMonoTime <= stamp == axis.observedMonoTime <= cancel_source_ns <= now_ns <= axis.validUntilMonoTime or
+        axis.validUntilMonoTime - stamp > AXIS_MAX_AGE_NS or now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS):
+      return False
+    event_ns = int(sm.logMonoTime['onroadEvents'])
+    if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000 or
+        any(event.immediateDisable or event.softDisable or
+            event.userDisable and event.name != log.OnroadEvent.EventName.buttonCancel for event in sm['onroadEvents'])):
+      return False
+    native = independent_lateral_health(sm, CP, CS, feedback.session, now_ns)
+    if (native is None or not native.pandaInventory or not native.requestedLateral or not native.lateralAllowed or
+        not native.requestedLongitudinal or native.longitudinalAllowed or
+        native.observedMonoTime < feedback.healthy_native_ns or
+        (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != feedback.healthy_inventory or
+        len(native.pandaInventory) != 1 or native.pandaInventory[0].controlsAllowed):
+      return False
+    return True
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return False

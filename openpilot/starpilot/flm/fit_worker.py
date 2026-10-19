@@ -1,5 +1,6 @@
 """Fresh bounded numerical/replay actor. Invoked only by optional learner owner."""
 
+import gc
 import json
 import os
 import resource
@@ -33,7 +34,17 @@ def main():
     snapshot = json.loads(raw)
     from openpilot.starpilot.flm.learner_factory import fit_snapshot
 
-    result = fit_snapshot(snapshot)
+    # One isolated, address-space/CPU-bounded job. Reference counting remains
+    # active; avoid repeated cycle scans of the same large replay input graph.
+    was_enabled = gc.isenabled()
+    try:
+      gc.disable()
+      result = fit_snapshot(snapshot)
+    finally:
+      if was_enabled:
+        gc.enable()
+      else:
+        gc.disable()
     encoded = json.dumps(result, separators=(',', ':'), allow_nan=False).encode()
     if len(encoded) > MAX_OUTPUT:
       raise ValueError('fit result bound')

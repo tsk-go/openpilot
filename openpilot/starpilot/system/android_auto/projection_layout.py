@@ -133,19 +133,18 @@ LEAD_INFO_CHOICES = ('Off', 'Distance', 'Speed')
 def projection_appearance(appearance, document):
   """The comma's onroad appearance with every car-screen choice taken from the AA layout instead."""
   from dataclasses import replace
-  from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice, LeadInfoMode
+  from openpilot.starpilot.ui.appearance_preferences import LeadInfoMode
   lead_indicator = document.get('leadIndicator', False) is True
   lead_info = document.get('leadInfo', 'Off')
   # Like the comma, lead info only shows with the lead marker on.
   lead_info_mode = LeadInfoMode(LEAD_INFO_CHOICES.index(lead_info)) if lead_indicator and lead_info in LEAD_INFO_CHOICES else LeadInfoMode.OFF
-  # The car screen always shows the road camera; the comma's camera choices stay on the comma.
+  # Camera View remains the shared saved choice; this layout has no camera override.
   return replace(appearance,
                  show_lead_indicator=lead_indicator, lead_info_mode=lead_info_mode,
                  show_blindspot_border=document.get('blindSpotBorder', False) is True,
                  show_signal_border=document.get('signalBorder', False) is True,
                  hide_personality_alerts=document.get('hidePersonalityAlerts', False) is True,
-                 wheel_pedal_feedback=document.get('wheelPedalFeedback', False) is True,
-                 camera_view=CameraViewChoice.STANDARD, driver_camera_on_reverse=False)
+                 wheel_pedal_feedback=document.get('wheelPedalFeedback', False) is True)
 
 
 def comma_display(appearance):

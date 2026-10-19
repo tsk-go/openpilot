@@ -9,6 +9,7 @@ from opendbc.safety.tests.test_hyundai import checksum
 class TestHyundaiBlendedStock(unittest.TestCase):
   def setUp(self):
     self.safety = libsafety_py.libsafety
+    self.safety.set_alternative_experience(0)
     self.packer = common.CANPackerSafety('hyundai_can_generated')
 
   def select(self, hda2):
@@ -115,6 +116,8 @@ class TestHyundaiBlendedStock(unittest.TestCase):
     self.assertEqual(self.safety.safety_fwd_hook(0, 0x485), 2)
     self.safety.set_timer(2_000_000)
     self.safety.safety_rx_hook(common.make_msg(1, 0x485, dat=payloads[0]))
+    self.assertFalse(self.safety.get_relay_malfunction(), 'Stock E-CAN status is not exclusive steering ownership')
+    self.safety.safety_rx_hook(common.make_msg(0, 0x50, 16))
     self.assertTrue(self.safety.get_relay_malfunction())
     self.assertFalse(self.safety.safety_tx_hook(common.make_msg(1, 0x485, dat=payloads[0])))
 
@@ -187,3 +190,32 @@ class TestHyundaiBlendedStock(unittest.TestCase):
       self.safety.safety_rx_hook(common.make_msg(0, address, length))
       self.assertTrue(self.safety.get_relay_malfunction())
       self.assertFalse(self.safety.safety_tx_hook(self.steer(0, False)))
+
+  def test_palisade_captured_status_preserves_steering_relay_shutdown(self):
+    for steering_address, length in ((0x50, 16), (0x2A4, 24)):
+      self.select(True)
+      self.safety.set_timer(2_000_000)
+      camera = bytes.fromhex('2dc35b01000008006401010200000000')
+      suppression = bytes.fromhex('daed12000022000022000000000000000000000000000000')
+      status = bytes.fromhex('5030020000000000')
+      self.safety.safety_rx_hook(common.make_msg(2, 0x50, dat=camera))
+      self.safety.safety_rx_hook(common.make_msg(2, 0x2A4, dat=suppression))
+      self.assertFalse(self.safety.get_relay_malfunction())
+      self.safety.safety_rx_hook(common.make_msg(1, 0x485, dat=status))
+      self.assertFalse(self.safety.get_relay_malfunction())
+      self.assertEqual(self.safety.safety_fwd_hook(2, 0x50), -1)
+      self.assertEqual(self.safety.safety_fwd_hook(2, 0x2A4), -1)
+      self.assertEqual(self.safety.safety_fwd_hook(2, 0x485), 0)
+      self.safety.safety_rx_hook(common.make_msg(0, steering_address, length))
+      self.assertTrue(self.safety.get_relay_malfunction())
+      self.assertFalse(self.safety.safety_tx_hook(common.make_msg(0, 0x50, 16)))
+
+  def test_stock_status_ownership_does_not_change_aol_table(self):
+    for experience in (0, 32):
+      self.safety.set_alternative_experience(experience)
+      self.assertEqual(self.safety.set_safety_hooks(CarParams.SafetyModel.hyundai, 0x2010), 0)
+      self.safety.init_tests()
+      self.safety.set_alternative_experience(experience)
+      self.safety.safety_rx_hook(common.make_msg(1, 0x485, dat=bytes.fromhex('5030020000000000')))
+      self.assertEqual(bool(self.safety.get_relay_malfunction()), experience == 32)
+    self.safety.set_alternative_experience(0)

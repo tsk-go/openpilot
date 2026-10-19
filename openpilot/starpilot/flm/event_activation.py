@@ -6,15 +6,18 @@ import math
 
 from openpilot.starpilot.flm.physical_response import PhysicalModel
 from openpilot.starpilot.flm.clipping_quality import (
-  RECORDED_DEBT, STATE_ALIGNED_DEBT, STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY,
-  RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION, QUALIFIED_EVENT_CLIPPING_QUALITY, clipping_quality, identification_for_quality,
+  RECORDED_DEBT, STATE_ALIGNED_DEBT, STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY,
+  RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION, RESTORE_ZERO_REFERENCE_VERSION,
+  QUALIFIED_EVENT_CLIPPING_QUALITY, clipping_quality, identification_for_quality,
 )
 
 ACTIVATION_VERSION = 'fixed-eight-owner-v1'
 STATE_ALIGNED_ACTIVATION_VERSION = 'fixed-eight-owner-state-aligned-v2'
 COMBINED_ACTIVATION_VERSION = 'fixed-eight-shadow-relief-v3'
 EXACT_EMISSION_ACTIVATION_VERSION = 'fixed-eight-shadow-exact-emission-v4'
-ACTIVATION_VERSIONS = (ACTIVATION_VERSION, STATE_ALIGNED_ACTIVATION_VERSION, COMBINED_ACTIVATION_VERSION, EXACT_EMISSION_ACTIVATION_VERSION)
+ZERO_REFERENCE_ACTIVATION_VERSION = 'fixed-eight-shadow-native-feasible-v6'
+ACTIVATION_VERSIONS = (ACTIVATION_VERSION, STATE_ALIGNED_ACTIVATION_VERSION, COMBINED_ACTIVATION_VERSION,
+                       EXACT_EMISSION_ACTIVATION_VERSION, ZERO_REFERENCE_ACTIVATION_VERSION)
 CALIBRATION_EVENTS = 8
 
 
@@ -76,7 +79,8 @@ class EventActivationPlan:
   def clipping_quality(self):
     self.validate()
     return {ACTIVATION_VERSION: RECORDED_DEBT, STATE_ALIGNED_ACTIVATION_VERSION: STATE_ALIGNED_DEBT,
-            COMBINED_ACTIVATION_VERSION: STATE_ALIGNED_RELIEF, EXACT_EMISSION_ACTIVATION_VERSION: EXACT_EMISSION_QUALITY}[self.version]
+            COMBINED_ACTIVATION_VERSION: STATE_ALIGNED_RELIEF, EXACT_EMISSION_ACTIVATION_VERSION: EXACT_EMISSION_QUALITY,
+            ZERO_REFERENCE_ACTIVATION_VERSION: ZERO_REFERENCE_QUALITY}[self.version]
 
   @property
   def identification_policy(self):
@@ -100,7 +104,8 @@ def build_activation_plan(engine, *, model, cutoff_ns, stage_events, physical_co
   """No trial coordinates, rollout results, desired gains or cutoff search here."""
   clipping_quality(quality_contract)
   version = {RECORDED_DEBT: ACTIVATION_VERSION, STATE_ALIGNED_DEBT: STATE_ALIGNED_ACTIVATION_VERSION,
-             STATE_ALIGNED_RELIEF: COMBINED_ACTIVATION_VERSION, EXACT_EMISSION_QUALITY: EXACT_EMISSION_ACTIVATION_VERSION}[quality_contract]
+             STATE_ALIGNED_RELIEF: COMBINED_ACTIVATION_VERSION, EXACT_EMISSION_QUALITY: EXACT_EMISSION_ACTIVATION_VERSION,
+             ZERO_REFERENCE_QUALITY: ZERO_REFERENCE_ACTIVATION_VERSION}[quality_contract]
   frames = {frame.control_ns: frame for frame in engine.records}
   windows = tuple(engine.replay_windows)
   if (not stage_events or any(min(point['control_ns'], point['apply_ns'], point['mono_ns']) <= cutoff_ns
@@ -154,7 +159,8 @@ def activation_model_from_dict(value):
   if 'activation_version' not in copied:
     return PhysicalModel(**copied)
   model = ActivatedPhysicalModel(**copied)
-  if (model.activation_version not in (*ACTIVATION_VERSIONS, RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION) or
+  restore_versions = (RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION, RESTORE_ZERO_REFERENCE_VERSION)
+  if (model.activation_version not in (*ACTIVATION_VERSIONS, *restore_versions) or
       not _hex64(model.activation_plan_sha256) or
       model.domain != 'normalized_torque' or
       any(type(value) not in (int, float) or not math.isfinite(value) for value in
@@ -174,10 +180,13 @@ def activation_matches_model(plan, model):
 
 def model_clipping_quality(model):
   if type(model) is ActivatedPhysicalModel:
+    if model.activation_version == RESTORE_ZERO_REFERENCE_VERSION:
+      return ZERO_REFERENCE_QUALITY
     if model.activation_version in (RESTORE_ACTIVATION_VERSION, RESTORE_AGGREGATE_ACTIVATION_VERSION):
       return QUALIFIED_EVENT_CLIPPING_QUALITY
     if model.activation_version not in ACTIVATION_VERSIONS:
       raise ValueError('unknown activated physical proof version')
     return {ACTIVATION_VERSION: RECORDED_DEBT, STATE_ALIGNED_ACTIVATION_VERSION: STATE_ALIGNED_DEBT,
-            COMBINED_ACTIVATION_VERSION: STATE_ALIGNED_RELIEF, EXACT_EMISSION_ACTIVATION_VERSION: EXACT_EMISSION_QUALITY}[model.activation_version]
+            COMBINED_ACTIVATION_VERSION: STATE_ALIGNED_RELIEF, EXACT_EMISSION_ACTIVATION_VERSION: EXACT_EMISSION_QUALITY,
+            ZERO_REFERENCE_ACTIVATION_VERSION: ZERO_REFERENCE_QUALITY}[model.activation_version]
   return RECORDED_DEBT

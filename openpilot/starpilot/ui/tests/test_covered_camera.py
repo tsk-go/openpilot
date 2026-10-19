@@ -249,4 +249,21 @@ def test_large_camera_paint_is_unchanged(monkeypatch, request):
   session.camera_paint = False
   state = OnroadState(True, True, 20, 80, SpeedLimitObservation())
   session.view.camera_layer(rl.Rectangle(0, 0, 2160, 1080), state)
-  assert set(camera.render_camera_model_layer.call_args.kwargs) == {'road_style'}
+  kwargs = camera.render_camera_model_layer.call_args.kwargs
+  assert set(kwargs) == {'road_style', 'camera_view', 'reverse_driver'}
+  assert kwargs['camera_view'] == state.appearance.camera_view
+  assert kwargs['reverse_driver'] == state.reverse_driver_camera
+  assert 'paint' not in kwargs
+
+
+@pytest.mark.parametrize('choice', list(runtime_app.CameraViewChoice))
+@pytest.mark.parametrize('reverse', [False, True])
+def test_large_shell_forwards_the_saved_camera_and_temporary_reverse(monkeypatch, request, choice, reverse):
+  from dataclasses import replace
+  camera = Mock()
+  session = make_session(monkeypatch, request, runtime_app.Profile.LARGE, camera)
+  state = OnroadState(True, True, 20, 80, SpeedLimitObservation(), reverse_driver_camera=reverse)
+  state = replace(state, appearance=replace(state.appearance, camera_view=choice))
+  session.view.camera_layer(rl.Rectangle(0, 0, 2160, 1080), state)
+  kwargs = camera.render_camera_model_layer.call_args.kwargs
+  assert kwargs['camera_view'] is choice and kwargs['reverse_driver'] is reverse

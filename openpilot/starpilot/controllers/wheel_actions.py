@@ -35,6 +35,19 @@ def eligible(cp):
     return False
 
 
+def button_reported(cp, key):
+  """Match known parser omissions without changing other ports' button contracts."""
+  if cp.brand == 'toyota':
+    # Toyota CarState emits LKAS and distance events, never Cancel.
+    if key in KEYS[5:8]:
+      return False
+    if key == 'LKASButtonControl':
+      from opendbc.car.toyota.values import CAR, ToyotaFlags
+      return bool(cp.flags & (ToyotaFlags.TSS2 | ToyotaFlags.LONG_FILTER) or
+                  cp.carFingerprint == CAR.TOYOTA_PRIUS_RETROFIT)
+  return True
+
+
 def cp_fingerprint(cp):
   reader = cp.as_reader() if hasattr(cp, "as_reader") else cp
   return hashlib.sha256(reader.as_builder().to_bytes()).hexdigest()
@@ -138,6 +151,11 @@ class WheelPublisher:
       state, media if ioniq6_media_eligible(cp) else None)]
     for tracker, source, keys in ((self.cancel_tracker, structs.CarState.ButtonEvent.Type.cancel, KEYS[5:8]),
                                    (self.main_tracker, structs.CarState.ButtonEvent.Type.mainCruise, KEYS[1:2])):
+      if source == structs.CarState.ButtonEvent.Type.cancel and cp.brand == 'gm':
+        from opendbc.car.gm.cancel_remap import enabled as gm_cancel_remap_enabled, supported as gm_cancel_remap_supported
+        if gm_cancel_remap_supported(cp) and not gm_cancel_remap_enabled(cp):
+          self.cancel_tracker = ButtonTracker()
+          continue
       if not any(mapping[key] in DELIVERED_ACTIONS for key in keys):
         continue
       copy = structs.CarState(canValid=state.canValid, canTimeout=state.canTimeout)
@@ -149,7 +167,7 @@ class WheelPublisher:
         if index < len(keys):
           gestures.append((keys[index], gesture))
     commands = [(key, mapping[key]) for key, _ in gestures if key is not None and key not in blocked_keys and
-                key not in self.axis_keys and mapping[key] in DELIVERED_ACTIONS and
+                key not in self.axis_keys and button_reported(cp, key) and mapping[key] in DELIVERED_ACTIONS and
                 (key != "MainCruiseButtonControl" or mapping[key] == 10)]
     if commands and not audit:
       current = capture(params)
@@ -226,7 +244,7 @@ class WheelConsumer:
       if action == 0:
         if key:
           return None
-      elif key not in KEYS or action not in DELIVERED_ACTIONS:
+      elif key not in KEYS or action not in DELIVERED_ACTIONS or not button_reported(cp, key):
         return None
       else:
         mapping = capture(params)

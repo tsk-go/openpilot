@@ -1,9 +1,11 @@
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
+import uuid
 
 import pytest
 
@@ -446,7 +448,7 @@ def test_engine_starts_before_renderer_and_closes_if_renderer_fails(tmp_path, mo
   calls = []
   engine = Mock()
   def start_engine(*args, **kwargs):
-    assert kwargs['preload_seek'] is (target == 'native')
+    assert kwargs['preload_seek'] is True
     calls.append('engine')
     return engine
   def start_renderer(*args, **kwargs):
@@ -461,7 +463,45 @@ def test_engine_starts_before_renderer_and_closes_if_renderer_fails(tmp_path, mo
 
 
 @pytest.mark.parametrize('profile', ('large', 'compact'))
-def test_published_readiness_survives_buffering_but_rejects_seeks_and_old_epochs(tmp_path, monkeypatch, profile):
+def test_web_media_uses_owned_ram_namespace(tmp_path, monkeypatch, profile):
+  from openpilot.starpilot.system.android_auto import hw_encoder
+
+  session = tmp_path / uuid.uuid4().hex
+  session.mkdir(mode=0o700)
+  ipc = Path('/dev/shm') / ('msgq_replay-' + session.name[:24])
+  ipc.mkdir(mode=0o700)
+  for key in ('STARPILOT_PROJECTION_READ_ONLY', 'BIG', 'SCALE'):
+    monkeypatch.setenv(key, '')
+  monkeypatch.setattr(render.signal, 'signal', Mock())
+  monkeypatch.setattr(render.threading, 'Thread', Mock())
+  monkeypatch.setattr(render, 'validate_context', lambda path: path)
+  monkeypatch.setattr(render, 'seed_display', lambda path: {})
+  catalog = Mock()
+  catalog.detail.return_value = {'playable': True, 'segments': []}
+  monkeypatch.setattr('openpilot.starpilot.galaxy.route_inventory.RouteInventory', lambda path: catalog)
+  engine = Mock(error=None, status={})
+  engine.process.poll.return_value = None
+  engine.resume.return_value = False
+  monkeypatch.setattr(render, 'Engine', lambda *args, **kwargs: engine)
+  core = Mock()
+  core.update.side_effect = RuntimeError('end fixture after media creation')
+  monkeypatch.setattr(render, 'Compositor', lambda *args, **kwargs: core)
+  monkeypatch.setattr(hw_encoder, 'HardwareH264Encoder', Mock())
+  factory = Mock(wraps=render.MediaStore)
+  monkeypatch.setattr(render, 'MediaStore', factory)
+  try:
+    with pytest.raises(RuntimeError, match='end fixture'):
+      render.run(session, 'recorded-route', tmp_path, 'web', profile, Mock())
+    assert factory.call_args.args[:2] == (ipc / session.name, session.name)
+    assert (ipc / session.name / 'media').is_dir()
+    assert not (session / 'media').exists()
+  finally:
+    shutil.rmtree(ipc)
+
+
+@pytest.mark.parametrize('profile', ('large', 'compact'))
+@pytest.mark.parametrize('handoff', (False, True))
+def test_published_readiness_survives_buffering_but_rejects_seeks_and_old_epochs(tmp_path, monkeypatch, profile, handoff):
   session = tmp_path / ('a' * 32)
   session.mkdir(mode=0o700)
   for key in ('STARPILOT_PROJECTION_READ_ONLY', 'BIG', 'SCALE'):
@@ -482,8 +522,10 @@ def test_published_readiness_survives_buffering_but_rejects_seeks_and_old_epochs
   monkeypatch.setattr(render.time, 'monotonic', lambda: times[step[0]])
   monkeypatch.setattr(render.time, 'monotonic_ns', lambda: round(times[step[0]] * 1e9))
   engine = Mock(error=None, status={'state': 'playing', 'paused': False, 'epoch': 1, 'position': 0,
-                                   'routeStartNs': 100, 'start': 0, 'end': 20})
+                                   'routeStartNs': 100, 'start': 0, 'end': 20, 'lastRequestId': 'a'})
   engine.process.poll.return_value = None
+  engine.seek_request = 'a'
+  engine.resume.side_effect = lambda epoch: handoff and step[0] in (2, 3)
   monkeypatch.setattr(render, 'Engine', lambda *args, **kwargs: engine)
   core = Mock(cabin=False)
   core.camera = Mock(client=None, frame=object(), _target_client=None, _switching=False)
@@ -523,8 +565,10 @@ def test_published_readiness_survives_buffering_but_rejects_seeks_and_old_epochs
   assert all(value['framePath'] == str(frame_path) for value in states)
   assert attempts[:2] == [1, 1.01]  # A failed draw retries before the 50 ms frame interval.
   assert [(value['state'], value['frameReady']) for value in states] == [
-    ('preparing', False), ('playing', True), ('buffering', True), ('buffering', True), ('paused', True),
+    ('preparing', False), ('seeking', False) if handoff else ('playing', True),
+    ('seeking', False) if handoff else ('buffering', True), ('buffering', True), ('paused', True),
     ('seeking', False), ('seeking', False), ('seeking', False), ('seeking', False)]
+  assert [value['lastRequestId'] for value in states[:4]] == ([None, None, None, 'a'] if handoff else [None, 'a', 'a', 'a'])
   publisher.publish.assert_called_once_with(b'pixels', epoch=1, position=0, captured_ns=1_010_000_000)
   assert sleeps == [.01] * len(times)  # Native playback keeps its original idle wait.
 
@@ -596,6 +640,7 @@ def test_native_playback_renders_each_camera_picture_once(tmp_path, monkeypatch,
   engine = Mock(error=None, status={'state': 'playing', 'paused': False, 'rate': rate, 'epoch': 1,
                                    'position': 0, 'routeStartNs': 100, 'start': 0, 'end': 10})
   engine.process.poll.return_value = None
+  engine.resume.return_value = False
   monkeypatch.setattr(render, 'Engine', lambda *args, **kwargs: engine)
   core = Mock(cabin=False)
   core.camera = Mock(client=Mock(frame_id=5, timestamp_sof=5), frame=object(), _target_client=None, _switching=False)
@@ -654,6 +699,7 @@ def test_initial_hud_primer_required_even_when_camera_received_a_frame(tmp_path,
   monkeypatch.setattr(render, 'Compositor', lambda *args, **kwargs: core)
   engine = Mock(status={'state': 'paused', 'paused': True, 'epoch': 2, 'position': 0, 'routeStartNs': 100, 'start': 0, 'end': 1}, error=None)
   engine.process.poll.return_value = None
+  engine.resume.return_value = False
   monkeypatch.setattr(render, 'Engine', lambda *args, **kwargs: engine)
   def next_loop(delay):
     engine.error = 'test complete'
@@ -717,6 +763,8 @@ def test_camera_reprime_cannot_overwrite_an_unacknowledged_user_action():
   engine.write_lock = threading.Lock()
   engine.process = SimpleNamespace(stdin=io.StringIO())
   engine.last_request_id = engine.seek_request = None
+  engine.status = engine.resume_request = None
+  engine.resume_epoch = 0
   request = {'op': 'seek', 'position': 65, 'requestId': 'a' * 32}
   assert engine.command(request)
   assert not engine.command({'op': 'seek', 'position': 0, 'requestId': '0' * 32}, reprime=True)
@@ -727,6 +775,65 @@ def test_camera_reprime_cannot_overwrite_an_unacknowledged_user_action():
   assert engine.command(pause)
   assert not engine.command(request, reprime=True)
   assert engine.command({'op': 'seek', 'position': 65, 'requestId': pause['requestId']}, reprime=True)
+
+
+@pytest.mark.parametrize('outcome', ('playing', 'ended', 'buffering', 'pause', 'stop', 'seek', 'paused_seek', 'rate_before', 'rate_after'))
+def test_seek_waits_for_delivery_and_respects_new_commands(tmp_path, monkeypatch, outcome):
+  import io
+  import json
+  process = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO())
+  monkeypatch.setattr(render.subprocess, 'Popen', Mock(return_value=process))
+  monkeypatch.setattr(render.threading, 'Thread', Mock())
+  engine = Engine('recorded-route', tmp_path, wide=False, cabin=False)
+  engine.status = {'event': 'status', 'state': 'playing', 'epoch': 2, 'paused': outcome == 'paused_seek', 'lastRequestId': '0'}
+  seek = {'op': 'seek', 'position': 65, 'requestId': 'a'}
+  engine.command(seek)
+  def sent():
+    return [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+  if outcome == 'paused_seek':
+    assert sent() == [seek]
+    assert not engine.resume(3)
+    return
+  assert sent() == [{'op': 'pause', 'paused': True, 'requestId': 'a'}, seek]
+  # An old epoch or the pause acknowledgement cannot release a newer seek.
+  assert engine.resume(2)
+  engine.status = {**engine.status, 'state': 'paused', 'paused': True, 'epoch': 3}
+  assert engine.resume(3)
+  engine.status['lastRequestId'] = 'a'
+  assert engine.resume(2)
+  assert len(sent()) == 2
+  if outcome == 'rate_before':
+    engine.command({'op': 'rate', 'rate': 2, 'requestId': 'b'})
+    engine.status['lastRequestId'] = 'b'
+  if outcome in ('pause', 'stop', 'seek'):
+    command = {'op': outcome, 'requestId': 'b', **({'paused': True} if outcome == 'pause' else
+                                                {'position': 70} if outcome == 'seek' else {})}
+    engine.command(command)
+    before = sent()
+    engine.resume(3)
+    assert sent() == before
+    if outcome == 'seek':
+      engine.status.update(epoch=4, lastRequestId='b')
+      assert engine.resume(4)
+      assert sent()[-1] == {'op': 'pause', 'paused': False, 'requestId': 'b'}
+  else:
+    assert engine.resume(3)
+    assert sent()[-1] == {'op': 'pause', 'paused': False, 'requestId': engine.last_request_id}
+    count = len(sent())
+    assert engine.resume(3)
+    assert len(sent()) == count
+    process.stdout = io.StringIO(json.dumps({**engine.status, 'state': 'buffering', 'paused': False}) + '\n')
+    engine._read()
+    assert engine.resume(3)  # Preloading still holds the recorded clock after accepting Play.
+    assert len(sent()) == count
+    if outcome == 'rate_after':
+      engine.command({'op': 'rate', 'rate': 2, 'requestId': 'b'})
+      engine.status['lastRequestId'] = 'b'
+    state = 'playing' if outcome.startswith('rate_') else outcome
+    process.stdout = io.StringIO(json.dumps({**engine.status, 'state': state, 'paused': state != 'playing',
+                                           'error': 'recording_gap' if outcome == 'buffering' else None}) + '\n')
+    engine._read()
+    assert not engine.resume(3)
 
 
 @pytest.mark.parametrize('profile', ('onroad', 'mici.onroad'))
@@ -877,6 +984,9 @@ def test_finished_frame_is_borrowed_until_delivery_finishes(valid, epoch, meta):
 def test_web_delivery_times_packets_and_flushes_pause_end_and_stall(tmp_path, monkeypatch):
   session = tmp_path / ('a' * 32)
   session.mkdir(mode=0o700)
+  ram = tmp_path / 'ram'
+  ram.mkdir()
+  monkeypatch.setattr(render, 'web_media_dir', lambda _: ram / session.name)
   for key in ('STARPILOT_PROJECTION_READ_ONLY', 'BIG', 'SCALE'):
     monkeypatch.setenv(key, '')
   monkeypatch.setattr(render.signal, 'signal', Mock())
@@ -893,6 +1003,7 @@ def test_web_delivery_times_packets_and_flushes_pause_end_and_stall(tmp_path, mo
   engine = Mock(error=None, status={'state': 'playing', 'paused': False, 'epoch': 1, 'position': 0,
                                    'routeStartNs': 100, 'start': 0, 'end': 20})
   engine.process.poll.return_value = None
+  engine.resume.return_value = False
   monkeypatch.setattr(render, 'Engine', lambda *args, **kwargs: engine)
   core = Mock(cabin=False)
   core.camera = Mock(client=None, frame=object(), _target_client=None, _switching=False)
@@ -951,3 +1062,4 @@ def test_web_delivery_times_packets_and_flushes_pause_end_and_stall(tmp_path, mo
   assert min(sleeps) == .002 and max(sleeps) == .01
   assert sleeps[9] == pytest.approx(.005)  # Processing leaves only 5 ms to the next draw.
   assert [sleeps[i] for i in (3, 4, 7, 8, 13)] == [.01] * 5  # Paused, invalid clock, ended.
+  assert (ram / session.name / 'media.json').is_file() and not (session / 'media.json').exists()

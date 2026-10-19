@@ -68,16 +68,16 @@ public:
   uint64_t lastMonoTime() const { return last_mono_time_; }
 
 private:
+  bool parse(std::atomic<bool> *abort, const ProgressCallback &progress);
   void migrateOldEvents();
 
-  std::string raw_;
+  std::string raw_;  // Owns the serialized bytes referenced by events.
   bool requires_migration = true;
   std::vector<bool> filters_;
   size_t max_bytes_ = 0;
   int64_t boot_offset_ = -1;
   bool corrupt_ = false;
   uint64_t last_mono_time_ = 0;
-  size_t retained_bytes_ = 0;
   MonotonicBuffer buffer_{1024 * 1024};
   uint64_t compressed_size_ = 0;
   uint64_t decompressed_size_ = 0;

@@ -211,4 +211,4 @@ def test_stock_held_main_rebinding_and_cancel_keep_physical_edges():
   update([('lkas', True)], 9)
   assert owner.allowed_latch
   update([('cancel', True)], 10)
-  assert not owner.allowed_latch
+  assert owner.allowed_latch  # LKAS-mapped independent AOL survives unassigned cruise CANCEL.

@@ -375,11 +375,12 @@ class CarController(CarControllerBase):
                     (not self.bolt_pedal_removed or not CS.bolt_pedal_removed_acc_active)))
     in_regen_gear = CS.out.gearShifter == structs.CarState.GearShifter.low
     drive_ready = in_regen_gear or (stock_acc and CS.out.gearShifter == structs.CarState.GearShifter.drive)
+    # Panda requires current physical gear for every Bolt pedal generation.
+    gear_ns = getattr(CS, "bolt_pedal_gear_ts_nanos", 0)
+    drive_ready = drive_ready and gear_ns > 0 and 0 <= now_nanos - gear_ns <= 100_000_000
     if stock_acc:
-      gear_ns = getattr(CS, "bolt_pedal_gear_ts_nanos", 0)
       main_ns = getattr(CS, "bolt_pedal_main_ts_nanos", 0)
-      drive_ready = (drive_ready and gear_ns > 0 and 0 <= now_nanos - gear_ns <= 100_000_000 and
-                     main_ns > 0 and 0 <= now_nanos - main_ns <= 300_000_000)
+      drive_ready = drive_ready and main_ns > 0 and 0 <= now_nanos - main_ns <= 300_000_000
 
     active = (CC.longActive and sensor_ready and drive_ready and not CS.out.brakePressed and
               not CS.out.gasPressed and not CS.out.regenBraking and owner_clear and

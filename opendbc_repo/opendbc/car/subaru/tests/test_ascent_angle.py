@@ -7,7 +7,7 @@ from opendbc.car.subaru import subarucan
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.interface import CarInterface
-from opendbc.car.subaru.values import CAR, DBC, SubaruSafetyFlags
+from opendbc.car.subaru.values import CAR, DBC, SubaruFlags, SubaruSafetyFlags
 from opendbc.safety.tests import test_subaru_gen2_angle_pair as pair
 
 
@@ -37,6 +37,20 @@ def step(controller, command, state):
   parser = CANParser(DBC[controller.CP.carFingerprint][Bus.pt], [('ES_LKAS_ANGLE', 0)], steer[2])
   parser.update([(1, [steer])])
   return steer, parser.vl['ES_LKAS_ANGLE']
+
+
+def receive_distance(cp, state, parsers, counter, now):
+  packer = CANPacker(DBC[cp.carFingerprint][Bus.pt])
+  bus = 1 if cp.flags & SubaruFlags.GLOBAL_GEN2 else 2
+  stock = packer.make_can_msg('ES_Distance', bus, {
+    'COUNTER': counter, 'Cruise_Throttle': 2123, 'Car_Follow': 1,
+    'Close_Distance': 4.0, 'Cruise_EPB': 1,
+  })
+  for parser in parsers.values():
+    parser.update([(now, [stock])])
+  state.out = state.update(parsers)
+  assert int(state.es_distance_msg['COUNTER']) == counter, (counter, state.es_distance_msg)
+  return stock
 
 
 class TestSubaruAscentController(unittest.TestCase):
@@ -141,3 +155,79 @@ class TestSubaruAscentController(unittest.TestCase):
         _, decoded = step(controller, command, state)
         assert decoded['LKAS_Request'] == 0
         assert decoded['LKAS_Output'] == (545.0 if measured > 0 else -545.0)
+
+  def test_cancel_waits_for_next_stock_counter_and_wraps(self):
+    cp, controller, command, state = setup_controller()
+    parsers = state.get_can_parsers(cp)
+    # Register lazy parser subscriptions before the first source frame.
+    state.out = state.update(parsers)
+    command.enabled = command.latActive = False
+    decoder = CANParser(DBC[CAR_ID][Bus.pt], [('ES_Distance', 0)], 1)
+    observed = []
+    for tick, (stock_counter, cancel) in enumerate((
+        (14, False), (14, True), (15, True), (15, True), (0, True),
+        (0, True), (1, False), (1, True), (2, True))):
+      now = 1_000_000_000 + tick * 10_000_000
+      receive_distance(cp, state, parsers, stock_counter, now)
+      command.cruiseControl.cancel = cancel
+      _, sends = controller.update(command.as_reader(), state, now)
+      distance = [frame for frame in sends if frame[0] == 0x221]
+      self.assertLessEqual(len(distance), 1)
+      for frame in distance:
+        self.assertEqual(frame[2], 1)
+        decoder.update([(now, [frame])])
+        values = decoder.vl['ES_Distance']
+        observed.append(values['COUNTER'])
+        self.assertEqual(values['Cruise_Cancel'], 1)
+        self.assertEqual(values['Cruise_Throttle'], 1818)
+        self.assertEqual(values['Car_Follow'], 1)
+        self.assertEqual(values['Cruise_EPB'], 1)
+        self.assertEqual(values['Close_Distance'], state.es_distance_msg['Close_Distance'])
+    self.assertEqual(observed, [0, 1, 3])
+
+  def test_repeated_stock_cancel_gate_is_ascent_2023_only(self):
+    for car in (CAR.SUBARU_ASCENT_2023, CAR.SUBARU_CROSSTREK_2025,
+                CAR.SUBARU_LEGACY_2025, CAR.SUBARU_OUTBACK_2023, CAR.SUBARU_ASCENT):
+      with self.subTest(car=car):
+        cp, controller, command, state = setup_controller(car)
+        command.enabled = command.latActive = False
+        command.cruiseControl.cancel = True
+        parsers = state.get_can_parsers(cp)
+        # Register lazy parser subscriptions before the first source frame.
+        state.out = state.update(parsers)
+        receive_distance(cp, state, parsers, 11, 1_000_000_000)
+        distance = []
+        for tick in range(5):
+          _, sends = controller.update(command.as_reader(), state, 1_000_000_000 + tick * 10_000_000)
+          distance.extend(frame for frame in sends if frame[0] == 0x221)
+        self.assertEqual(len(distance), 1 if car == CAR.SUBARU_ASCENT_2023 else 5)
+        self.assertEqual(len(set(distance)), 1)
+        self.assertEqual(distance[0][2], 1 if cp.flags & SubaruFlags.GLOBAL_GEN2 else 0)
+
+  def test_ascent_dash_tracks_current_angle_request_through_withdrawal_and_reentry(self):
+    for withdrawal in ('brake', 'reverse', 'main', 'cruise', 'lateral', 'driver'):
+      with self.subTest(withdrawal=withdrawal):
+        cp, controller, command, state = setup_controller()
+        state.es_lkas_state_msg['LKAS_ACTIVE'] = 1
+        decoder = CANParser(DBC[cp.carFingerprint][Bus.pt], [('ES_LKAS_State', 0), ('ES_LKAS_ANGLE', 0)], 0)
+        observed = []
+        for tick in range(41):
+          withdraw = 12 <= tick < 30
+          state.out.brakePressed = withdraw and withdrawal == 'brake'
+          state.out.gearShifter = (structs.CarState.GearShifter.reverse if withdraw and withdrawal == 'reverse'
+                                  else structs.CarState.GearShifter.drive)
+          state.out.cruiseState.available = not (withdraw and withdrawal == 'main')
+          state.out.cruiseState.enabled = not (withdraw and withdrawal == 'cruise')
+          command.latActive = not (withdraw and withdrawal == 'lateral')
+          state.out.steeringTorque = 250 if withdraw and withdrawal == 'driver' else 0
+          now = 1_000_000_000 + tick * 10_000_000
+          _, sends = controller.update(command.as_reader(), state, now)
+          decoder.update([(now, sends)])
+          if tick % 10 == 0:
+            dash = decoder.vl['ES_LKAS_State']
+            requested = decoder.vl['ES_LKAS_ANGLE']['LKAS_Request']
+            self.assertEqual(dash['LKAS_ACTIVE'], requested)
+            self.assertEqual(dash['LKAS_Dash_State'], 2 if requested else 0)
+            observed.append(bool(requested))
+        self.assertEqual(observed[:3], [False, True, False])
+        self.assertTrue(observed[-1])

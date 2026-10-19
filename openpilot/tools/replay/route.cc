@@ -87,6 +87,10 @@ bool Route::loadSegments() {
   if (local_only_ && (data_dir_.empty() || auto_source_)) return false;
   if (!auto_source_) {
     bool ret = data_dir_.empty() ? loadFromServer() : loadFromLocal();
+    if (!ret) {
+      segments_.clear();
+      return false;
+    }
     if (ret) {
       // Trim segments
       if (route_.begin_segment > 0) {

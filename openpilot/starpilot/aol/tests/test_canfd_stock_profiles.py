@@ -105,7 +105,8 @@ class TestCanfdStockProfiles(unittest.TestCase):
       self.assertTrue(intent.allowed_latch)
       cs.buttonEvents = [structs.CarState.ButtonEvent(type='cancel', pressed=True)]
       intent.update(cs, now_ns=3, fault_active=False)
-      self.assertFalse(intent.allowed_latch)
+      # Unassigned cruise CANCEL withdraws ACC, not separately mapped lateral.
+      self.assertTrue(intent.allowed_latch)
       cs.canValid = False
       intent.update(cs, now_ns=4, fault_active=False)
       self.assertFalse(intent.output(cs)[0])

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <utility>
 #include "tools/replay/filereader.h"
 #include "tools/replay/py_tools.h"
 #include "tools/replay/util.h"
@@ -25,28 +24,41 @@ bool LogReader::load(const std::string &url, std::atomic<bool> *abort, bool loca
     });
   }
   const auto download_start = Clock::now();
-  std::string data = FileReader(local_cache, max_bytes_).read(url, abort);
+  raw_ = FileReader(local_cache, max_bytes_).read(url, abort);
   const auto download_end = Clock::now();
   if (progress) {
     installDownloadProgressHandler(nullptr);
   }
-  compressed_size_ = data.size();
+  compressed_size_ = raw_.size();
   download_seconds_ = std::chrono::duration<double>(download_end - download_start).count();
-  decompressed_size_ = data.size();
+  decompressed_size_ = raw_.size();
 
-  bool success = !data.empty() && load(data.data(), data.size(), abort, progress);
-  if (filters_.empty())
-    raw_ = std::move(data);
-  return success;
+  return parse(abort, progress);
 }
 
 bool LogReader::load(const char *data, size_t size, std::atomic<bool> *abort,
                      const ProgressCallback &progress) {
+  if (max_bytes_ && size > max_bytes_) {
+    events.clear();
+    corrupt_ = true;
+    rError("Log exceeds replay memory limit");
+    return false;
+  }
+  raw_.assign(data, size);
+  return parse(abort, progress);
+}
+
+bool LogReader::parse(std::atomic<bool> *abort, const ProgressCallback &progress) {
   using Clock = std::chrono::steady_clock;
   const auto parse_start = Clock::now();
+  events.clear();
+  requires_migration = true;
+  corrupt_ = false;
+  last_mono_time_ = 0;
+  const size_t size = raw_.size();
   try {
     events.reserve(65000);
-    kj::ArrayPtr<const capnp::word> words((const capnp::word *)data, size / sizeof(capnp::word));
+    kj::ArrayPtr<const capnp::word> words((const capnp::word *)raw_.data(), size / sizeof(capnp::word));
     const uint64_t total_bytes = size;
     const uint64_t report_step = std::max<uint64_t>(1, total_bytes / 200);
     uint64_t last_reported = 0;
@@ -64,19 +76,8 @@ bool LogReader::load(const char *data, size_t size, std::atomic<bool> *abort,
         requires_migration = false;
       }
 
-      if (!filters_.empty()) {
-        if (which >= filters_.size() || !filters_[which])
-          continue;
-        if (max_bytes_ && retained_bytes_ + event_data.size() * sizeof(capnp::word) > 32 * 1024 * 1024) {
-          rError("Retained log exceeds replay memory limit");
-          corrupt_ = true;
-          return false;
-        }
-        retained_bytes_ += event_data.size() * sizeof(capnp::word);
-        auto buf = buffer_.allocate(event_data.size() * sizeof(capnp::word));
-        memcpy(buf, event_data.begin(), event_data.size() * sizeof(capnp::word));
-        event_data = kj::arrayPtr((const capnp::word *)buf, event_data.size());
-      }
+      if (!filters_.empty() && (which >= filters_.size() || !filters_[which]))
+        continue;
 
       uint64_t mono_time = event.getLogMonoTime();
       if (boot_offset_ >= 0 && boot_clock_event(which)) {

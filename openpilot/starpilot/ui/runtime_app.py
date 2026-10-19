@@ -68,13 +68,14 @@ from openpilot.starpilot.ui.bluetooth_status import BluetoothStatusSource
 from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter, current_message, display_message
 from openpilot.starpilot.ui.network_panel import NetworkPanelBridge
 from openpilot.starpilot.ui.slc_action_dispatch import SlcActionDispatcher
-from openpilot.starpilot.ui.onroad_state import AlertSize, OnroadState, SlcUiRequest, is_personality_notice, is_lane_change_notice
+from openpilot.starpilot.ui.onroad_state import AlertSize, OnroadRequest, OnroadState, SlcUiRequest, is_personality_notice, is_lane_change_notice
 from openpilot.starpilot.ui.onroad_favorites import OnroadFavorites
 from openpilot.starpilot.ui.onroad_dm import DriverMonitorLayer
 from openpilot.starpilot.favorites.owner import FavoritesOwner
 from openpilot.starpilot.controllers.cruise_action import CruiseActionPublisher, ui_authority as cruise_action_authority
 from openpilot.starpilot.controllers.wheel_actions import WheelConsumer
 from openpilot.starpilot.system.android_auto.projection_bookmark import BookmarkReceiver
+from openpilot.starpilot.system.android_auto.projection_slc_action import SlcActionReceiver
 from openpilot.starpilot.controllers.mode_actions import ModeActionPublisher, producer_available, authority as mode_action_authority
 from openpilot.starpilot.favorites.actions import (BOOKMARK, CYCLE_PERSONALITY, EXPERIMENTAL, INCREASE_SPEED, DECREASE_SPEED, SET_SPEED,
                                                   FORCE_COAST, PULSE_GLIDE, DISENGAGE, TRAFFIC, SWITCHBACK, SCREEN_OFF, mapped_actions)
@@ -174,7 +175,9 @@ class StarShellSession:
                                                  lateral_active=state.lateral_active,
                                                  road_style=state.customization["roadColors"]["compact"], paint=self.camera_paint)
         else:
-          camera_owner.render_camera_model_layer(rect, road_style=state.customization["roadColors"]["large"])
+          camera_owner.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
+                                                 reverse_driver=state.reverse_driver_camera,
+                                                 road_style=state.customization["roadColors"]["large"])
       self.view = ShellView(self.fonts, Path(__file__).parents[2] / "selfdrive/assets",
                             camera_layer=camera_layer,
                             pip_layer=self._render_pip)
@@ -278,15 +281,25 @@ class StarShellSession:
     self._favorite_include_options = False
     self._favorite_claimed = False
     self._projection_bookmarks = None
+    self._projection_slc = None
     if getattr(ui_state, 'replay_clock', None) is None:
       try:
         self._projection_bookmarks = BookmarkReceiver()
       except OSError:
         pass  # Projection bookmarks stay unavailable without affecting the native UI.
+      try:
+        self._projection_slc = SlcActionReceiver()
+      except OSError:
+        pass  # Car-screen speed-limit taps stay unavailable without affecting the native UI.
 
   def _favorite_authority(self, *, allow_personality_notice: bool = False) -> bool:
     if getattr(ui_state, "replay_clock", None) is not None:
       return False
+    if getattr(self, "_projection_tap", False):
+      # A car-screen tap acts whenever onroad with live car state, like a bookmark tap:
+      # the comma screen's page, alerts and camera (or the screen being off) do not gate it.
+      return bool(ui_state.started and display_message(ui_state.sm, 'carState', time.monotonic_ns(),
+                                                       after_frame=ui_state.started_frame) is not None)
     if self._mode != ShellMode.ONROAD:
       return False
     state = self.snapshot(ShellMode.ONROAD).onroad
@@ -482,6 +495,32 @@ class StarShellSession:
     for _ in range(receiver.drain(now_ns, stamp, authorized=authorized)):
       cast('Callable[[], None]', publish)()
 
+  def _poll_projection_slc(self, now_ns):
+    receiver = getattr(self, '_projection_slc', None)
+    if receiver is None:
+      return
+    # Always drain; a request is only published if the same live-state checks as a comma-screen tap pass.
+    for request in receiver.drain(now_ns):
+      if not ui_state.started or getattr(ui_state, "replay_clock", None) is not None:
+        continue
+      if isinstance(request, OnroadRequest):
+        self._projection_experimental(request.value)
+      elif self.slc_actions is not None:
+        self.slc_actions.dispatch(request)
+
+  def _projection_experimental(self, requested: bool) -> None:
+    """A car-screen wheel tap: the native experimental binding acts only if it is
+    available and still in the state the car screen showed (the opposite of requested)."""
+    self._projection_tap = True
+    try:
+      binding = self._native_favorite_actions().get(EXPERIMENTAL)
+      current = self.snapshot(ShellMode.ONROAD).onroad.experimental_enabled
+      if not (binding is not None and binding.available and binding.invoke is not None and
+              current != requested and binding.invoke()):
+        self._unavailable("experimental shortcut in this context")
+    finally:
+      self._projection_tap = False
+
   def _poll_wheel(self, now_ns):
     if getattr(ui_state, "replay_clock", None) is not None:
       return
@@ -629,7 +668,7 @@ class StarShellSession:
         return bool(cp.openpilotLongitudinalControl and not cp.notCar and not cp.passive and not cp.dashcamOnly)
       if group in ("aol_wheel", "lane", "torque", "aol"):
         return not cp.notCar and not cp.passive and not cp.dashcamOnly
-      return bool(cp.openpilotLongitudinalControl and not cp.pcmCruise and not cp.notCar and
+      return bool(cp.openpilotLongitudinalControl and not cp.notCar and
                   not cp.passive and not cp.dashcamOnly)
     return False
 
@@ -1209,9 +1248,7 @@ class StarShellSession:
     selfdrive = current_message(ui.sm, "selfdriveState", now_ns, after_frame=after)
     cp = ui.CP
     if (car is None or not getattr(car, "canValid", False) or getattr(car, "canTimeout", True) or
-        control is None or not control.longActive or
-        controls is None or str(controls.longControlState) == "off" or selfdrive is None or not selfdrive.enabled or
-        cp is None or not cp.openpilotLongitudinalControl):
+        control is None or controls is None or selfdrive is None or cp is None):
       return None
     return current_message(ui.sm, "slcState", now_ns, after_frame=ui.started_frame)
 
@@ -1618,6 +1655,9 @@ class StarShellSession:
     if receiver := getattr(self, '_projection_bookmarks', None):
       receiver.close()
       self._projection_bookmarks = None
+    if receiver := getattr(self, '_projection_slc', None):
+      receiver.close()
+      self._projection_slc = None
     self._aol_save_closed = True
     if pending := getattr(self, "_aol_save", None):
       pending.cancel.set()
@@ -2074,6 +2114,10 @@ class StarMiciMainLayout(MiciMainLayout):
     if destination == Destination.DRIVING_MODEL:
       from openpilot.starpilot.ui.models_compact import ModelsCompact
       ModelsCompact(self.star).open()
+      return
+    if destination == Destination.DRIVING_CONTROLS:
+      from openpilot.starpilot.ui.feature_settings_compact import FeatureSettingsCompact
+      FeatureSettingsCompact(self.star).open(FeaturePage.HUB)
       return
     if destination == Destination.APPEARANCE:
       from openpilot.starpilot.ui.appearance_compact import AppearanceCompact

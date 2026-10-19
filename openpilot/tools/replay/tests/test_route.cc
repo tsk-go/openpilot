@@ -5,9 +5,16 @@
 #include "tools/replay/filereader.h"
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <fcntl.h>
+#include <random>
 #include <sys/file.h>
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/wait.h>
+#endif
 #include <unistd.h>
+#include <zstd.h>
 
 void test_route_ranges() {
   struct Range {
@@ -79,6 +86,43 @@ void test_local_sources() {
   std::filesystem::remove_all(root);
 }
 
+void test_local_sources_reject_partial_locked_route() {
+  char directory[] = "/tmp/replay-partial-route-XXXXXX";
+  const std::filesystem::path root = mkdtemp(directory);
+  const std::string route = "00000001--1234567890";
+  const std::filesystem::path segments[] = {root / (route + "--0"), root / (route + "--1")};
+  for (const auto &segment : segments) {
+    std::filesystem::create_directory(segment);
+    std::ofstream(segment / "rlog") << "recorded";
+  }
+  // Keep the parent directory entries fixed and swap which segment is busy.
+  // Neither enumeration order nor a previously accumulated valid segment may
+  // turn the later loadFromLocal rejection into a successful partial route.
+  for (const auto &busy : segments) {
+    const auto marker = busy / "rlog.lock";
+    {
+      std::ofstream writer(marker);
+      REQUIRE(writer.is_open());
+    }
+    REQUIRE(std::filesystem::is_regular_file(marker));
+    Route rejected(route, root, false, true);
+    CHECK(!rejected.load());
+    CHECK(rejected.segments().empty());
+    for (const auto &segment : segments) {
+      unique_fd writer(open(segment.c_str(), O_RDONLY | O_DIRECTORY));
+      REQUIRE(writer >= 0);
+      CHECK(flock(writer, LOCK_EX | LOCK_NB) == 0);
+    }
+    REQUIRE(std::filesystem::remove(marker));
+    {
+      Route recovered(route, root, false, true);
+      REQUIRE(recovered.load());
+      CHECK(recovered.segments().size() == 2);
+    }
+  }
+  std::filesystem::remove_all(root);
+}
+
 void test_machine_camera_time() {
   capnp::MallocMessageBuilder builder;
   auto event = builder.initRoot<cereal::Event>();
@@ -103,6 +147,100 @@ void test_machine_camera_time() {
   CHECK(raw.getRoot<cereal::Event>().getNarrowRoadEncodeIdx().getTimestampSof() == 10000000000ULL);
 }
 
+void test_large_filtered_log() {
+  capnp::MallocMessageBuilder builder;
+  auto event = builder.initRoot<cereal::Event>();
+  event.setLogMonoTime(123456789ULL);
+  event.setValid(true);
+  auto lateral = event.initStarpilotLateralState();
+  lateral.initLaneCentering().setAppliedCorrection(0.25f);
+  auto evidence = lateral.initLearningEvidence();
+  evidence.setVersion(1);
+  auto baseline = evidence.initBaselineValues(32768);
+  baseline.set(0, 1.25);
+  baseline.set(baseline.size() - 1, -2.5);
+  lateral.initLearningApplication().setStatus("collecting");
+  auto words = capnp::messageToFlatArray(builder);
+  auto bytes = words.asBytes();
+  capnp::MallocMessageBuilder skipped;
+  skipped.initRoot<cereal::Event>().initCarState();
+  auto skipped_words = capnp::messageToFlatArray(skipped);
+  auto skipped_bytes = skipped_words.asBytes();
+  std::string data(reinterpret_cast<const char *>(skipped_bytes.begin()), skipped_bytes.size());
+  constexpr size_t count = 129;
+  for (size_t i = 0; i < count; ++i) data.append(reinterpret_cast<const char *>(bytes.begin()), bytes.size());
+  REQUIRE(count * bytes.size() > 32 * 1024 * 1024);
+  std::vector<bool> filters(cereal::Event::Which::STARPILOT_LATERAL_STATE + 1, false);
+  filters[cereal::Event::Which::STARPILOT_LATERAL_STATE] = true;
+  for (bool from_file : {false, true}) {
+    LogReader reader(filters, 128 * 1024 * 1024);
+    if (from_file) {
+      char path[] = "/tmp/replay-owned-log-XXXXXX";
+      unique_fd fd(mkstemp(path));
+      REQUIRE(fd >= 0);
+      REQUIRE(write(fd, data.data(), data.size()) == data.size());
+      REQUIRE(reader.load(std::string(path)));
+      REQUIRE(unlink(path) == 0);
+    } else {
+      std::string temporary = data;
+      REQUIRE(reader.load(temporary.data(), temporary.size()));
+      std::fill(temporary.begin(), temporary.end(), '\0');
+    }
+    REQUIRE(!reader.corrupt());
+    REQUIRE(reader.events.size() == count);
+    for (const auto &stored : reader.events) {
+      CHECK(stored.which == cereal::Event::Which::STARPILOT_LATERAL_STATE);
+      CHECK(stored.mono_time == 123456789ULL);
+      CHECK(stored.data.asBytes().size() == bytes.size());
+      CHECK(memcmp(stored.data.begin(), bytes.begin(), bytes.size()) == 0);
+    }
+  }
+}
+
+void test_log_input_ownership() {
+  capnp::MallocMessageBuilder builder;
+  auto event = builder.initRoot<cereal::Event>();
+  event.setLogMonoTime(42);
+  event.initControlsState().initDeprecated().setEnabled(true);
+  auto words = capnp::messageToFlatArray(builder);
+  auto bytes = words.asBytes();
+  LogReader reader({}, 128 * 1024 * 1024);
+  {
+    std::string temporary(reinterpret_cast<const char *>(bytes.begin()), bytes.size());
+    REQUIRE(reader.load(temporary.data(), temporary.size()));
+    std::fill(temporary.begin(), temporary.end(), '\0');
+  }
+  REQUIRE(reader.events.size() == 2);
+  for (const auto &stored : reader.events) {
+    capnp::FlatArrayMessageReader parsed(stored.data);
+    auto message = parsed.getRoot<cereal::Event>();
+    if (stored.which == cereal::Event::Which::CONTROLS_STATE) {
+      CHECK(message.getControlsState().getDeprecated().getEnabled());
+    } else {
+      CHECK(stored.which == cereal::Event::Which::SELFDRIVE_STATE);
+      CHECK(message.getSelfdriveState().getEnabled());
+    }
+  }
+  event.setLogMonoTime(7);
+  event.initSelfdriveState().setEnabled(false);
+  auto modern_words = capnp::messageToFlatArray(builder);
+  auto modern_bytes = modern_words.asBytes();
+  REQUIRE(reader.load(reinterpret_cast<const char *>(modern_bytes.begin()), modern_bytes.size()));
+  REQUIRE(reader.events.size() == 1);
+  CHECK(reader.lastMonoTime() == 7);
+  LogReader bounded({}, modern_bytes.size() - 1);
+  CHECK(!bounded.load(reinterpret_cast<const char *>(modern_bytes.begin()), modern_bytes.size()));
+  CHECK(bounded.events.empty());
+  std::atomic<bool> abort = true;
+  CHECK(!reader.load(reinterpret_cast<const char *>(modern_bytes.begin()), modern_bytes.size(), &abort));
+  CHECK(reader.events.empty());
+  CHECK(!reader.load(reinterpret_cast<const char *>(modern_bytes.begin()), sizeof(capnp::word)));
+  CHECK(reader.corrupt());
+  REQUIRE(reader.load(reinterpret_cast<const char *>(modern_bytes.begin()), modern_bytes.size()));
+  CHECK(!reader.corrupt());
+  CHECK(reader.events.size() == 1);
+}
+
 void test_bounded_file_reader() {
   char path[] = "/tmp/replay-reader-XXXXXX";
   unique_fd fd(mkstemp(path));
@@ -119,6 +257,115 @@ void test_bounded_file_reader() {
   CHECK(FileReader(false, data.size()).read("/proc/self/fd/" + std::to_string(int(fd))) == data);
 #endif
   CHECK(FileReader(false, data.size()).read(path).empty());
+}
+
+void test_bounded_zstd_file_reader() {
+  char path[] = "/tmp/replay-zstd-reader-XXXXXX";
+  unique_fd fd(mkstemp(path));
+  REQUIRE(fd >= 0);
+  const std::string data(128 * 1024 + 17, '\x17');
+  auto compress = [](const std::string &value) {
+    std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> context(ZSTD_createCCtx(), ZSTD_freeCCtx);
+    REQUIRE(context);
+    REQUIRE(!ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, 1)));
+    REQUIRE(!ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_contentSizeFlag, 0)));
+    REQUIRE(!ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_checksumFlag, 1)));
+    std::string result(ZSTD_compressBound(value.size()), '\0');
+    const size_t size = ZSTD_compress2(context.get(), result.data(), result.size(), value.data(), value.size());
+    REQUIRE(!ZSTD_isError(size));
+    result.resize(size);
+    return result;
+  };
+  const std::string compressed = compress(data);
+  REQUIRE(ZSTD_getFrameContentSize(compressed.data(), compressed.size()) == ZSTD_CONTENTSIZE_UNKNOWN);
+  auto store = [&](const std::string &bytes) {
+    std::ofstream output(path, std::ios::binary);
+    output.write(bytes.data(), bytes.size());
+    REQUIRE(output.good());
+  };
+  store(compressed);
+  // Local Zstd reads must not need a Python executable or decoded temporary file.
+  const std::string python_path = getenv("PATH") ? getenv("PATH") : "";
+  REQUIRE(setenv("PATH", "", 1) == 0);
+  CHECK(FileReader(false, data.size()).read(path) == data);
+  REQUIRE(setenv("PATH", python_path.c_str(), 1) == 0);
+  CHECK(FileReader(false, data.size() - 1).read(path).empty());
+  CHECK(FileReader(false).read(path) == data);
+  std::atomic<bool> abort = true;
+  CHECK(FileReader(false, data.size()).read(path, &abort).empty());
+  REQUIRE(unlink(path) == 0);
+#ifdef __linux__
+  store("replacement");
+  CHECK(FileReader(false, data.size()).read("/proc/self/fd/" + std::to_string(int(fd))) == data);
+#endif
+  store(compressed.substr(0, compressed.size() - 1));
+  CHECK(FileReader(false, data.size()).read(path).empty());
+  store(compressed + "junk");
+  CHECK(FileReader(false, data.size()).read(path).empty());
+  store(compressed + compressed);
+  CHECK(FileReader(false, data.size() * 2).read(path) == data + data);
+  CHECK(FileReader(false, data.size() * 2 - 1).read(path).empty());
+  std::string corrupt = compressed;
+  corrupt.back() ^= 1;
+  store(corrupt);
+  CHECK(FileReader(false, data.size()).read(path).empty());
+  store(compressed.substr(0, 4));
+  CHECK(FileReader(false).read(path).empty());
+  // A complete input chunk must still drain the decoder's buffered output.
+  std::minstd_rand random(73);
+  std::string noise(65536, '\0');
+  for (char &byte : noise) byte = random() & 255;
+  bool exact_chunk = false;
+  for (size_t size = 65500; size <= noise.size(); ++size) {
+    const auto value = noise.substr(0, size), frame = compress(value);
+    if (frame.size() == 65536) {
+      store(frame);
+      CHECK(FileReader(false, value.size()).read(path) == value);
+      exact_chunk = true;
+      break;
+    }
+  }
+  REQUIRE(exact_chunk);
+  const std::string skippable("\x50\x2a\x4d\x18\x05\0\0\0hello", 13);
+  store(compressed + skippable);
+  CHECK(FileReader(false, data.size()).read(path) == data);
+  auto dictionary = compressed;
+  dictionary[4] |= 1;  // Frame declares a dictionary which this reader does not have.
+  dictionary.insert(6, 1, '\1');
+  store(dictionary);
+  CHECK(FileReader(false).read(path).empty());
+  auto window = compressed;
+  window[5] = '\x90';  // A 256 MiB window exceeds the decoder's existing default.
+  store(window);
+  CHECK(FileReader(false).read(path).empty());
+#ifdef __linux__
+  auto constrained = [&](auto check) {
+    const pid_t child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+      _exit(run_native_test([&]() {
+        size_t pages = 0;
+        std::ifstream("/proc/self/statm") >> pages;
+        REQUIRE(pages > 0);
+        // Force the cap reservation to fail without pressuring the host's RAM.
+        const rlim_t bytes = pages * sysconf(_SC_PAGESIZE) + 8 * 1024 * 1024;
+        const rlimit limit{bytes, bytes};
+        REQUIRE(setrlimit(RLIMIT_AS, &limit) == 0);
+        check();
+      }));
+    }
+    int status = 0;
+    REQUIRE(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  };
+  store(compressed);
+  constrained([&]() { CHECK(FileReader(false, 128 * 1024 * 1024).read(path) == data); });
+  store(corrupt);
+  constrained([&]() { CHECK(FileReader(false, 128 * 1024 * 1024).read(path).empty()); });
+  store(compress(std::string(24 * 1024 * 1024, '\x17')));
+  constrained([&]() { CHECK(FileReader(false, 128 * 1024 * 1024).read(path).empty()); });
+#endif
+  REQUIRE(unlink(path) == 0);
 }
 
 class ThrowingVideoDecoder : public VideoDecoder {
@@ -197,8 +444,12 @@ int main(int argc, char **argv) {
     test_route_ranges();
     test_replay_recorder_only_service();
     test_local_sources();
+    test_local_sources_reject_partial_locked_route();
     test_machine_camera_time();
+    test_large_filtered_log();
+    test_log_input_ownership();
     test_bounded_file_reader();
+    test_bounded_zstd_file_reader();
     test_decoder_exception_is_a_failed_frame();
     if (argc == 3 || argc == 4) {
       REQUIRE(argc == 3 || std::string(argv[3]) == "--hardware");

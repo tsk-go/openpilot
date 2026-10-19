@@ -136,9 +136,11 @@ def disarming_fault(events, CS, *, temporary_ui_process_failure: bool = False,
 
 
 class AolCardIntent:
-  def __init__(self, settings: AolSettings, *, explicit_latch: bool = False, lkas_button_supported: bool = True):
+  def __init__(self, settings: AolSettings, *, explicit_latch: bool = False, lkas_button_supported: bool = True,
+               independent_cruise_buttons: bool = False):
     self.settings = settings
     self.explicit_latch = explicit_latch
+    self.independent_cruise_buttons = independent_cruise_buttons
     self.lkas_button_supported = lkas_button_supported
     self.allowed_latch = False
     # Observational only: records the exact branch that changed True to False.
@@ -166,6 +168,10 @@ class AolCardIntent:
     self._held = {int(ButtonType.gapAdjustCruise): False}
     self._aux_cancel_tracker = ButtonTracker()
     self._aux_media_tracker = ButtonTracker()
+
+  @property
+  def main_action(self) -> int:
+    return self.settings.main_action
 
   @property
   def lkas_action(self) -> int:
@@ -278,7 +284,7 @@ class AolCardIntent:
         self.pause_longitudinal = False
 
     lkas_managed = self.lkas_action == AOL_TOGGLE
-    main_managed = self.settings.main_action == AOL_TOGGLE
+    main_managed = self.main_action == AOL_TOGGLE
     if self.explicit_latch and CS.accFaulted:
       self._record_latch_clear('acc_fault')
       self.allowed_latch = False
@@ -301,24 +307,41 @@ class AolCardIntent:
       self._distance_neutral_seen = not any(event.pressed for event in distance_events)
 
     if self.explicit_latch:
-      previously_held = self._main_held or self._lkas_held
+      independent_buttons = self.independent_cruise_buttons and (main_managed or lkas_managed)
+      # The opt-in is bound to existing HKG torque owners. Other physical
+      # owners keep their current event and native contracts.
+      main_toggle = not independent_buttons or main_managed
+      lkas_toggle = not independent_buttons or lkas_managed
+      previously_held = (self._main_held and main_toggle) or (self._lkas_held and lkas_toggle)
       cancel_pressed = False
       for event in CS.buttonEvents:
         button = int(event.type.raw)
         if button == int(ButtonType.mainCruise):
+          if (independent_buttons and event.pressed and not self._main_held and
+              button not in consumed_buttons and self.settings.enabled and not CS.accFaulted and not self._fault_inhibit):
+            self._perform(self.main_action if not main_managed else 0)
           self._main_held = bool(event.pressed)
         elif button == int(ButtonType.lkas):
+          if (independent_buttons and event.pressed and not self._lkas_held and
+              button not in consumed_buttons and self.settings.enabled and not CS.accFaulted and not self._fault_inhibit):
+            self._perform(self.lkas_action if not lkas_managed else 0)
           self._lkas_held = bool(event.pressed)
         elif button == int(ButtonType.cancel) and event.pressed:
           cancel_pressed = True
-      gesture_held = self._main_held or self._lkas_held
-      if not previously_held and gesture_held:
+      gesture_held = ((self._main_held and main_toggle and
+                       (not independent_buttons or int(ButtonType.mainCruise) not in consumed_buttons)) or
+                      (self._lkas_held and lkas_toggle and
+                       (not independent_buttons or int(ButtonType.lkas) not in consumed_buttons)))
+      if not previously_held and gesture_held and (not independent_buttons or not cancel_pressed):
         self._last_latch_edge_ns = now_ns
       if cancel_pressed:
-        self._record_latch_clear('cancel_press')
-        self.allowed_latch = False
+        # An unassigned cruise CANCEL cannot toggle, arm or renew independent
+        # lateral. Keep the existing withdrawal for configured CANCEL actions.
+        if not independent_buttons or any(self.settings.cancel_actions):
+          self._record_latch_clear('cancel_press')
+          self.allowed_latch = False
       elif not self._gesture_neutral_seen:
-        self._gesture_neutral_seen = not gesture_held
+        self._gesture_neutral_seen = not (self._main_held or self._lkas_held)
       elif not previously_held and gesture_held and self.settings.enabled and not CS.accFaulted and not self._fault_inhibit:
         # The physical gesture owns lateral intent even while ordinary cruise
         # is engaged. Dropping only the AOL latch leaves standard steering on.
@@ -339,7 +362,7 @@ class AolCardIntent:
       if button == int(ButtonType.lkas) and event.pressed:
         self._perform(self.lkas_action)
       elif button == int(ButtonType.mainCruise) and event.pressed:
-        self._perform(self.settings.main_action)
+        self._perform(self.main_action)
       elif button in self._held:
         if event.pressed:
           self._held[button] = True
@@ -371,7 +394,7 @@ class AolCardIntent:
         log.OnroadEvent.EventName.calibrationRecalibrating) for event in events)
     main = bool(CS.cruiseState.available)
     engaged = bool(CS.cruiseState.enabled or standard_enabled)
-    main_derived = not self.explicit_latch and self.lkas_action != AOL_TOGGLE and self.settings.main_action != AOL_TOGGLE
+    main_derived = not self.explicit_latch and self.lkas_action != AOL_TOGGLE and self.main_action != AOL_TOGGLE
     if not main_derived:
       self._calibration_rearm_required = False
     fresh_edge = ((main and not self._calibration_main) or (engaged and not self._calibration_engaged))

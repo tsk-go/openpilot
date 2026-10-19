@@ -4,6 +4,8 @@ Parent record() copies bounded typed metadata only. CAN decoding, encoder/filter
 steps and finite differences belong to the child or existing bounded4Hz probe.
 """
 
+from typing import cast
+
 from collections import OrderedDict
 from dataclasses import dataclass, asdict
 from types import SimpleNamespace
@@ -11,7 +13,8 @@ import math
 
 from openpilot.starpilot.flm.torque_eligibility import bounded_context_output
 from openpilot.starpilot.flm.clipping_quality import (
-  RECORDED_DEBT, STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, clipping_quality, debt_is_admitted, native_relief_is_admitted,
+  RECORDED_DEBT, STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY,
+  clipping_quality, debt_is_admitted, native_relief_is_admitted, zero_reference_relief_is_admitted,
   STRICT_IDENTIFICATION, NATIVE_SHADOW_IDENTIFICATION, identification_policy as validate_identification_policy,
 )
 
@@ -102,7 +105,8 @@ class EncoderBranch:
   def __init__(self, *, quality_contract=RECORDED_DEBT, identification_policy=STRICT_IDENTIFICATION):
     self.quality_contract = clipping_quality(quality_contract)
     self.identification_policy = validate_identification_policy(identification_policy)
-    if self.identification_policy == NATIVE_SHADOW_IDENTIFICATION and self.quality_contract not in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY):
+    if (self.identification_policy == NATIVE_SHADOW_IDENTIFICATION and
+        self.quality_contract not in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY)):
       raise ValueError('shadow identification requires combined quality proof')
     self.previous = None
     self.civic = None
@@ -173,7 +177,7 @@ class EncoderBranch:
         candidate_demand = source - honda_limited_source
         raw = int(np.interp(-honda_limited_source * witness.effective_max, witness.lookup_x, witness.lookup_y))
         admitted = debt_is_admitted(original_demand, reference_demand, candidate_demand, self.quality_contract)
-        if not admitted and self.quality_contract in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY) and not shadow and event.limited:
+        if not admitted and self.quality_contract in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY) and not shadow and event.limited:
           reference_raw = int(np.interp(-reference_limited * witness.effective_max, witness.lookup_x, witness.lookup_y))
           recorded_output = normalized_applied_command(witness)
           reference_output = normalized_applied_command(witness._replace(final_raw=reference_raw))
@@ -184,7 +188,13 @@ class EncoderBranch:
           admitted = (requested * witness.requested_torque > 0 and abs(requested) < abs(witness.requested_torque) and
             native_relief_is_admitted(witness.codec_input_torque, reference_source, source,
               recorded_output, reference_output, candidate_output, original_demand, reference_demand, candidate_demand))
-        if not admitted and self.quality_contract == EXACT_EMISSION_QUALITY and not actual and not shadow and event.limited:
+        if not admitted and self.quality_contract == ZERO_REFERENCE_QUALITY and not actual and not shadow and event.limited:
+          admitted = (witness.codec_id in EXACT_EMISSION_CODECS and witness.steer_requested is True and
+            type(raw) is int and type(reference_raw) is int and raw == reference_raw and
+            requested * witness.requested_torque > 0 and abs(requested) < abs(witness.requested_torque) and
+            zero_reference_relief_is_admitted(witness.codec_input_torque, reference_source, source,
+              recorded_output, reference_output, candidate_output, original_demand, reference_demand, candidate_demand))
+        if not admitted and self.quality_contract in (EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY) and not actual and not shadow and event.limited:
           admitted = exact_local_emission(witness, reference_raw, raw, original_demand, reference_demand, candidate_demand)
         if not shadow and (not original_demand or not actual and not admitted):
           raise ValueError('candidate encoder clipping regression')
@@ -213,10 +223,15 @@ class EncoderBranch:
           reference_demand = reference_request - reference_raw
         candidate_demand = requested_raw - raw
         admitted = debt_is_admitted(original_demand, reference_demand, candidate_demand, self.quality_contract)
-        if not admitted and self.quality_contract in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY) and not shadow and event.limited:
+        if not admitted and self.quality_contract in (STATE_ALIGNED_RELIEF, EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY) and not shadow and event.limited:
           admitted = native_relief_is_admitted(witness.unlimited_raw, reference_request, requested_raw,
             witness.final_raw, reference_raw, raw, original_demand, reference_demand, candidate_demand)
-        if not admitted and self.quality_contract == EXACT_EMISSION_QUALITY and not actual and not shadow and event.limited:
+        if not admitted and self.quality_contract == ZERO_REFERENCE_QUALITY and not actual and not shadow and event.limited:
+          admitted = (witness.codec_id in EXACT_EMISSION_CODECS and witness.steer_requested is True and
+            type(raw) is int and type(reference_raw) is int and raw == reference_raw and
+            zero_reference_relief_is_admitted(witness.unlimited_raw, reference_request, requested_raw,
+              witness.final_raw, reference_raw, raw, original_demand, reference_demand, candidate_demand))
+        if not admitted and self.quality_contract in (EXACT_EMISSION_QUALITY, ZERO_REFERENCE_QUALITY) and not actual and not shadow and event.limited:
           admitted = exact_local_emission(witness, reference_raw, raw, original_demand, reference_demand, candidate_demand)
         if not actual and not shadow and not admitted:
           raise ValueError('candidate encoder clipping regression')
@@ -234,7 +249,7 @@ class EncoderBranch:
     if witness.shape:
       from opendbc.car.honda.modified_civic_steering import get_civic_bosch_modified_steering_pressed
 
-      lpf, previous, filtered, was_pressed, speed, pressed, driver = shape
+      lpf, previous, filtered, was_pressed, speed, pressed, driver = cast(tuple[float, float, float, bool, float, bool, float], shape)
       filtered, pressed = get_civic_bosch_modified_steering_pressed(pressed, driver, float32(request), filtered, was_pressed)
       if pressed:
         raise ValueError('candidate driver override')

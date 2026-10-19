@@ -41,7 +41,7 @@ from openpilot.starpilot.ui.home_state import HomeMode, HomeState
 from openpilot.starpilot.ui.onroad_state import conditional_lead_from_message
 from openpilot.starpilot.ui.onroad_state import (AlertSize, BorderSignals, ObservationKind, OnroadAlert,
                                                 OnroadState, SpeedLimitObservation, is_personality_notice, speed_limit_from_message)
-from openpilot.starpilot.ui.unified_speed_presentation import displayed_adjusted_limit_mps, displayed_limit_mps, positive
+from openpilot.starpilot.ui.unified_speed_presentation import displayed_adjusted_limit_mps, displayed_limit_mps, positive, retaining_limit
 from openpilot.starpilot.ui.onroad_stopped_timer import StoppedTimer
 from openpilot.starpilot.ui.onroad_lane_alerts import lateral_lane_alert
 from openpilot.starpilot.ui.onroad_camera import ReverseDriverCamera
@@ -50,6 +50,9 @@ from openpilot.starpilot.ui.settings_state import Destination, DestinationAvaila
 from openpilot.starpilot.ui.shell import ShellMode, ShellSnapshot
 from openpilot.starpilot.ui.software_state import DownloadLabel, SoftwareRequest, SoftwareState
 from openpilot.starpilot.ui.toggles_state import Personality, ToggleKey, TogglesState
+
+
+SLC_SIGN_HOLD_NS = 150_000_000
 
 
 def _boot_time_ns() -> int:
@@ -559,36 +562,46 @@ class RuntimeSnapshotAdapter:
       cruise = None
     stock_cruise = bool(display_car_valid and
                         bool(getattr(getattr(display_car, "cruiseState", None), "enabled", False)) and
-                        cp is not None and (not cp.openpilotLongitudinalControl or cp.pcmCruise))
+                        cp is not None and not cp.openpilotLongitudinalControl)
     observation = speed_limit_from_message(slc) if slc is not None and (slc.enabled or slc.displayOnly) else SpeedLimitObservation()
     if slc is None and started:
       observation = SpeedLimitObservation(kind=ObservationKind.STALE)
     if mode != ShellMode.ONROAD or drive_key is None:
       self._slc_sign_cache = None
+    elif retaining_limit(observation):
+      self._slc_sign_cache = None
     elif observation.kind == ObservationKind.VALID and slc is not None:
-      if (observation.pending_speed_limit_mps is None and not observation.decision_id and
-          not bool(getattr(slc, 'hasPending', False))):
-        self._slc_sign_cache = (int(sm.logMonoTime['slcState']), drive_key,
-                                observation.session_id or '', observation)
+      shown_mps = displayed_limit_mps(observation)
+      if positive(shown_mps):
+        # Keep only what the sign shows: a proposal or action identity is never retained.
+        sign = replace(observation, speed_limit_mps=shown_mps, pending_speed_limit_mps=None, pending_source='none',
+                       decision_id=None, pending_adjusted_limit_mps=None, action_enabled=False)
+        self._slc_sign_cache = (int(sm.logMonoTime['slcState']), drive_key, observation.session_id or '', sign)
       else:
         self._slc_sign_cache = None
-    elif observation.kind == ObservationKind.UNKNOWN and slc is not None and self._slc_sign_cache is not None:
+    elif observation.kind != ObservationKind.VALID and slc is not None and self._slc_sign_cache is not None:
       stamp, previous_drive, session, previous = self._slc_sign_cache
       if (previous_drive == drive_key and session and session == str(getattr(slc, 'sessionId', '')) and
-          str(getattr(slc, 'observationKind', '')) == 'unknown' and str(getattr(slc, 'source', '')) == 'none' and
-          0 <= now_ns - stamp <= 150_000_000 and not bool(getattr(slc, 'hasPending', False)) and
+          0 <= now_ns - stamp <= SLC_SIGN_HOLD_NS and not bool(getattr(slc, 'hasPending', False)) and
           not getattr(slc, 'decisionId', 0)):
-        # Retain the displayed sign and adjusted number, without retaining a
-        # control target, acceptance or action identity during the gap.
+        # Bridge a brief source gap without retaining a control target, acceptance,
+        # action identity, or an obsolete limit for the rest of the drive.
         source = previous.accepted_source if positive(previous.accepted_speed_limit_mps) else previous.source
         observation = SpeedLimitObservation(kind=ObservationKind.VALID, source=source,
                                             speed_limit_mps=displayed_limit_mps(previous),
                                             offset_mps=previous.offset_mps, status='display_hold',
-                                            presentation_adjusted_limit_mps=displayed_adjusted_limit_mps(previous))
+                                            presentation_adjusted_limit_mps=displayed_adjusted_limit_mps(previous),
+                                            source_readings=observation.source_readings)
       else:
         self._slc_sign_cache = None
     else:
       self._slc_sign_cache = None
+    if (slc is not None and (slc.enabled or slc.displayOnly) and observation.kind != ObservationKind.VALID and
+        not retaining_limit(observation)):
+      # SLC is on but has no limit right now: keep the limit half of the card (as "–")
+      # instead of letting it come and go with the source.
+      observation = SpeedLimitObservation(kind=ObservationKind.STALE, source=observation.source, status=observation.status,
+                                          source_readings=observation.source_readings)
     # Temporary old StarPilot route replay shim. Retire by deleting this call
     # and its import; remaining cleanup is documented in
     # openpilot/starpilot/ui/old_starpilot_route_shim.py.

@@ -819,9 +819,12 @@ class TestHyundaiIoniq6Long(unittest.TestCase):
           self.assertEqual(self.safety.aol_get_permission_mask(), 1)  # independent lateral persists through brake
           self.assertTrue(self.safety.safety_rx_hook(self.packet(packer.make_can_msg(
             "CRUISE_BUTTONS", bus.ECAN, {"COUNTER": 6, "CRUISE_BUTTONS": 4}))))
-          self.assertEqual(self.safety.aol_get_permission_mask(), 0)
+          self.assertFalse(self.safety.get_controls_allowed())
+          self.assertEqual(self.safety.aol_get_permission_mask(), 1)  # Only claimed lateral survives CANCEL.
           self.safety.aol_set_host_request(1)
-          self.assertEqual(self.safety.aol_get_permission_mask(), 0)  # no stale latch after cancel
+          self.assertEqual(self.safety.aol_get_permission_mask(), 1)
+          self.safety.aol_set_host_request(0)
+          self.assertEqual(self.safety.aol_get_permission_mask(), 0)  # Explicit host withdrawal remains binding.
 
   def test_full_engagement_without_lkas_retains_only_lateral_after_brake(self):
     if self.release:
@@ -1040,7 +1043,8 @@ class TestHyundaiIoniq6Long(unittest.TestCase):
     self.assertEqual(self.safety.aol_get_permission_mask(), 1)
     self.assertTrue(self.safety.safety_rx_hook(self.packet(packer.make_can_msg(
       "CRUISE_BUTTONS", 1, {"COUNTER": 4, "CRUISE_BUTTONS": 4}))))
-    self.assertEqual(self.safety.aol_get_permission_mask(), 0)
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertEqual(self.safety.aol_get_permission_mask(), 1)  # Already claimed independent lateral.
     for counter, lda in ((5, 0), (6, 1)):
       self.assertTrue(self.safety.safety_rx_hook(self.packet(packer.make_can_msg(
         "CRUISE_BUTTONS", 1, {"COUNTER": counter, "LDA_BTN": lda}))))

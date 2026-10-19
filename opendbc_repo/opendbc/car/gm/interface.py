@@ -228,7 +228,7 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalActuatorDelay = 0.5
 
     if candidate == CAR.CHEVROLET_VOLT_CC:
-      # Manual identity only: observed inputs are prerequisites, never automatic identification.
+      # Require the complete source layout for either automatic or manual identity.
       required = {0xbe: 6, 0x3d1: 8, 0xc9: 8, 0x1e1: 7, 0x1f5: 8, 0x34a: 5, 0x1c4: 8, 0xbd: 7}
       admitted = not is_release and all(fingerprint[CanBus.POWERTRAIN].get(addr) == size for addr, size in required.items())
       ret.networkLocation = NetworkLocation.gateway
@@ -732,21 +732,26 @@ class CarInterface(CarInterfaceBase):
       cam = fingerprint.get(CanBus.CAMERA, {})
       be = pt.get(0xBE) in (6, 7, 8)
       f1 = 0xBE not in pt and pt.get(0xF1) == 6
-      removed = 0x320 not in cam
+      # Any known camera-owner frame rules out the removed-camera topology.
+      removed = not any(address in cam for address in (0x180, 0x320, 0x370))
+      camera_layout = removed or (cam.get(0x180) == 4 and cam.get(0x320) == 6 and
+                                  cam.get(0x370, 6) == 6)
       required = {0x184: 8, 0x34A: 5, 0x1E1: 7, 0x1C4: 8, 0xC9: 8, 0x3D1: 8, 0xBD: 7}
       sources = (be or f1) and all(pt.get(a) == n for a, n in required.items())
       ret.radarUnavailable = RADAR_HEADER_MSG not in fingerprint[CanBus.OBSTACLE] and CAMERA_DATA_HEADER_MSG not in fingerprint[CanBus.OBSTACLE]
       ret.flags = int(GMFlags.PEDAL_LONG | (GMFlags.NO_CAMERA if removed else 0) |
                       (GMFlags.NO_ACCELERATOR_POS_MSG if f1 else 0)) | (int(ret.flags) & int(GMFlags.HAS_BSM))
       ret.networkLocation = NetworkLocation.fwdCamera
-      ret.dashcamOnly = not sources or (not removed and (cam.get(0x180) != 4 or cam.get(0x320) != 6))
+      ret.dashcamOnly = not sources or not camera_layout
       ret.alphaLongitudinalAvailable = not ret.dashcamOnly and not is_release and pt.get(0x1F5) == 8
       ret.openpilotLongitudinalControl = ret.alphaLongitudinalAvailable
       ret.pcmCruise = False
       if not ret.dashcamOnly:
         ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.gm)]
-      ret.safetyConfigs[0].safetyParam = ((0xE600 if ret.openpilotLongitudinalControl else 0xE610) +
-                                          4 * int(not ret.radarUnavailable) + 2 * int(removed) + int(f1))
+        ret.safetyConfigs[0].safetyParam = ((0xE600 if ret.openpilotLongitudinalControl else 0xE610) +
+                                            4 * int(not ret.radarUnavailable) + 2 * int(removed) + int(f1))
+      else:
+        ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.noOutput)]
       ret.autoResumeSng = ret.openpilotLongitudinalControl
       ret.minEnableSpeed = -1.
       ret.stopAccel = -1.5

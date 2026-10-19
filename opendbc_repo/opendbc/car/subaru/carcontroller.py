@@ -23,6 +23,7 @@ class CarController(CarControllerBase):
     self.angle_was_active = False
     self.angle_override_frames = 0
     self.ascent_angle_initialized = False
+    self.ascent_es_distance_counter_last = None
     self.ascent_lkas_alert_counter_last = None
     self.angle_driver_override = False
     self.angle_handoff_active = False
@@ -187,7 +188,11 @@ class CarController(CarControllerBase):
         can_sends.append(subarucan.create_es_dashstatus(self.packer, self.frame // 10, CS.es_dashstatus_msg, CC.enabled,
                                                         self.CP.openpilotLongitudinalControl, CC.longActive, hud_control.leadVisible))
 
-        can_sends.append(subarucan.create_es_lkas_state(self.packer, self.frame // 10, CS.es_lkas_state_msg, CC.enabled, hud_control.visualAlert,
+        lkas_active = self.angle_was_active if self.CP.carFingerprint == CAR.SUBARU_ASCENT_2023 else CC.enabled
+        lkas_state_msg = CS.es_lkas_state_msg
+        if self.CP.carFingerprint == CAR.SUBARU_ASCENT_2023:
+          lkas_state_msg = dict(lkas_state_msg, LKAS_ACTIVE=int(lkas_active))
+        can_sends.append(subarucan.create_es_lkas_state(self.packer, self.frame // 10, lkas_state_msg, lkas_active, hud_control.visualAlert,
                                                         hud_control.leftLaneVisible, hud_control.rightLaneVisible,
                                                         hud_control.leftLaneDepart, hud_control.rightLaneDepart))
 
@@ -205,7 +210,12 @@ class CarController(CarControllerBase):
           can_sends.append(subarucan.create_es_distance(self.packer, self.frame // 5, CS.es_distance_msg, 0, pcm_cancel_cmd,
                                                         self.CP.openpilotLongitudinalControl, cruise_brake > 0, cruise_throttle))
       else:
-        if pcm_cancel_cmd:
+        cancel_frame_ready = True
+        if self.CP.carFingerprint == CAR.SUBARU_ASCENT_2023:
+          stock_counter = CS.es_distance_msg["COUNTER"]
+          cancel_frame_ready = stock_counter != self.ascent_es_distance_counter_last
+          self.ascent_es_distance_counter_last = stock_counter
+        if pcm_cancel_cmd and cancel_frame_ready:
           if not (self.CP.flags & SubaruFlags.HYBRID):
             bus = CanBus.alt if self.CP.flags & SubaruFlags.GLOBAL_GEN2 else CanBus.main
             can_sends.append(subarucan.create_es_distance(self.packer, CS.es_distance_msg["COUNTER"] + 1, CS.es_distance_msg, bus, pcm_cancel_cmd))

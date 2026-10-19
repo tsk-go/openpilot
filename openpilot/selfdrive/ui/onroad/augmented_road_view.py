@@ -1,4 +1,6 @@
 import numpy as np
+from openpilot.starpilot.ui.camera_selection import (selected_camera_stream, WIDE_CAM_MAX_SPEED as WIDE_CAM_MAX_SPEED,
+                                                    ROAD_CAM_MIN_SPEED as ROAD_CAM_MIN_SPEED)
 import pyray as rl
 from openpilot.cereal import log
 from openpilot.cereal.visionipc import VisionStreamType
@@ -17,6 +19,8 @@ OpState = log.SelfdriveState.OpenpilotState
 CALIBRATED = log.ExtrinsicsCalibration.Status.calibrated
 NARROW_ROAD_CAM = VisionStreamType.VISION_STREAM_NARROW_ROAD
 WIDE_CAM = VisionStreamType.VISION_STREAM_WIDE_ROAD
+DRIVER_CAM = VisionStreamType.VISION_STREAM_CABIN
+CAMERA_VIEW_AUTO, CAMERA_VIEW_DRIVER, CAMERA_VIEW_STANDARD, CAMERA_VIEW_WIDE, CAMERA_VIEW_NONE = range(5)
 DEFAULT_DEVICE_CAMERA = DEVICE_CAMERAS["tici", "ar0231"]
 
 BORDER_COLORS = {
@@ -25,8 +29,6 @@ BORDER_COLORS = {
   UIStatus.ENGAGED: rl.Color(0x16, 0x7F, 0x40, 0xFF),  # Green for engaged state
 }
 
-WIDE_CAM_MAX_SPEED = 5.0  # m/s (11 mph)
-ROAD_CAM_MIN_SPEED = 10.0  # m/s (22 mph)
 INF_POINT = np.array([1000.0, 0.0, 0.0])
 
 
@@ -48,12 +50,24 @@ class AugmentedRoadView(CameraView):
     self.alert_renderer = AlertRenderer()
     self.driver_state_renderer = DriverStateRenderer()
 
-  def render_camera_model_layer(self, rect: rl.Rectangle, *, road_style: dict | None = None,
+  def render_camera_model_layer(self, rect: rl.Rectangle, *, camera_view: int = CAMERA_VIEW_AUTO,
+                                reverse_driver: bool = False, road_style: dict | None = None,
                                 lead_display: tuple[bool, int, bool | None] | None = None, poll_camera: bool = True) -> None:
     """Draw the existing calibrated camera/model without stock HUD or alert."""
     if not ui_state.started and ui_state.replay_clock is None:
       return
-    self._switch_stream_if_needed(ui_state.sm)
+    if poll_camera and (camera_view == CAMERA_VIEW_DRIVER or reverse_driver):
+      self._ensure_connection()
+    target = self._switch_stream_if_needed(ui_state.sm, camera_view, reverse_driver)
+    if target is None:
+      rl.draw_rectangle_rec(rect, rl.BLACK)
+      return
+    driver_transition = DRIVER_CAM in (self.stream_type, target, self._target_stream_type)
+    if poll_camera and self._switching and driver_transition:
+      self._handle_switch()
+    if (target == DRIVER_CAM and DRIVER_CAM not in self.available_streams) or (driver_transition and self.stream_type != target):
+      rl.draw_rectangle_rec(rect, rl.BLACK)
+      return
     self._update_calibration()
     self._content_rect = rect
     style = road_style or {}
@@ -62,7 +76,8 @@ class AugmentedRoadView(CameraView):
     self.model_renderer.road_style = style
     self.model_renderer.lead_display = lead_display
     gui_app.measure_frame_phase("camera", CameraView._render, self, rect, poll_camera=poll_camera)
-    gui_app.measure_frame_phase("model", self.model_renderer.render, rect)
+    if target != DRIVER_CAM:
+      gui_app.measure_frame_phase("model", self.model_renderer.render, rect)
 
   def _render(self, rect, *, poll_camera: bool = True):
     # Only render when system is started to avoid invalid data access
@@ -125,27 +140,25 @@ class AugmentedRoadView(CameraView):
                                rect.width - 2 * UI_BORDER_SIZE, rect.height - 2 * UI_BORDER_SIZE)
     rl.draw_rectangle_rounded_lines_ex(border_rect, border_roundness, 10, UI_BORDER_SIZE, border_color)
 
-  def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
-      v_ego = sm['carState'].vEgo
-      if v_ego < WIDE_CAM_MAX_SPEED:
-        target = WIDE_CAM
-      elif v_ego > ROAD_CAM_MIN_SPEED:
-        target = NARROW_ROAD_CAM
-      else:
-        # Hysteresis zone - keep current stream
-        target = self.stream_type
-    else:
-      target = NARROW_ROAD_CAM
+  def _cancel_pending_switch(self) -> None:
+    self._target_client = None
+    self._target_stream_type = None
+    self._switching = False
 
+  def _switch_stream_if_needed(self, sm, camera_view: int = CAMERA_VIEW_AUTO,
+                               reverse_driver: bool = False) -> VisionStreamType | None:
+    target = selected_camera_stream(camera_view, reverse_driver=reverse_driver, current=self.stream_type,
+      available=self.available_streams, experimental=sm['selfdriveState'].experimentalMode,
+      speed=sm['carState'].vEgo, narrow=NARROW_ROAD_CAM, wide=WIDE_CAM, driver=DRIVER_CAM)
+    if target is None or target == DRIVER_CAM and DRIVER_CAM not in self.available_streams:
+      self._cancel_pending_switch()
+      return target
     if self._switching and self._target_stream_type != target:
-      # A conditional-mode or speed change can revoke a switch before its
-      # first frame arrives. Never complete that now-unwanted camera view.
-      self._target_client = None
-      self._target_stream_type = None
-      self._switching = False
+      # Revoke a queued Auto/temporary view before its first frame can paint.
+      self._cancel_pending_switch()
     if self.stream_type != target:
       self.switch_stream(target)
+    return target
 
   def _update_calibration(self):
     # Update device camera if not already set
@@ -171,6 +184,8 @@ class AugmentedRoadView(CameraView):
       self.view_from_wide_calib = view_frame_from_device_frame @ wide_from_device @ device_from_calib
 
   def _calc_frame_matrix(self, rect: rl.Rectangle) -> np.ndarray:
+    if self.stream_type == DRIVER_CAM:
+      return CameraView._calc_frame_matrix(self, rect)
     # Check if we can use cached matrix
     cache_key = (
       ui_state.sm.recv_frame['extrinsicsCalibration'],

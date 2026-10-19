@@ -207,18 +207,26 @@ class IoniqAvailabilityTests(unittest.TestCase):
              brake=False, steering=False, gas=False, user_disable=False, observed_state=None, authority_unavailable=False, companion=True,
              long_allowed=True, pause_long=False, state_stamp=None, intent_message=None, offset_ns=0,
              native_request_lat=True, native_request_long=None, native_valid=True, panda_fault=False, panda_controls_allowed=None,
-             critical_event=None, calibrated=True, car_output_valid=True, relay_fault=False):
+             critical_event=None, calibrated=True, car_output_valid=True, relay_fault=False,
+             car_state_message=None, car_output_message=None, authority_message=None):
       now = base + tick * 10_000_000 + offset_ns
       clock.return_value = now
       if seconds is not None:
         seconds.return_value = now / 1e9
-      state = car_state(brake=brake) if observed_state is None else observed_state
-      state.cruiseState.available = True
-      state.steeringPressed, state.gasPressed = steering, gas
+      if car_state_message is None:
+        state = car_state(brake=brake) if observed_state is None else observed_state
+        state.cruiseState.available = True
+        state.steeringPressed, state.gasPressed = steering, gas
+      else:
+        # Opt-in producer-envelope path: do not reconstruct/modify raw state.
+        state = car_state_message.carState
       if panda_controls_allowed is None:
         panda_controls_allowed = full_op if native_request_long is None else native_request_long
-      state_event = messaging.new_message('carState', valid=True, logMonoTime=now if state_stamp is None else state_stamp)
-      state_event.carState = state
+      if car_state_message is None:
+        state_event = messaging.new_message('carState', valid=True, logMonoTime=now if state_stamp is None else state_stamp)
+        state_event.carState = state
+      else:
+        state_event = car_state_message
       recv.return_value = None if timeout else state_event.as_reader()
       frames = []
       for service in ('deviceState', 'driverMonitoringState', 'extrinsicsCalibration', 'modelV2'):
@@ -241,6 +249,8 @@ class IoniqAvailabilityTests(unittest.TestCase):
         if relay_fault:
           panda.faults = ['relayMalfunction']
       frames.append(pandas.as_reader())
+      if car_output_message is not None:
+        frames.append(car_output_message.as_reader())
       intent_ns = base if old_intent else now
       intent = messaging.new_message('aolIntentWire', 0, valid=True, logMonoTime=intent_ns)
       intent.aolIntentWire = encode_intent(IntentState('authority-card', tick + 1, intent_ns, intent_ns,
@@ -258,7 +268,9 @@ class IoniqAvailabilityTests(unittest.TestCase):
                     cp.alternativeExperience, panda_controls_allowed, panda_fault, False,
                     1 if relay_fault else 0)
           for index, config in enumerate(cp.safetyConfigs)) if genuine_events else ()))
-      if companion:
+      if authority_message is not None:
+        frames.append(authority_message.as_reader())
+      elif companion:
         authority = messaging.new_message('starpilotCarState', valid=companion != 'invalid',
                                           logMonoTime=now - 1 if companion == 'wrong_stamp' else now)
         authority.starpilotCarState.sourceCarStateMonoTime = now - 1 if companion == 'wrong_source' else now
@@ -283,9 +295,15 @@ class IoniqAvailabilityTests(unittest.TestCase):
       model = messaging.new_message('modelV2', valid=True, logMonoTime=now)
       model.modelV2 = next(message.modelV2 for message in control_frames if message.which() == 'modelV2')
       model.modelV2.action.desiredCurvature = 0.
-      control_state = messaging.new_message('carState', valid=sd.conditional_car_state_valid,
-                                            logMonoTime=sd.aol_car_state_log_ns)
-      control_state.carState = sd.CS_prev
+      if car_state_message is None:
+        control_state = messaging.new_message('carState', valid=sd.conditional_car_state_valid,
+                                              logMonoTime=sd.aol_car_state_log_ns)
+        control_state.carState = sd.CS_prev
+      else:
+        control_state = car_state_message
+      if car_output_message is not None:
+        control_frames = [sample for sample in control_frames if sample.which() != 'carOutput']
+        control_frames.append(car_output_message.as_reader())
       replaced = ('carState', 'aolSafetyWire', 'modelV2', 'aolAxisState', 'selfdriveState')
       controls.sm.update_msgs(now / 1e9, [message for message in control_frames if message.which() not in replaced] +
                              [control_state.as_reader(), native.as_reader(), model.as_reader(),

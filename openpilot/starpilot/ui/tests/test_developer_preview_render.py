@@ -10,6 +10,7 @@ import pyray as rl
 
 from openpilot.starpilot.ui.developer_preview import OnroadVisualPreview
 from openpilot.starpilot.ui.onroad import CornerHintCache, OnroadView
+from openpilot.starpilot.ui.onroad_cem_gauge import AetherGauge, IndicatorType
 from openpilot.starpilot.ui.onroad_navigation_favorites import NavigationFavorites
 from openpilot.starpilot.ui.onroad_compact_widgets import MiciSidebarWidgets
 from openpilot.starpilot.ui.onroad_conditional import status as conditional_status
@@ -108,11 +109,12 @@ class DeveloperPreviewRenderTests(unittest.TestCase):
         self.assertTrue(any('SYNTHETIC REPLAY PREVIEW' in text for text in drawn))
         self.assertFalse(any('CEM PREVIEW' in text or 'CURVE PREVIEW' in text for text in drawn))
 
-  def test_large_nonalert_draws_both_preview_labels_without_real_curve(self):
+  def test_large_nonalert_draws_canonical_gauge_and_preview_labels_without_real_curve(self):
     view = OnroadView.__new__(OnroadView)
     fonts = Mock()
     fonts.profile = Profile.LARGE
     view.fonts = fonts
+    view.cem_gauge = AetherGauge(fonts)
     view.navigation_favorites = NavigationFavorites(fonts)
     view.camera_layer = None
     view.background_layer = None
@@ -135,16 +137,19 @@ class DeveloperPreviewRenderTests(unittest.TestCase):
          patch('openpilot.starpilot.ui.onroad.rl.draw_rectangle_rounded'), \
          patch('openpilot.starpilot.ui.onroad.rl.draw_rectangle_rounded_lines_ex'), \
          patch('openpilot.starpilot.ui.onroad.render_corner_hint'), \
-         patch('openpilot.starpilot.ui.onroad.draw_curve_road_icon') as curve_icon, \
-         patch('openpilot.starpilot.ui.onroad.draw_stop_light_icon') as stop_icon, \
+         patch.object(view.cem_gauge, '_render_unified_road') as road, \
          patch.object(view, '_slc_actions'):
       view.render(state())
+      road.assert_called_once()
+      self.assertEqual(road.call_args.args[3].indicator_type, IndicatorType.ROAD_CURVE)
+      self.assertEqual(road.call_args.args[3].indicator_value, .0115)
+      road.reset_mock()
       view.render(replace(state(), visual_preview=OnroadVisualPreview('STOP LIGHT', None)))
-    curve_icon.assert_called_once()
-    stop_icon.assert_called_once()
+    road.assert_called_once()
+    self.assertEqual(road.call_args.args[3].indicator_type, IndicatorType.STOP_LIGHT)
     drawn = [call.args[0] for call in fonts.draw.call_args_list]
     self.assertIn('CURVE PREVIEW', drawn)
-    self.assertIn('CEM PREVIEW CURVE', drawn)
+    self.assertFalse(any(text.startswith(('CEM PREVIEW', 'CCM PREVIEW')) for text in drawn))
     self.assertIn('SYNTHETIC REPLAY PREVIEW', drawn)
     self.assertIn('CEM + CSC', drawn)
 

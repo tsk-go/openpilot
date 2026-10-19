@@ -160,6 +160,21 @@ def test_early_reason_is_recorded_without_preparation():
   assert not any(event['stage'] == 'preparation_hooks' for event in trace.events)
 
 
+def test_current_compositor_does_not_require_a_placement_hook(monkeypatch):
+  initialize = Compositor.__init__
+  def without_placement(core):
+    initialize(core)
+    del core.placement
+  monkeypatch.setattr(Compositor, '__init__', without_placement)
+  trace = diagnostic.Trace()
+  module = NS(Compositor=Compositor, MediaMux=Output, MediaStore=Output, ReplayFramePublisher=Output,
+              FRAME_INTERVAL=.05, time=diagnostic.time)
+  with diagnostic.instrument(module, trace):
+    core = Compositor()
+    assert core.draw(2, 0., 100)
+  assert trace.outcomes == {'accepted': 1}
+
+
 def test_unchanged_worker_does_not_invent_rejection_reasons(monkeypatch):
   monkeypatch.delattr(Compositor, '_draw_rejection')
   monkeypatch.delattr(Compositor, '_prepare')

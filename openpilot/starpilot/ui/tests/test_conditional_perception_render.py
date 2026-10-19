@@ -7,6 +7,7 @@ import pyray as rl
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.ui.conditional_status import ConditionalDisplay
 from openpilot.starpilot.ui.onroad import OnroadView, axis_status_color
+from openpilot.starpilot.ui.onroad_cem_gauge import AetherGauge, IndicatorType
 from openpilot.starpilot.ui.onroad_compact_widgets import MiciSidebarWidgets
 from openpilot.starpilot.ui.onroad_conditional import stop_active
 from openpilot.starpilot.ui.onroad_state import OnroadState, SpeedLimitObservation
@@ -35,6 +36,7 @@ def test_large_aol_light_uses_same_perception_without_control_authority():
   view = OnroadView.__new__(OnroadView)
   view.fonts = Mock(profile=Profile.LARGE)
   view.fonts.measure.return_value = NS(width=100, height=30)
+  view.cem_gauge = AetherGauge(view.fonts)
   view.navigation_favorites = onroad.NavigationFavorites(view.fonts)
   view.camera_layer = view.background_layer = view.extra_overlays = None
   view.projection_viewport = None
@@ -51,6 +53,10 @@ def test_large_aol_light_uses_same_perception_without_control_authority():
     stack.enter_context(patch.object(onroad.clip, 'end_scissor_mode'))
     stack.enter_context(patch.object(onroad, 'render_corner_hint'))
     stack.enter_context(patch.object(onroad, 'render_glow'))
-    light = stack.enter_context(patch.object(onroad, 'draw_stop_light_icon'))
-    view._large(aol_light())
+    light = stack.enter_context(patch.object(view.cem_gauge, '_render_unified_road'))
+    state = aol_light()
+    view._large(state)
   light.assert_called_once()
+  assert light.call_args.args[3].indicator_type is IndicatorType.STOP_LIGHT
+  assert not state.longitudinal_active and not stop_active(state)
+  assert (axis_status_color(state).r, axis_status_color(state).g, axis_status_color(state).b) == (10, 186, 181)

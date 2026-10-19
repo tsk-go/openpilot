@@ -6,6 +6,7 @@ from openpilot.starpilot.flm.adaptive_profile import Result, evaluate, loss
 from openpilot.starpilot.flm.event_controller_replay import POLICY
 
 TRIAL_STEP = .005
+NATIVE_FEASIBILITY_SCALES = (1., .5, .25, .125, .0625, .03125, .015625, .0078125)
 
 
 def _lower(values):
@@ -17,7 +18,7 @@ def _lower(values):
 
 
 def evaluate_event(identity, parameters, blocks, *, episodes, now_ns, required_cohorts, response_revision,
-                   sequence=1, ridge=.01, prior=None, effect_envelope=None):
+                   sequence=1, ridge=.01, prior=None, effect_envelope=None, native_feasible=None):
   """Actual fit boundary; caller reconstructs episodes from exact child trace.
 
   An episode crossing train/heldout boundaries is rejected, not counted twice.
@@ -68,6 +69,26 @@ def evaluate_event(identity, parameters, blocks, *, episodes, now_ns, required_c
                    for old, target in zip(reference, fitted.profile.coefficients, strict=True))
   if proposal == reference:
     return Result('collecting', 'no_identifiable_event_trial')
+  if native_feasible is not None:
+    # The direction was fitted ONCE on train. Existing ridge-heldout acceptance
+    # above remains a conservative preliminary gate, never a direction selector.
+    # Select ONLY by original whole native/source/quality/slew feasibility; no
+    # target, sample loss or heldout gain is supplied to this callback.
+    delta = tuple(target - old for old, target in zip(reference, proposal, strict=True))
+    for scale in NATIVE_FEASIBILITY_SCALES:
+      candidate = tuple(old + scale * step for old, step in zip(reference, delta, strict=True))
+      if candidate == reference:
+        continue  # Finite grid underflow cannot manufacture a neutral profile.
+      feasible = native_feasible(candidate)
+      if type(feasible) is not bool:
+        return Result('unavailable', 'event_native_feasibility_contract')
+      if feasible:
+        proposal = candidate
+        break
+    else:
+      return Result('collecting', 'event_no_native_feasible_scale')
+    # This selected proposal is now frozen. ALL following tiny-loss/heldout
+    # checks run once; failure MUST NOT retry a smaller scale.
   heldout = blocks[split:]
   improvements = []
   for cohort in sorted(required_cohorts):

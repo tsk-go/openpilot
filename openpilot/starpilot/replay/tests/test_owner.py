@@ -269,6 +269,47 @@ def test_restart_cleans_only_marked_dead_sessions(owner):
       shutil.rmtree(ipc)
 
 
+@pytest.mark.parametrize('flattened', [False, True])
+@pytest.mark.parametrize('arguments,birth_matches,group_matches,owner_alive,error', [
+  (['-m', 'openpilot.starpilot.replay.render'], True, True, False, None),
+  (['-m', 'tools.diagnostics.replay_render'], True, True, False, None),
+  (['-m', 'other.openpilot.starpilot.replay.render'], True, True, False, 'stop_unconfirmed'),
+  (['-m', 'openpilot.starpilot.replay.render.extra'], True, True, False, 'stop_unconfirmed'),
+  (['--argument', 'openpilot.starpilot.replay.render'], True, True, False, 'stop_unconfirmed'),
+  (['-c', 'unrelated', '-m', 'openpilot.starpilot.replay.render'], True, True, False, 'stop_unconfirmed'),
+  (['-m', 'tools.diagnostics.replay_render'], False, True, False, 'stop_unconfirmed'),
+  (['-m', 'tools.diagnostics.replay_render'], True, False, False, 'stop_unconfirmed'),
+  (['-m', 'tools.diagnostics.replay_render'], True, True, True, 'busy'),
+  (["'malformed"], True, True, False, 'stop_unconfirmed'),
+])
+def test_recovery_requires_known_invocation_and_original_identity(
+    owner, monkeypatch, flattened, arguments, birth_matches, group_matches, owner_alive, error):
+  value, _, _, _ = owner
+  directory = value.root / 'sessions' / ('f' * 32)
+  directory.mkdir(mode=0o700)
+  old_owner, worker = 2**30, 2**30 + 1
+  (directory / 'session.json').write_text(json.dumps({'version': 1, 'ownerPid': old_owner, 'ownerBirth': 111,
+                                                    'workerPid': worker, 'workerBirth': 222}))
+  monkeypatch.setattr('openpilot.starpilot.replay.owner._process_birth',
+                      lambda pid: (111 if owner_alive else None) if pid == old_owner else (222 if birth_matches else 223))
+  monkeypatch.setattr('openpilot.starpilot.replay.owner._group_active', lambda _: False)
+  argv = ['/usr/local/venv/bin/python3', *arguments, '--session-dir', str(directory)]
+  # The device's process title was one space-separated field followed by NUL.
+  command = ((' ' if flattened else '\0').join(argv) + '\0').encode()
+  original_read = Path.read_bytes
+  monkeypatch.setattr(Path, 'read_bytes', lambda path: command if path == Path(f'/proc/{worker}/cmdline') else original_read(path))
+  monkeypatch.setattr('openpilot.starpilot.replay.owner.os.getpgid', lambda pid: worker if group_matches else worker + 1)
+  killed = []
+  monkeypatch.setattr('openpilot.starpilot.replay.owner.os.killpg', lambda pid, sig: killed.append((pid, sig)))
+  if error:
+    with pytest.raises(Rejected) as caught:
+      value.recover()
+    assert caught.value.code == error and not killed and directory.exists()
+  else:
+    value.recover()
+    assert killed == [(worker, 9)] and not directory.exists()
+
+
 def test_real_authority_requires_fresh_parked_no_output_evidence(tmp_path, monkeypatch):
   mono, boot = 1_000_000_000_000, 1_120_000_000_000
   monkeypatch.setattr('openpilot.starpilot.replay.owner.time.monotonic_ns', lambda: mono)
@@ -538,17 +579,20 @@ def test_storage_symlink_is_never_repurposed(tmp_path):
 
 
 def test_media_batch_keeps_owner_and_authority_checks(owner):
-  from openpilot.starpilot.replay.media import MediaStore
+  from openpilot.starpilot.replay.media import MediaStore, web_media_dir
   value, _, allowed, _ = owner
   state = start(value)
   wait_for(lambda: value.status['state'] == 'paused')
-  media = MediaStore(value.session_dir, state['sessionId'], 1280, 640)
+  directory = web_media_dir(state['sessionId'])
+  directory.mkdir(mode=0o700)
+  media = MediaStore(directory, state['sessionId'], 1280, 640)
   media.begin(1, 'avc1.42c01f', b'init')
   media.publish(b'first', position=0., keyframe=True)
   media.publish(b'second', position=.05, keyframe=False)
   value.status.update(target='web', mediaReady=True)
   request = {'op': 'media', 'sessionId': state['sessionId'], 'clientId': CLIENT, 'epoch': 1, 'sequence': 1, 'count': 8}
   assert [row['sequence'] for row in value.dispatch(request)['fragments']] == [1, 2]
+  assert not (value.session_dir / 'media.json').exists()
   for invalid in (0, 9, True):
     with pytest.raises(Rejected, match='invalid request'):
       value.dispatch({**request, 'count': invalid})
@@ -559,6 +603,8 @@ def test_media_batch_keeps_owner_and_authority_checks(owner):
   allowed[0] = False
   with pytest.raises(Rejected, match='not offroad'):
     value.dispatch(request)
+  wait_for(lambda: value.worker is None)
+  assert not directory.parent.exists()
 
 
 def test_complete_segment_mapping_fits_worker_protocol(owner, tmp_path):

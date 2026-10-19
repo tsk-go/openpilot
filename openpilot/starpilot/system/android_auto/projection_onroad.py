@@ -125,6 +125,9 @@ class ProjectionOnroad:
     self.layout_watcher = layout_watcher
     self.native_focus = native_focus or (lambda: None)
     self.bookmark = lambda: False
+    # Set by current_car_ui to publish a validated speed-limit action; absent, the buttons draw but do nothing.
+    self.slc_action = lambda request: False
+    self._slc_input = None
     self.camera_stream = None  # the camera stream the last frame drew, or None
     self.native = dependencies or native_dependencies()
     native = self.native
@@ -147,6 +150,11 @@ class ProjectionOnroad:
       self._monitor_pair = None
       self._monitor_pair_ns = None
       self.onroad.driver_monitor_layer = self._driver_monitor_layer
+      from openpilot.starpilot.ui.onroad_state import OnroadInput
+      def emit_slc(request) -> None:
+        self.slc_action(request)
+      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE)
+      self.onroad.pressed_action = lambda: self._slc_input.pressed_action
       self.pip = None
       self._pip_saved = None
       self._pip_read_ns = None
@@ -201,7 +209,9 @@ class ProjectionOnroad:
     appearance = getattr(state, 'appearance', None)
     lead_display = ((appearance.show_lead_indicator, int(appearance.lead_info_mode), appearance.lead_info_metric)
                     if appearance is not None else (False, 0, None))
-    self.camera.render_camera_model_layer(rect, road_style=state.customization['roadColors']['large'], lead_display=lead_display)
+    self.camera.render_camera_model_layer(rect, camera_view=state.appearance.camera_view,
+                                          reverse_driver=state.reverse_driver_camera,
+                                          road_style=state.customization['roadColors']['large'], lead_display=lead_display)
     # The camera can switch narrow/wide while rendering. Pace the stream actually
     # drawn, not the previous selection (whose next frame may arrive later).
     self.camera_stream = self.camera.stream_type
@@ -386,6 +396,9 @@ class ProjectionOnroad:
       now_ns = time.monotonic_ns()
       timer_enabled = bool((self.customization or {}).get('widgets', {}).get('stopped_timer', {}).get('enabled', False))
       state = self.adapter.build(self.native.shell_mode.ONROAD, now_ns=now_ns, stopped_timer_enabled=timer_enabled).onroad
+      # Touch hit-tests read viewport_width; the view draws at the car canvas width (1920 for a 1280x720 head unit).
+      if state.viewport_width != self.width:
+        state = replace(state, viewport_width=self.width)
       if self.customization is not None:
         from openpilot.starpilot.system.android_auto.projection_layout import projection_customization
         if state.customization is not self._base_customization:
@@ -395,8 +408,7 @@ class ProjectionOnroad:
           # The car screen's display options live in the AA layout, not the comma's settings.
           self._projection_appearance = self._own_appearance(state.appearance)
           self._base_appearance = state.appearance
-        state = replace(state, customization=self._projection_customization, appearance=self._projection_appearance,
-                        reverse_driver_camera=False)
+        state = replace(state, customization=self._projection_customization, appearance=self._projection_appearance)
       self._state = self._with_certificate_notice(state, now_ns)
       self.onroad.render(self._state)
       self.fonts.draw('StarPilot', self.native.font_role.BRAND, 30, self.width - 210, self.height - 90)
@@ -421,6 +433,10 @@ class ProjectionOnroad:
         if self.favorites is not None:
           self.favorites.cancel()
         continue
+      if self._slc_touch(event.kind, x, y):
+        if self.favorites is not None:
+          self.favorites.cancel()
+        continue
       if self.favorites is None:
         continue
       if self._state is None or not self.native.ui_state.started:
@@ -428,8 +444,30 @@ class ProjectionOnroad:
         continue
       self.favorites.touch(event.kind, x, y, self._state, self.native.ui_state.started_frame)
 
+  def _slc_touch(self, kind, x, y) -> bool:
+    """Speed-limit Apply/Keep/Use-limit taps; True while one owns the touch."""
+    gesture = self._slc_input
+    if gesture is None:
+      return False
+    state = self._state
+    if kind == 'cancel' or not hasattr(state, 'speed_limit') or not self.native.ui_state.started:
+      claimed = gesture.claimed
+      gesture.cancel()
+      return claimed
+    if kind == 'down':
+      gesture.press(x, y, state)
+    elif kind == 'move':
+      gesture.move(x, y, state)
+    elif kind == 'up':
+      claimed = gesture.claimed
+      gesture.release(x, y, state)
+      return claimed
+    return gesture.claimed
+
   def cancel_touch(self):
     self.exit.cancel()
+    if self._slc_input is not None:
+      self._slc_input.cancel()
     if self.favorites is not None:
       self.favorites.cancel()
 

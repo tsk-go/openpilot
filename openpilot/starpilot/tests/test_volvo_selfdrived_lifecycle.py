@@ -5,7 +5,9 @@ exercise generic fault handling, not undocumented physical EPS decoding.
 """
 import os
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
+from typing import NoReturn, cast
 from unittest.mock import patch
 
 import pytest
@@ -184,7 +186,7 @@ def test_actual_selfdrived_fault_clear_does_not_reengage_without_pcm_edge(identi
         if lib.safety_config_valid() and fresh_panda:
           break
       else:
-        pytest.fail('Native RX and a fresh healthy Panda receipt did not recover within one source period')
+        cast(Callable[[str], NoReturn], pytest.fail)('Native RX and a fresh healthy Panda receipt did not recover within one source period')
       assert not sd.enabled
       _, command = cycle(True)
       assert sd.enabled and sd.active and command.latActive

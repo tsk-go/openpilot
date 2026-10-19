@@ -154,8 +154,58 @@ class Machine:
 
 @unittest.skipUnless(BINARY.is_file() and os.name == "posix", "build the replay test binary first")
 class TestMachine(unittest.TestCase):
-  def test_preloaded_seek_waits_for_next_segment_before_publishing_snapshot(self):
-    engine = Machine([(n, [60 * n + .1, 60 * n + .2], True) for n in range(3)], compressed=True)
+  @unittest.skipUnless(Path('/proc/self/statm').is_file(), 'requires Linux RSS accounting')
+  def test_seek_releases_old_logs_before_the_new_target_is_ready(self):
+    engine = Machine([(n, [60 * n + .1, 60 * n + .2], True) for n in range(6)], compressed=True)
+    engine.command.insert(2, '--preload-seek')
+    padding = log.Event.new_message(logMonoTime=MONO)
+    padding.logMessage = 'x' * (64 * 1024 * 1024)
+    padding = padding.to_bytes()
+    path = engine.routes / '00000001--1234567890--0' / 'rlog.bz2'
+    path.write_bytes(bz2.compress(bz2.decompress(path.read_bytes()) + padding))
+    del padding
+    opened, release, enabled = (engine.root / name for name in ('opened', 'release', 'enabled'))
+    target_log = engine.routes / '00000001--1234567890--4' / 'rlog.bz2'
+    wrapper = engine.root / 'python3'
+    wrapper.write_text(f"""#!{sys.executable}
+import os
+from pathlib import Path
+import sys
+import time
+if '-m' in sys.argv and 'decompress' in sys.argv and Path({str(enabled)!r}).exists():
+  source = next((p for p in sys.argv if p.startswith('/proc/self/fd/')), None)
+  if source and os.stat(source).st_ino == os.stat({str(target_log)!r}).st_ino:
+    Path({str(opened)!r}).touch()
+    deadline = time.monotonic() + 5
+    while not Path({str(release)!r}).exists() and time.monotonic() < deadline:
+      time.sleep(.01)
+os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+""")
+    wrapper.chmod(0o700)
+    engine.env['PATH'] = str(engine.root) + os.pathsep + os.environ['PATH']
+    def rss():
+      return int(Path(f'/proc/{engine.process.pid}/statm').read_text().split()[1]) * os.sysconf('SC_PAGESIZE')
+    with engine:
+      engine.wait(lambda value: value['state'] == 'paused')
+      before = rss()
+      enabled.touch()
+      try:
+        engine.process.stdin.write(json.dumps({'op': 'seek', 'requestId': 'b1', 'position': 240.1}) + '\n')
+        engine.process.stdin.flush()
+        deadline = time.monotonic() + 3
+        while (not opened.exists() or rss() > before - 32 * 1024 * 1024) and time.monotonic() < deadline:
+          time.sleep(.01)
+        self.assertTrue(opened.exists())
+        self.assertLess(rss(), before - 32 * 1024 * 1024, 'old event snapshots must release before the new target is ready')
+      finally:
+        release.touch()
+      ready = engine.wait(lambda value: value.get('lastRequestId') == 'b1')
+      self.assertEqual(ready['state'], 'paused')
+      self.assertAlmostEqual(ready['position'], 240.1)
+
+  def test_preloaded_seek_prepares_paused_output_but_holds_playback_until_ready(self):
+    from openpilot.tools.replay.display_clock import DisplayClockReader
+    engine = Machine([(n, [60 * n + .1, 60 * n + .2, 60 * n + 1], True) for n in range(3)], compressed=True)
     engine.command.insert(2, '--preload-seek')
     opened, release, enabled = (engine.root / name for name in ('opened', 'release', 'enabled'))
     next_log = engine.routes / '00000001--1234567890--2' / 'rlog.bz2'
@@ -178,7 +228,8 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
     wrapper.chmod(0o700)
     engine.env['PATH'] = str(engine.root) + os.pathsep + os.environ['PATH']
     with engine:
-      initial = engine.wait(lambda value: value['state'] == 'paused')
+      engine.wait(lambda value: value['state'] == 'paused')
+      clock = DisplayClockReader(engine.env)
       enabled.touch()
       try:
         engine.process.stdin.write(json.dumps({'op': 'seek', 'requestId': 'b1', 'position': 60.1}) + '\n')
@@ -187,23 +238,35 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
         while not opened.exists() and time.monotonic() < deadline:
           time.sleep(.01)
         self.assertTrue(opened.exists())
+        ready = engine.wait(lambda value: value.get('lastRequestId') == 'b1', timeout=1)
+        self.assertEqual(ready['state'], 'paused')
+        waiting = engine.command_status('pause', 'b2', paused=False)
+        self.assertEqual(waiting['state'], 'buffering')
+        self.assertFalse(waiting['paused'])
+        self.assertAlmostEqual(waiting['position'], 60.1)
+        sample = clock.sample()
+        self.assertTrue(sample.valid and sample.paused)
         observed = []
         deadline = time.monotonic() + .3
         while time.monotonic() < deadline:
           with contextlib.suppress(queue.Empty):
             value = engine.statuses.get(timeout=.05)
-            if value.get('epoch') == initial['epoch'] + 1:
-              observed.append(value['state'])
+            observed.append((value['state'], value['position']))
         self.assertTrue(observed)
-        self.assertEqual(set(observed), {'seeking'})
+        self.assertEqual(set(observed), {('buffering', waiting['position'])})
+        self.assertEqual(clock.sample().now_ns, sample.now_ns)
+        self.assertEqual(engine.command_status('pause', 'b3', paused=True)['state'], 'paused')
+        self.assertEqual(engine.command_status('pause', 'b4', paused=False)['state'], 'buffering')
       finally:
         release.touch()
-      ready = engine.wait(lambda value: value.get('lastRequestId') == 'b1')
-      self.assertEqual(ready['state'], 'paused')
+      engine.wait(lambda value: value['state'] == 'playing')
+      self.assertFalse(clock.sample().paused)
+      engine.command_status('pause', 'b5', paused=True)
       loaded_at = opened.stat().st_mtime_ns
-      cached = engine.command_status('seek', 'b2', position=60.15)
+      cached = engine.command_status('seek', 'b6', position=60.15)
       self.assertEqual(cached['state'], 'paused')
       self.assertEqual(opened.stat().st_mtime_ns, loaded_at)
+      clock.close()
 
   def test_preloaded_seek_with_two_cache_slots_does_not_wait_for_an_uncacheable_neighbor(self):
     engine = Machine([(n, [60 * n + .1, 60 * n + .2], True) for n in range(3)])

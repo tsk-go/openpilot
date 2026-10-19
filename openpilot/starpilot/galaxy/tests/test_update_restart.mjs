@@ -89,13 +89,11 @@ feed.error = 'Connection lost'
 feed.emit('ready')
 assert.equal(restarts.length, 0)
 feed.installBaseline = baseline
-feed.error = ''
+feed.error = 'Server rejected request'
 feed.emit('ready')
 assert.equal(restarts.length, 0)
+feed.data.operations.request = null
 feed.error = 'Connection lost'
+feed.connectionLost = true
 feed.emit('ready')
 assert.equal(restarts.length, 1)
-feed.error = ''
-feed.data.operations.progress = { stage: 'rebooting' }
-feed.emit('ready')
-assert.equal(restarts.length, 2)
