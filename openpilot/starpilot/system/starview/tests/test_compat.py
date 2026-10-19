@@ -112,3 +112,53 @@ def test_onroad_is_not_offroad():
     def __init__(self, off): self.off = off
     def get_bool(self, k): return self.off if k == "IsOffroad" else False
   assert compat.is_onroad(P(False)) and not compat.is_onroad(P(True))
+
+
+def _slc_with_readings(**readings):
+  m = messaging.new_message("slcState")
+  rows = m.slcState.init("sourceReadings", len(readings))
+  for row, (src, v) in zip(rows, readings.items(), strict=True):
+    row.source, row.enabled, row.observationKind, row.speedLimit = src, True, "valid" if v else "absent", v
+  return m
+
+
+def test_speed_limit_sources_card_gets_map_and_vision():
+  raw = _slc_with_readings(dashboard=0.0, map=24.6, vision=22.4).to_bytes()
+  slc = messaging.log_from_bytes(raw).slcState
+  assert abs(compat.slc_reading(slc, "map") - 24.6) < 1e-4
+  assert compat.slc_reading(slc, "dashboard") == 0.0                       # absent: no number
+  plan = messaging.log_from_bytes(compat.build_plan(slc, None, "{}")).customReserved6
+  assert abs(plan.slcMapSpeedLimit - 24.6) < 1e-4
+  mp = compat.MemParams()
+  mp.source = lambda service: (0.0, messaging.log_from_bytes(raw)) if service == "slcState" else None
+  assert abs(mp.get("VisionSpeedLimit") - 22.4) < 1e-4
+
+
+def test_adjacent_cars_fill_the_old_lead_left_right():
+  m = messaging.new_message("starpilotRadarState")
+  m.logMonoTime = 123
+  q = m.starpilotRadarState.qualifiedAdjacent
+  q.status = "clear"
+  q.left.present, q.left.trackId, q.left.distanceM, q.left.lateralM, q.left.speedMps = True, 7, 31.0, 3.4, 27.0
+  out = messaging.log_from_bytes(compat.adjacent_leads(m.to_bytes(), v_ego=25.0))
+  r = out.starpilotRadarState
+  assert out.logMonoTime == 123 and r.leadLeft.status and not r.leadRight.status
+  assert (r.leadLeft.dRel, r.leadLeft.yRel, r.leadLeft.vLead) == (31.0, r.leadLeft.yRel, 27.0) and abs(r.leadLeft.yRel - 3.4) < 1e-5
+  assert abs(r.leadLeft.vRel - 2.0) < 1e-5 and r.qualifiedAdjacent.left.trackId == 7
+  empty = messaging.new_message("starpilotRadarState").to_bytes()
+  assert compat.adjacent_leads(empty) == empty                              # nothing to add: passed through as is
+  assert compat.adjacent_leads(b"junk") == b"junk"
+
+
+def test_translator_rewrites_radar_state_and_learns_speed():
+  t = compat.Translator()
+  t.route({"starpilotRadarState", "carState"})
+  cs = messaging.new_message("carState")
+  cs.carState.vEgo = 20.0
+  t.feed("carState", [cs.to_bytes()], 1.0)
+  m = messaging.new_message("starpilotRadarState")
+  m.starpilotRadarState.qualifiedAdjacent.right.present = True
+  m.starpilotRadarState.qualifiedAdjacent.right.speedMps = 18.0
+  (name, msgs), = t.feed("starpilotRadarState", [m.to_bytes()], 1.1)
+  r = messaging.log_from_bytes(msgs[0]).starpilotRadarState
+  assert name == "starpilotRadarState" and r.leadRight.status and abs(r.leadRight.vRel + 2.0) < 1e-5

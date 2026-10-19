@@ -706,6 +706,7 @@ class VideoClient:
   def __init__(self, ws, cam):
     self.ws = ws
     self.cam = cam
+    self.hevc = False
     self.q: asyncio.Queue = asyncio.Queue(maxsize=VIDEO_QUEUE)
     self.need_key = True
     self.dropped = 0
@@ -724,6 +725,20 @@ class VideoClient:
         return
     self.need_key = False
     self.q.put_nowait(frame)
+
+
+def _flag(v):
+  if isinstance(v, bool) or v is None:
+    return v
+  return {"1": True, "0": False, "true": True, "false": False}.get(str(v).strip().lower())
+
+
+def egpu_params(active, loading) -> dict:
+  """The tablet's eGPU icon reads Dom's UsbGpuActive / UsbGpuLoading / UsbGpuCompiled. 7.0 has ChestnutActive (set by
+  modeld once the big model loaded or failed; cleared at each start) and ChestnutLoading, and no "compiled" param: a
+  big model is loading or modeld has decided, so the icon shows (gray loading, green active, orange fell back)."""
+  active, loading = _flag(active), bool(_flag(loading))
+  return {"UsbGpuActive": active is True, "UsbGpuLoading": loading, "UsbGpuCompiled": loading or active is not None}
 
 
 GUARD_SERVICES = ("selfdriveState", "deviceState", "starpilotCarState")
@@ -818,7 +833,7 @@ class Hub:
     self._was_replaying = False
     self._blink_held_t = None  # a replay ended with the tablet still asking for a blinker: ignore it until "off"
     self.replay = replay.DriveReplay(on_event=self._replay_event, on_video=self._replay_video, parked=self._parked_for_replay,
-                                     keep=self._replay_keep, version=_openpilot_version)
+                                     keep=self._replay_keep, version=_openpilot_version, hevc=self._replay_hevc)
     self.replay_translator = compat.Translator(self.params, toggles=self._toggles)
     self._replay_routed = None
     self.params_mem.source = lambda service: self.replay.latest(service) if self.replay.active else compat.NO_SOURCE
@@ -1170,6 +1185,12 @@ class Hub:
       self.loop.call_soon_threadsafe(_want_key, c)
     self.request_keyframe()
 
+  def _replay_hevc(self) -> bool:
+    """Every road video client decodes HEVC: replay the full-size fcamera.hevc (qcamera.ts is 526x330 at 256 kbit/s)."""
+    with self.lock:
+      clients = list(self.video_clients["road"])
+    return all(getattr(c, "hevc", False) for c in clients)
+
   def _replay_keep(self):
     """The 7.0 services the tablet asks for now: only these are read out of a replayed segment (None: all)."""
     with self.lock:
@@ -1301,6 +1322,28 @@ class Hub:
     with self._snap_lock:
       self._snap = None  # an action changed something: the next snapshot is read fresh
 
+  MODEL_LABEL_EVERY = 10.0
+
+  def _model_label(self) -> str:
+    """The driving model's name for the tablet's home screen, as 7.0's own home shows it (DrivingModelName is gone)."""
+    now = time.monotonic()
+    cached = getattr(self, "_model_label_cache", None)
+    if cached is not None and now - cached[0] < self.MODEL_LABEL_EVERY:
+      return cached[1]
+    label = ""
+    try:
+      from openpilot.starpilot.models.runtime import ModelStatusSource
+      from openpilot.starpilot.ui.models_state import home_model_label
+      if getattr(self, "_model_source", None) is None:
+        self._model_source = ModelStatusSource(self.params)
+      label = home_model_label(self._model_source.snapshot())
+      if label == "Driving model unavailable":
+        label = ""
+    except Exception as e:
+      cloudlog.warning(f"starview: model label: {e}")
+    self._model_label_cache = (now, label)
+    return label
+
   def _keys(self):
     if self._param_keys is None:
       try:
@@ -1337,6 +1380,7 @@ class Hub:
       v = self._read_param(self.params, k)
       if v is not None:
         out["p"][k] = v
+    out["p"].update(egpu_params(self._read_param(self.params, "ChestnutActive"), self._read_param(self.params, "ChestnutLoading")))
     for k in UI_PARAMS_MEMORY:
       v = self._read_param(self.params_mem, k)
       if v is not None:
@@ -1349,7 +1393,10 @@ class Hub:
       except Exception as e:
         cloudlog.warning(f"starview: info: {e}")
     out["i"] = dict(self._info, engaged=self.engaged, onroad=self.started, encStall=round(self.enc_stall_s),
-                    openpilot=not self.openpilot_down)
+                    openpilot=not self.openpilot_down, sp7=True)   # sp7: StarPilot 7 meanings (the tablet adapts a few cards)
+    name = self._model_label()
+    if name:
+      out["p"]["DrivingModelName"] = name
     r = getattr(self, "replay", None)
     if r is not None:
       out["r"] = r.status()           # also tells the tablet this comma can replay drives
@@ -1696,6 +1743,7 @@ async def ws_video(request):
   ws = web.WebSocketResponse(max_msg_size=0, heartbeat=10, compress=False)
   await ws.prepare(request)
   c = VideoClient(ws, cam)
+  c.hevc = request.query.get("hevc") == "1"     # 2.45.1+: decodes HEVC (drive replay sends the full-size recording)
   hub.add_video(c)
   cloudlog.info(f"starview: video[{cam}] client {request.remote} connected")
 

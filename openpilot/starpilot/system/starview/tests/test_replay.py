@@ -25,7 +25,7 @@ def _evt(name, mono, **fill):
   return m.to_bytes()
 
 
-def write_segment(d: Path, number: int, seconds=3.0, t0=T0, video=True):
+def write_segment(d: Path, number: int, seconds=3.0, t0=T0, video=True, full=False):
   """A 7.0-like segment: carState 100 Hz (vEgo = seconds into the segment), modelV2 20 Hz, starpilotNavigation 2 Hz,
   can 100 Hz (never replayed), qNarrowRoadEncodeIdx + qcamera.ts at 20 fps."""
   d.mkdir(parents=True, exist_ok=True)
@@ -43,6 +43,12 @@ def write_segment(d: Path, number: int, seconds=3.0, t0=T0, video=True):
         ei = idx.qNarrowRoadEncodeIdx
         ei.frameId, ei.segmentNum, ei.segmentId, ei.timestampEof = k // 5, number, k // 5, mono
         out.append(idx.to_bytes())
+      if full:
+        fi = messaging.new_message("narrowRoadEncodeIdx")
+        fi.logMonoTime = mono + 2
+        e2 = fi.narrowRoadEncodeIdx
+        e2.frameId, e2.segmentNum, e2.segmentId, e2.segmentIdEncode, e2.timestampEof = k // 5, number, k // 5, k // 5, mono
+        out.append(fi.to_bytes())
     if k % 50 == 0:
       nav = messaging.new_message("starpilotNavigation")
       nav.logMonoTime = mono + 3
@@ -52,6 +58,10 @@ def write_segment(d: Path, number: int, seconds=3.0, t0=T0, video=True):
       nv.instruction.distanceMeters = 300.0 - k
       out.append(nav.to_bytes())
   (d / "rlog.zst").write_bytes(zstandard.ZstdCompressor().compress(b"".join(out)))
+  if full:
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1344x760:rate=20", "-t", str(seconds),
+                    "-c:v", "libx265", "-x265-params", "keyint=20:min-keyint=20:bframes=0:log-level=error", "-pix_fmt", "yuv420p",
+                    "-f", "hevc", str(d / "fcamera.hevc")], check=True)
   if video:
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size={replay.QCAM_W}x{replay.QCAM_H}:rate=20",
                     "-t", str(seconds), "-c:v", "libx264", "-g", "15", "-pix_fmt", "yuv420p", "-f", "mpegts", str(d / "qcamera.ts")],
@@ -105,6 +115,40 @@ def test_segment_keeps_tablet_services_and_times_video(tmp_path):
   assert [f[0] for f in seg.frames[:3]] == [T0, T0 + 50_000_000, T0 + 100_000_000]     # qNarrowRoadEncodeIdx times
   keys = [f for f in seg.frames if f[3]]
   assert keys and all(7 in replay._nal_types(f[2]) and 8 in replay._nal_types(f[2]) for f in keys)
+
+
+@need_ffmpeg
+def test_hevc_file_splits_into_frames_with_size_and_keyframes(tmp_path):
+  write_segment(tmp_path / "r--0", 0, seconds=2.0, video=False, full=True)
+  header, frames, wh = replay.hevc_frames(tmp_path / "r--0" / "fcamera.hevc")
+  assert wh == (1344, 760) and len(frames) == 40
+  assert [k for _, _, k in frames].count(True) == 2 and frames[0][2] and frames[20][2]
+  data = (tmp_path / "r--0" / "fcamera.hevc").read_bytes()
+  assert frames[0][0] == 0 and sum(n for _, n, _ in frames) == len(data)          # every byte in exactly one frame
+  assert all(data[o:o + 3] == b"\x00\x00\x01" or data[o:o + 4] == b"\x00\x00\x00\x01" for o, _, _ in frames)
+  assert {(b >> 1) & 0x3F for b in [header[4]]} == {32}                             # starts with the VPS
+
+
+@need_ffmpeg
+def test_replay_sends_the_full_size_recording_to_hevc_tablets(tmp_path):
+  write_segment(tmp_path / "drv--0", 0, seconds=2.0, video=True, full=True)
+  clock, sink = Clock(), Sink()
+  r = replay.DriveReplay(sink.on_event, sink.on_video, lambda: True, root=tmp_path, clock_ns=clock.ns, sleep=clock.sleep,
+                         hevc=lambda: True)
+  payloads = []
+  r.on_video = lambda p, k: payloads.append((p, k))
+  r.start("drv")
+  assert wait(lambda: not r.active)
+  assert len(payloads) == 40 and payloads[0][1]
+  fid, _t, _u, flags, w, h = struct.unpack_from("<IQQIHH", payloads[0][0])
+  assert flags == replay.FLAG_KEY | replay.FLAG_HEVC and (w, h) == (1344, 760)
+  key2 = payloads[20][0][28:]
+  assert payloads[20][1] and (key2[4] >> 1) & 0x3F == 32                           # a later keyframe carries VPS/SPS/PPS
+  # an old tablet (no HEVC) still gets qcamera
+  r2, _, sink2 = player(tmp_path)
+  r2.start("drv")
+  assert wait(lambda: not r2.active)
+  assert sink2.video and sink2.video[0][0][3] == 1 and (sink2.video[0][0][4], sink2.video[0][0][5]) == (replay.QCAM_W, replay.QCAM_H)
 
 
 def test_list_drives_newest_first_and_skips_the_one_recording(tmp_path):
@@ -317,6 +361,25 @@ def test_seeking_inside_the_playing_segment_doesnt_read_it_again(tmp_path, monke
   assert loads == [0]
 
 
+def test_memory_is_given_back_when_a_replay_ends(tmp_path, monkeypatch):
+  write_segment(tmp_path / "drv--0", 0, seconds=1.0, video=False)
+  write_segment(tmp_path / "drv--1", 1, seconds=1.0, t0=T0 + 60_000_000_000, video=False)
+  released = []
+  monkeypatch.setattr(replay, "release_memory", lambda: released.append(1))
+  r, _, sink = player(tmp_path)
+  r.start("drv")
+  assert wait(lambda: len(sink.cars()) > 3)
+  r.stop()
+  assert wait(lambda: released)                                  # the replay thread trims once it's done
+  gen = r._gen
+  assert r._load_ahead(gen - 1, tmp_path / "drv--1", 1, None) is None   # a read-ahead that outlived its replay
+  assert r._load_ahead(gen, tmp_path / "drv--1", 1, None).number == 1
+
+
+def test_release_memory_runs_here():
+  replay.release_memory()
+
+
 def test_memparams_read_the_replay_not_msgq(tmp_path):
   write_segment(tmp_path / "drv--0", 0, seconds=2.0, video=False)
   r, _, sink = player(tmp_path)
@@ -478,6 +541,7 @@ def test_params_push_carries_the_replay_state(tmp_path):
   hub = replay_hub(tmp_path)
   snap = hub._build_params_snapshot()
   assert snap["r"]["active"] is False and snap["p"]["IsOnroad"] is False
+  assert snap["i"]["sp7"] is True and "UsbGpuCompiled" in snap["p"]     # 7.0 flag; no model status here: no name
   hub.control({"action": "replay_start", "route": "drv", "at": 1})
   snap = hub._build_params_snapshot()
   assert snap["r"]["active"] and snap["r"]["route"] == "drv" and snap["p"]["IsOnroad"] is True
@@ -504,3 +568,11 @@ def test_whole_path_tablet_names_and_video(tmp_path):
   names = [f[1:1 + f[0]].decode() for f in c.frames]
   assert names.count("carState") == 100 and names.count("liveCalibration") == 1
   assert len(v.got) == 20 and v.got[0][1]
+
+
+def test_egpu_icon_params_from_7_0s_chestnut_params():
+  from openpilot.starpilot.system.starview.starviewd import egpu_params
+  assert egpu_params(None, None) == {"UsbGpuActive": False, "UsbGpuLoading": False, "UsbGpuCompiled": False}   # no Chestnut run
+  assert egpu_params(None, True) == {"UsbGpuActive": False, "UsbGpuLoading": True, "UsbGpuCompiled": True}     # loading
+  assert egpu_params(True, False)["UsbGpuActive"] and egpu_params("1", None)["UsbGpuCompiled"]                # active
+  assert egpu_params(False, False) == {"UsbGpuActive": False, "UsbGpuLoading": False, "UsbGpuCompiled": True}  # fell back
