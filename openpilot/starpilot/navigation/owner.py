@@ -138,10 +138,13 @@ def response_json(session, url: str, params: dict) -> dict:
 
 
 class NavigationOwner:
-  def __init__(self, root: Path | None = None, runtime_source=None, session=requests, transient_root: Path | None = None):
+  def __init__(self, root: Path | None = None, runtime_source=None, session=None, transient_root: Path | None = None):
     self.root = Path(root) if root is not None else starpilot_storage_root() / 'navigation'
     self.path = self.root / 'settings.json'
     self.position_store = LastPositionStore(self.root)
+    if session is None:
+      # straight out, or through the StarView tablet when the comma has no internet (navigation/relay.py)
+      from openpilot.starpilot.navigation.relay import SESSION as session
     self.runtime_source, self.session = runtime_source, session
     self._tile_slots = threading.BoundedSemaphore(TILE_SLOTS)
     from openpilot.starpilot.navigation.mapbox_budget import MonthlyBudget

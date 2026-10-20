@@ -17,6 +17,8 @@
                                      or along the route (route: encoded polyline of the road ahead)
          --GET /nav/tile/{style}/{z}/{x}/{y}.png-->                  Mapbox map tiles through owner.map_tile (cached,
                                                                      counted in the comma's Mapbox usage)
+         --control "nav_relay" {port}                                the tablet carries the comma's Mapbox requests
+                                                                     when the comma has no internet (navigation/relay.py)
          --control "nav_tiles" {count}                               tiles the tablet fetched from Mapbox itself (with
                                                                      the key nav_state gives it), added to that count
 navigationd plans the route, offers the alternatives, follows the drive and asks again for live traffic every 5 minutes
@@ -246,6 +248,26 @@ class NavLink:
       data = response_json(self.owner.session, f"{SEARCH_URL}/category/{canonical}", params)
     results = [row for row in (_place(f) for f in (data.get("features") or [])[:25]) if row is not None]
     return {"ok": True, "results": results, "alongRoute": along, "words": CATEGORY_WORDS[name]}
+
+  def relay(self, peer, port) -> dict:
+    """The tablet offers to carry Mapbox requests (it is online, the comma maybe not): navigation/relay.py uses it while
+    this file is fresh (the tablet renews it every 30 s); port 0 withdraws it."""
+    from openpilot.starpilot.navigation.relay import RELAY_FILE
+    if isinstance(peer, str) and peer.startswith("::ffff:"):
+      peer = peer[7:]
+    if type(port) is not int or not 0 <= port < 65536 or not isinstance(peer, str) or any(c not in "0123456789." for c in peer):
+      raise ValidationError("bad relay address")
+    if port == 0:
+      try:
+        os.unlink(RELAY_FILE)
+      except OSError:
+        pass
+      return {"ok": True, "relay": None}
+    tmp = RELAY_FILE + ".tmp"
+    with open(tmp, "w") as f:
+      f.write(f"{peer}:{port}")
+    os.replace(tmp, RELAY_FILE)
+    return {"ok": True, "relay": f"{peer}:{port}"}
 
   def tiles_used(self, count) -> dict:
     """Map tiles the tablet fetched from Mapbox itself, added to the comma's count of the month's map views."""
