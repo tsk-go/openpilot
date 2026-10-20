@@ -13,7 +13,7 @@ Never rebase or force-push for a sync: the local commits must be kept as they ar
 
 # Fork fixes to drop when upstream fixes them
 
-After every sync, check whether upstream now fixes either of these on its own. If it does, remove our fix in a
+After every sync, check whether upstream now fixes any of these on its own. If it does, remove our fix in a
 normal commit (no revert of history, no force-push) and tell the owner which one was dropped:
 
 1. **Chestnut big model compiles every start** (patches 14 and 16): `openpilot/starpilot/models/program_cache.py`,
@@ -24,6 +24,10 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `status(parked_marker=...)` in `openpilot/starpilot/drive_state/evidence.py`, and the `ParkMarker` lines in
    `openpilot/selfdrive/car/card.py`. Upstream fixed = `PhysicalSource.update_status` can allow an update offroad with
    the ignition on (it no longer needs live carState/selfdriveState, which stop offroad).
+3. **"Driving Model Lagging" right after the big model loads** (patch 22): `openpilot/starpilot/models/warmup.py` and in
+   `openpilot/selfdrive/modeld/modeld.py` `big_warmup` (ChestnutLoading stays on until the big model runs steady).
+   Upstream fixed = modeld itself waits for the big model's first real passes before clearing ChestnutLoading, or those
+   first passes are no longer slow (no `chestnut.warmup` with slow passes / missed frames in the logs).
 
 # Fork history
 
@@ -55,6 +59,8 @@ Paths are under `openpilot/` unless noted.
     modeld timeouts.
 13. Updates refused offroad + parked with the ignition on (patch 20): `starpilot/drive_state/park_marker.py`,
     `evidence.py` `parked_marker`, card's `ParkMarker`.
+14. "Driving Model Lagging" seconds after the big model loads (patch 22): `starpilot/models/warmup.py`; modeld keeps
+    ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
 
 **No longer carried**
 - AOL on the SecOC Sienna (patch 6): merged upstream (firestar `79fdeb4`, rebuilt panda/pandad `337bb0754`).
