@@ -872,6 +872,9 @@ class Hub:
       self.wanted_services = {s for s in w if compat.known(s)}
       self._ensure_sockets()
       want_live = any(self.video_clients[c] for c in VIDEO_CAMS) or self.drive_hold
+    # the big model is compiling: the stream encoder starts once it is done (green or orange), not now
+    if getattr(self, "gpu_quiet", False) and not self.live:
+      want_live = False
     # Only while the car is on. IsLiveStreaming also keeps camerad running (process_config: camera_run OR livestream):
     # held on for 10 min after parking, a restart inside that window found the cameras half-running -> "Camera
     # Malfunction" (09-25). Parked, the tablet shows the offroad home anyway: switch off at once, no hold.
@@ -1084,6 +1087,7 @@ class Hub:
             self._fanout_data(tname, tmsgs, now)
       self.replay_tick(now)
       self.tablet_flag_tick(now)
+      self.gpu_quiet_tick(now)
       if self.live and self.live_off_at is not None and now >= self.live_off_at:
         self.recompute_wanted()
       # cpu accounting
@@ -1092,6 +1096,40 @@ class Hub:
         cpu = time.process_time() - self.cpu_mark[1]
         self.cpu_pct = 100.0 * cpu / wall  # percent of ONE core
         self.cpu_mark = (now, time.process_time())
+
+  GPU_QUIET_MAX_S = 180.0
+
+  def gpu_quiet_tick(self, now):
+    """While the big model loads (the eGPU icon gray), StarView gives the comma's processor to it: no camera video to the
+    tablet (and the stream encoder starts only afterwards), the other data at 5 Hz at most. It ends when the comma says
+    the model is ready (green) or fell back (orange) - at the latest after 3 minutes. Loading compiles the model on the
+    comma's CPU against a 60 s limit; with every core busy it missed it and fell back to the small model."""
+    if now - getattr(self, "_gq_t", 0.0) < 0.5:
+      return
+    self._gq_t = now
+    try:
+      state = self._chestnut_display()["ChestnutState"] if self.started and not self._replaying() else ""
+    except Exception:
+      state = ""
+    loading = state == "loading"
+    if not loading:
+      self._gq_since, self._gq_capped = None, False
+    elif getattr(self, "_gq_since", None) is None:
+      self._gq_since = now
+    if loading and now - self._gq_since > self.GPU_QUIET_MAX_S and not getattr(self, "_gq_capped", False):
+      self._gq_capped = True
+      cloudlog.warning("starview: big model still loading after 3 min - tablet video back on")
+    quiet = loading and not getattr(self, "_gq_capped", False)
+    if quiet != getattr(self, "gpu_quiet", False):
+      self.gpu_quiet = quiet
+      cloudlog.info(f"starview: big model {'loading - tablet video paused' if quiet else 'done (' + (state or 'off') + ') - tablet video back'}")
+      self.recompute_wanted()
+      if not quiet:
+        self._video_resync()       # the tablet's video picks up again at the next keyframe
+      self.invalidate_params_snapshot()
+      with self.lock:
+        for c in self.data_clients:
+          c.force_params = True
 
   TABLET_FLAG = "/dev/shm/starview_tablet"
 
@@ -1227,6 +1265,25 @@ class Hub:
     self.invalidate_params_snapshot()
     return ack
 
+  def _chestnut_display(self) -> dict:
+    """The tablet's GPU icon the way the comma's own screen decides it (compat.chestnut_state): green driving on the
+    big model, gray loading, orange "GPU!" when it fell back to the small model, and the reason when the comma has one."""
+    started = bool(self.started)
+    present = bool(getattr(self, "chestnut_present", False))
+    if started != getattr(self, "_cn_started", None):
+      self._cn_started, self._cn_present_at_start, self._cn_output_seen = started, present, False
+    self._cn_present_at_start = self._cn_present_at_start or present
+    m = self.params_mem._newest("drivingModelData")
+    fresh = m is not None and time.monotonic_ns() - m[1].logMonoTime < 1_000_000_000
+    big = bool(m[1].drivingModelData.big) if m is not None else False
+    if fresh and big:
+      self._cn_output_seen = True
+    why = next((k for k in compat.CHESTNUT_ALERTS if self._read_param(self.params, k) is not None), "")
+    state = compat.chestnut_state(started, present, self._cn_present_at_start, fresh, big, m is not None, self._cn_output_seen,
+                                  _flag(self._read_param(self.params, "ChestnutActive")), bool(_flag(self._read_param(self.params, "ChestnutLoading"))),
+                                  bool(why))
+    return {"ChestnutState": state, "ChestnutWhy": why.removeprefix("Offroad_Chestnut")}
+
   def _guard(self, name, raw, now):
     """The newest live one, so the settings actions honour the engaged / onroad / Always On Lateral guards (read in the
     reader, so they stay live while a recorded drive plays to the tablet)."""
@@ -1236,6 +1293,7 @@ class Hub:
         self.engaged = bool(evt.selfdriveState.enabled)
       elif name == "deviceState":
         self.started = bool(evt.deviceState.started)
+        self.chestnut_present = bool(evt.deviceState.chestnutPresent)
       else:
         self.aol_active, self._aol_t = bool(evt.starpilotCarState.alwaysOnLateralEnabled), now
     except Exception:
@@ -1246,12 +1304,15 @@ class Hub:
       clients = list(self.data_clients)
     if not clients:
       return
+    quiet = getattr(self, "gpu_quiet", False)     # the big model is loading: 5 Hz at most (gpu_quiet_tick)
     prefix = bytes([len(name)]) + name.encode()
     # rate limiting: deliver at most `rate` Hz per client; always deliver the newest of a burst
     for c in clients:
       rate = c.rates.get(name)
       if rate is None:
         continue
+      if quiet and (rate <= 0 or rate > 5.0):
+        rate = 5.0
       if rate <= 0:
         for m in msgs:
           self.loop.call_soon_threadsafe(c.push, prefix + m)
@@ -1267,6 +1328,8 @@ class Hub:
           c.sent += 1
 
   def _fanout_video(self, name, msgs):
+    if getattr(self, "gpu_quiet", False):
+      return    # the big model is loading (gpu_quiet_tick): the tablet's camera video waits
     cam = next(k for k, v in VIDEO_CAMS.items() if v == name)
     with self.lock:
       clients = list(self.video_clients[cam])
@@ -1379,6 +1442,11 @@ class Hub:
       if v is not None:
         out["p"][k] = v
     out["p"].update(egpu_params(self._read_param(self.params, "ChestnutActive"), self._read_param(self.params, "ChestnutLoading")))
+    try:
+      out["p"].update(self._chestnut_display())
+      out["p"]["GpuQuiet"] = bool(getattr(self, "gpu_quiet", False))
+    except Exception as e:
+      cloudlog.warning(f"starview: chestnut state: {e}")
     for k in UI_PARAMS_MEMORY:
       v = self._read_param(self.params_mem, k)
       if v is not None:

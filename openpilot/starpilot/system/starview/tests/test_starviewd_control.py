@@ -299,3 +299,66 @@ def test_galaxy_status_keeps_one_local_session(monkeypatch):
   for _ in range(5):
     assert galaxy_local.remote("status", call=call)["ok"]
   assert len(minted) == 1 and seen[1:] == ["galaxy_session=t1"] * 4
+
+
+class _Loop:
+  def __init__(self):
+    self.calls = []
+
+  def call_soon_threadsafe(self, fn, *args):
+    self.calls.append(args)
+
+
+def gpu_hub(state):
+  hub = object.__new__(starviewd.Hub)
+  hub.started, hub.lock, hub.data_clients, hub.live = True, threading.Lock(), set(), False
+  hub.state = [state]
+  hub._replaying = lambda: False
+  hub._chestnut_display = lambda: {"ChestnutState": hub.state[0]}
+  hub.events = []
+  hub.recompute_wanted = lambda: hub.events.append("wanted")
+  hub._video_resync = lambda: hub.events.append("resync")
+  hub.invalidate_params_snapshot = lambda: None
+  return hub
+
+
+def test_tablet_steps_back_while_the_big_model_loads():
+  hub = gpu_hub("loading")
+  hub.gpu_quiet_tick(10.0)
+  assert hub.gpu_quiet and hub.events == ["wanted"]
+  hub.gpu_quiet_tick(10.2)                       # checked twice a second
+  hub.state[0] = "active"                        # green: the video comes back at once, from a keyframe
+  hub.gpu_quiet_tick(11.0)
+  assert not hub.gpu_quiet and hub.events == ["wanted", "wanted", "resync"]
+  hub.state[0] = "loading"
+  hub.gpu_quiet_tick(20.0)
+  assert hub.gpu_quiet
+  hub.gpu_quiet_tick(20.0 + starviewd.Hub.GPU_QUIET_MAX_S + 1)   # stuck "loading": not longer than 3 minutes
+  assert not hub.gpu_quiet
+  hub.gpu_quiet_tick(20.0 + starviewd.Hub.GPU_QUIET_MAX_S + 2)
+  assert not hub.gpu_quiet
+  hub.started = False                            # parked: nothing to hold back
+  hub.state[0] = "loading"
+  hub.gpu_quiet_tick(1000.0)
+  assert not hub.gpu_quiet
+
+
+def test_while_loading_no_video_and_data_at_5_hz():
+  hub = gpu_hub("loading")
+  hub.loop, hub.gpu_quiet = _Loop(), True
+  c = SimpleNamespace(rates={"carState": 0, "modelV2": 20.0}, last_sent={"carState": 0.0, "modelV2": 0.0}, sent=0, push=None)
+  hub.data_clients = [c]
+  for i in range(100):                           # 1 s of 100 Hz carState and 20 Hz modelV2
+    t = 1.0 + i / 100
+    hub._fanout_data("carState", [b"x"], t)
+    if i % 5 == 0:
+      hub._fanout_data("modelV2", [b"m"], t)
+  assert 5 <= c.sent <= 12
+  hub.video_clients = {"road": {object()}}
+  hub._fanout_video("narrowRoadEncodeData", [b"frame"])     # dropped before parsing
+  hub.gpu_quiet = False
+  hub.loop.calls.clear()
+  c.sent = 0
+  for i in range(100):
+    hub._fanout_data("carState", [b"x"], 3.0 + i / 100)
+  assert c.sent == 100
