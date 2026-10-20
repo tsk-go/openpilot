@@ -1,8 +1,24 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import { UpdateRestart, UPDATE_RESTART_KEY, UPDATE_RESTART_PREPARED_KEY } from "../web/js/update-restart.js"
 import { SoftwareStatusFeed } from "../web/js/software-status.js"
 
 const baseline = { commit: 'a'.repeat(40), branch: 'Dom', target: 'Dom', action: 'fast' }
+// Vue evaluates template callbacks against component data, not module scope.
+const app = readFileSync(new URL('../web/js/app.js', import.meta.url), 'utf8')
+const dataFields = app.match(/data: \(\) => \(\{([^\n]+)\}\),/)?.[1]
+assert.ok(dataFields)
+const calls = []
+const updateRestart = { prepare: value => calls.push(['prepare', value]), start: value => calls.push(['start', value]) }
+const deviceRestart = { instance: 'current-instance' }
+const context = new Function('state', 'authState', 'authForm', 'route', 'NAV', 'updateRestart', 'deviceRestart', 'UPDATE_RESTART_MESSAGE',
+  `return ({${dataFields}})` )({}, {}, {}, {}, [], updateRestart, deviceRestart, '')
+for (const [prop, action] of [['preparing', 'prepare'], ['restarting', 'start']]) {
+  const expression = app.match(new RegExp(`:${prop}="([^"]+)"`))?.[1]
+  assert.ok(expression)
+  new Function('context', 'baseline', `with (context) { return (${expression})(baseline) }`)(context, baseline)
+  assert.deepEqual(calls.at(-1), [action, { ...baseline, instance: 'current-instance' }])
+}
 const status = (commit = baseline.commit, request = null) => ({ schemaVersion: 1,
   installed: { commit, branch: 'Dom' }, updater: { state: 'idle' }, operations: { request } })
 const pending = { action: 'fast', state: 'pending' }
@@ -112,19 +128,15 @@ kept.recovery.start({ ...baseline, instance: 'one' })
 kept.recovery.start({ ...baseline, instance: 'two' })
 assert.equal(JSON.parse(kept.values.get(UPDATE_RESTART_KEY)).instance, 'one')
 
-// Only update-related restarts/disconnects trigger the full-screen handoff.
+// Keep update progress visible until Galaxy actually loses the device connection.
 const restarts = []
 const feed = new SoftwareStatusFeed({ publish() {}, restarting: value => restarts.push(value) })
-feed.data = status(baseline.commit, pending)
-feed.error = 'Connection lost'
+feed.installBaseline = baseline
+feed.data = status(baseline.commit, { action: 'update', state: 'pending' })
+feed.emit('ready')
+feed.error = 'Updater status is unavailable'
 feed.emit('ready')
 assert.equal(restarts.length, 0)
-feed.installBaseline = baseline
-feed.error = 'Server rejected request'
-feed.emit('ready')
-assert.equal(restarts.length, 1)
-feed.data.operations.request = null
-feed.error = 'Connection lost'
 feed.connectionLost = true
 feed.emit('ready')
-assert.equal(restarts.length, 2)
+assert.deepEqual(restarts, [baseline])

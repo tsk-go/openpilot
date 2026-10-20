@@ -787,10 +787,10 @@ class MapFeed:
   """The same GPS choice as navigation (either receiver, then the car's own), and the active route."""
 
   def __init__(self, sm=None, *, acquisition=None):
-    from openpilot.starpilot.gps.source import GPS_SOURCES
+    from openpilot.starpilot.gps.source import GPS_SERVICES
     if sm is None:
       from openpilot.cereal import messaging
-      sm = messaging.SubMaster(list(GPS_SOURCES))
+      sm = messaging.SubMaster(list(GPS_SERVICES))
     self.sm = sm
     self._fix: MapFix | None = None
     self._route_stamp = None

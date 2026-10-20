@@ -583,3 +583,28 @@ def test_culled_guidance_draws_the_same_inside_the_canvas():
   assert len(core) < len(full) / 3, "most of the route is off this canvas"
   inside = (full[:, 1] > 0) & (full[:, 1] < 1024)
   assert np.isin(full[inside].view(np.complex64), core.view(np.complex64)).all(), "the on-canvas strip is unchanged"
+
+
+def test_map_feed_subscribes_to_registered_gps_carriers(monkeypatch):
+  import sys
+  from openpilot.cereal.services import SERVICE_LIST
+  from openpilot.starpilot.ui.onroad_map import MapFeed
+
+  subscriptions = []
+
+  def submaster(services):
+    assert len(services) == len(set(services))
+    assert set(services) <= SERVICE_LIST.keys()
+    assert {"gpsLocationExternal", "gpsLocation", "starpilotCarState"} <= set(services)
+    assert "phoneGps" not in services
+    assert services.count("starpilotNavigation") == 1
+    subscriptions.extend(services)
+    return NS()
+
+  messaging = NS(SubMaster=submaster)
+  from openpilot import cereal
+  monkeypatch.setattr(cereal, "messaging", messaging, raising=False)
+  monkeypatch.setitem(sys.modules, "openpilot.cereal.messaging", messaging)
+  feed = MapFeed(acquisition=NS())
+  assert feed.sm is not None
+  assert subscriptions

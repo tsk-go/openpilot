@@ -7,6 +7,7 @@ from opendbc.car.hyundai.blended_stock_aol import (
 from opendbc.car.hyundai.canfd_angle_aol import qualified as qualified_angle_aol, temporary_restriction, ANGLE_AOL_WORDS
 from opendbc.car.hyundai.classic_long_aol import (
   qualified as qualified_classic_long,
+  independent_buttons_qualified as qualified_sonata_independent,
   aol_word as classic_long_word,
   native_accepts as classic_long_accepts,
   LONG_AOL_WORDS,
@@ -24,6 +25,7 @@ from opendbc.car.hyundai.canfd_stock_aol import (
 )
 from opendbc.car.hyundai.non_scc_aol import qualified as qualified_non_scc, aol_word, AOL_MARKER, AOL_EXPERIENCE, AOL_WORDS
 from opendbc.car.hyundai.kona_aol import allow_lateral_onset as kona_lateral_onset
+from opendbc.car.hyundai.left_paddle import IONIQ_5_CARS, has_left_paddle
 from opendbc.car.structs import car
 from opendbc.car.hyundai.values import CAR as HyundaiCAR, HyundaiFlags
 from opendbc.car.hyundai.ccnc_ev_stock import qualified as qualified_ccnc_ev_stock, request_allowed, STOCK_SAFETY_PARAMS
@@ -183,6 +185,9 @@ def aol_safety_config(CP):
 
 def policy_for(CP) -> AolVehiclePolicy:
   policy = _policy_for(CP)
+  if (CP.carFingerprint in IONIQ_5_CARS and has_left_paddle(CP) and
+      CP.openpilotLongitudinalControl and policy.runtime_supported):
+    policy = replace(policy, paddle_pause=True)
   marked = (
     qualified_blended_alpha(CP, marked_only=True) or qualified_blended_stock(CP, marked_only=True)
     or qualified_angle_aol(CP, marked_only=True) or qualified_classic_long(CP, marked_only=True)
@@ -300,14 +305,15 @@ def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
   # Dedicated EV6 LONG raw-button/optional-release behavior stays unchanged.
   if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
     return False
-  return bool(qualified_canfd_stock(CP, marked_only=marked_only) or
+  return bool(qualified_sonata_independent(CP) or
+              qualified_angle_aol(CP, marked_only=marked_only) or
+              qualified_canfd_stock(CP, marked_only=marked_only) or
               qualified_canfd_long(CP, marked_only=marked_only) or
               qualified_ioniq6(CP) or _stock_ioniq6(CP, marked_only=marked_only))
 
 
 def physical_cancel_lateral_allowed(CP, CS, intent, native, *, settings, previous,
                                     source_ns, now_ns, axis_session_id) -> bool:
-  """Retain current HKG torque lateral through only the CANCEL no-entry event."""
   from openpilot.starpilot.aol.runtime import (INTENT_MAX_AGE_NS, AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS,
                                                native_inventory_matches_cp)
   try:
@@ -345,7 +351,8 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
   from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS
   from openpilot.starpilot.aol.transport_pause import cp_identity, independent_lateral_health
   try:
-    if (CP.carFingerprint not in LONG_EV_CARS or not qualified_canfd_long(CP, marked_only=True) or
+    if (not (qualified_sonata_independent(CP) or
+             CP.carFingerprint in LONG_EV_CARS and qualified_canfd_long(CP, marked_only=True)) or
         owner is None or not owner.explicit_latch or not owner.independent_cruise_buttons or
         not owner.allowed_latch or owner.pause_lateral or owner.pause_longitudinal or owner._fault_inhibit):
       return False

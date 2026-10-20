@@ -32,10 +32,11 @@ def create_lka_msg(packer, CAN: CanBus, active=False, apply_angle=0., direction=
   if transit:
     values = {"LaRefAng_No_Req": 0., "LaCurvature_No_Calc": 0., "LdwActvIntns_D_Req": 3}
   if active:
+    # 5.8 degrees rounds outside native raw 24..4072 at 0.05 mrad/count.
     values = {
       "LkaDrvOvrrd_D_Rq": 0,
       "LkaActvStats_D2_Req": direction,
-      "LaRefAng_No_Req": math.radians(max(-5.8, min(5.8, apply_angle))) * 1000.,
+      "LaRefAng_No_Req": max(-101.2, min(101.2, math.radians(max(-5.8, min(5.8, apply_angle))) * 1000.)),
       "LaRampType_B_Req": int(abs(apply_angle) >= 5.),
       "LaCurvature_No_Calc": max(-0.01023, min(0.01023, curvature)),
       "LdwActvStats_D_Req": 0,

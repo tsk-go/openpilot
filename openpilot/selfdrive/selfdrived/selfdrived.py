@@ -32,7 +32,8 @@ from openpilot.selfdrive.selfdrived.helpers import (ExcessiveActuationCheck, jet
 from openpilot.starpilot.models import jetlink_adapter
 from openpilot.system.manager.process_health import driving_process_failures
 from openpilot.selfdrive.selfdrived.state import StateMachine
-from opendbc.car.gm.aol import native_bootstrap_supported
+from opendbc.car.gm.aol import qualified_gm
+from openpilot.starpilot.aol.vehicle import native_bootstrap_supported
 from opendbc.car.gm.steering_authority import monitored_profile
 from openpilot.starpilot.car.gm.steering_companion import SteeringCompanion
 from openpilot.starpilot.car.hyundai.aol import qualified_ioniq6
@@ -564,10 +565,12 @@ class SelfdriveD:
         intent_companion = getattr(self, 'aol_intent_companion', None)
         drained = intent_companion is None or self.drain_axis_intent(intent_companion)
         now_ns = self.aol_car_state_log_ns if REPLAY and self.aol_car_state_log_ns else time.monotonic_ns()
-        companion = current_intent(self.sm, car_state_ns=int(self.sm.logMonoTime['carState']), now_ns=now_ns,
+        companion = current_intent(self.sm, car_state_ns=self.aol_car_state_log_ns, now_ns=now_ns,
                                    previous=self.aol_last_intent, companion=intent_companion, drain=False) if drained else None
         session = companion.producerSessionId if companion is not None else None
-        self.tesla_stock_alerts = self.tesla_stock_consumer.poll(self.sm, now_ns=now_ns, session=session)
+        self.tesla_stock_alerts = self.tesla_stock_consumer.poll(
+          self.sm, now_ns=now_ns, session=session, car_state=CS,
+          source_ns=self.aol_car_state_log_ns, source_valid=self.conditional_car_state_valid)
 
     if self.calibrated_pose is not None and not self.CP.notCar:
       excessive_actuation = self.excessive_actuation_check.update(self.sm, CS, self.calibrated_pose)
@@ -802,7 +805,7 @@ class SelfdriveD:
 
   def held_axis_override_wait(self, CS, proof, now_ns):
     """Recognize an already applied override; never admit a new physical edge."""
-    if (proof is None or not qualified_ioniq6(self.CP) or not self.sm.seen['carControl'] or
+    if (proof is None or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP)) or not self.sm.seen['carControl'] or
         not self.sm.valid['carControl'] or self.sm['carControl'].longActive or
         not 0 < int(self.sm.logMonoTime['carControl']) <= now_ns or
         now_ns - int(self.sm.logMonoTime['carControl']) > INTENT_MAX_AGE_NS):
@@ -893,6 +896,7 @@ class SelfdriveD:
            sample.steerFaultPermanent or (sample.brakePressed or sample.regenBraking) and not held_brake or
            active_longitudinal and sample.gasPressed and not held_gas or
            sample.seatbeltUnlatched or sample.accFaulted or sample.doorOpen or physical_cancel(sample, self.CP) or
+           qualified_gm(self.CP) and not sample.cruiseState.available or
            sample.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
                                      car.CarState.GearShifter.low, car.CarState.GearShifter.brake)
            for sample, valid in samples):
@@ -961,7 +965,7 @@ class SelfdriveD:
 
   def defer_expired_axis_publication(self, CS, initial_state, *, now_ns=None):
     """Keep an existing unexpired proof for one normal tick; issue no new lease."""
-    if REPLAY or not self.aol_replay or not self.axis_transport_required or not qualified_ioniq6(self.CP):
+    if REPLAY or not self.aol_replay or not self.axis_transport_required or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP)):
       return False
     proof = getattr(self, 'aol_step_input_proof', None)
     if now_ns is None:
@@ -1208,6 +1212,10 @@ class SelfdriveD:
     previous = self.aol_axis_decision
     was_enabled = self.enabled
     self.aol_axis_decision = AxisDecision()
+    if healthy_expiry and not was_enabled and self.cold_gm_main_readiness(CS, intent, now_ns):
+      self.aol_fault_reason = 'availabilityPause'
+      self.aol_publication_retained_intent = intent
+      return
     pause = getattr(self, 'aol_availability_pause', None)
     if (healthy_expiry and pause is not None and intent is not None and
         getattr(self, 'aol_fault_reason', 'none') in ('none', 'availabilityPause') and
@@ -1266,6 +1274,19 @@ class SelfdriveD:
     intent = getattr(self, 'aol_last_intent', None)
     companion = getattr(self, 'aol_intent_companion', None)
     user_disable = self.events.contains(ET.USER_DISABLE)
+    if user_disable:
+      from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_qualified
+      from opendbc.car.hyundai.canfd_stock_aol import qualified as stock_canfd_qualified
+      from openpilot.starpilot.car.toyota.aol import qualified as toyota_qualified
+
+      if (toyota_qualified(self.CP, marked_only=True) and CS.standstill or
+          angle_qualified(self.CP, marked_only=True) or
+          self.CP.brand == 'hyundai' and CS.brakePressed and len(self.CP.safetyConfigs) == 1 and
+          stock_canfd_qualified(self.CP, marked_only=True)):
+        native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
+        if stock_lateral_role(self, CS, native, intent, allow_independent_cancel=True,
+                              allow_independent_brake=True, now_ns=now_ns):
+          user_disable = False
     if user_disable and self.held_axis_override_wait(CS, proof, now_ns)[0]:
       # A moving held brake repeats pedalPressed while ordinary control is
       # already disabled. Its existing lateral-only override is not a new edge.
@@ -1348,6 +1369,8 @@ class SelfdriveD:
     if source_clock_scoped:
       self._expire_axis_source(CS, now_ns)
       self._expire_axis_continuity(CS, now_ns)
+    if self.aol_axis_decision.lateral_active or self.aol_axis_decision.longitudinal_active:
+      self.aol_ever_active = True
     reason = getattr(self, 'aol_fault_reason', 'none')
     event_now_ns = now_ns
     ce_send = None
@@ -1397,7 +1420,7 @@ class SelfdriveD:
         final_ns = time.monotonic_ns()
         if ((axis.lateralActive or axis.longitudinalActive) and
             (not 0 < self.aol_car_state_log_ns <= final_ns or final_ns - self.aol_car_state_log_ns > INTENT_MAX_AGE_NS) and
-            qualified_ioniq6(self.CP)):
+            (qualified_ioniq6(self.CP) or qualified_gm(self.CP))):
           if (source_context is not None and source_context[1] and
               self.defer_expired_axis_publication(CS, source_context[0])):
             # Serialization crossed the same source boundary. Retain only the
@@ -1589,6 +1612,18 @@ class SelfdriveD:
         sample.vEgo < (self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0)
         for sample, _ in getattr(self, 'car_state_samples', ())))
 
+  def cold_gm_main_readiness(self, CS, intent, now_ns):
+    from openpilot.starpilot.car.gm.aol import cold_main_readiness
+    from openpilot.starpilot.aol.transport_pause import _healthy_transport_native
+    if (self.CP.brand != 'gm' or self.enabled or self.active or getattr(self, 'aol_ever_active', False) or self.aol_authority_lost or
+        not self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE) or
+        intent is None or not intent.settingsQualified or not intent.allowedLatch or not intent.lateralArmed or
+        not 0 < intent.carStateLogMonoTime <= intent.observedMonoTime <= now_ns <= intent.validUntilMonoTime or
+        now_ns - intent.carStateLogMonoTime > SAFETY_MAX_AGE_NS):
+      return False
+    native = _healthy_transport_native(self.sm, self.CP, CS, self.aol_session_id, now_ns)
+    return cold_main_readiness(self.CP, CS, native, self.events.to_msg())
+
   def ordinary_native_long_withdrawal(self, CS, native, previous, requested, intent, *, source_current, now_ns):
     """Keep the existing ordinary Panda mismatch owner for a LONG-only drop.
 
@@ -1630,12 +1665,18 @@ class SelfdriveD:
     if len(owners) != 1:
       return False
     from openpilot.starpilot.car.gm.aol import native_accepts_cp as gm_native_accepts_cp
+    from openpilot.starpilot.car.toyota.aol import qualified as toyota_aol_qualified
     # Pandad reads health before its final native permission read. A GM driver
     # withdrawal between those reads legitimately leaves the earlier health
     # controlsAllowed true. For an admitted OP-long GM profile, the current
     # LAT-only native mask itself proves controls_allowed has gone false.
     # Keep LONG withdrawn and leave disagreement to the ordinary mismatch owner.
+    # Toyota's native LONG mask also checks gas, brake and belt independently
+    # of controls_allowed. Health and that mask may precede the parsed pedal
+    # edge: honor LONG withdrawal while the existing native LAT grant stands.
+    # The exact Toyota policy and all proof/health checks above remain required.
     return bool(gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
+                toyota_aol_qualified(self.CP, marked_only=True) or
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)
 
@@ -1851,9 +1892,11 @@ class SelfdriveD:
         event.name == EventName.steerTempUnavailable and CS.steerFaultTemporary and not CS.steerFaultPermanent or
         seatbelt_lateral_soft_event_allowed(self.CP, CS, intent, native, event,
           source_ns=self.aol_car_state_log_ns, now_ns=now_ns, axis_session_id=self.aol_session_id,
-          pending_lateral_request=not previous.lateral_active and not self.aol_authority_lost))
+          pending_lateral_request=not previous.lateral_active and not self.aol_authority_lost,
+          gear_pause=reverse_pause))
         for event in self.events.to_msg())
-      self.aol_fault_reason = ('availabilityPause' if ordinary_availability else
+      cold_main_wait = self.cold_gm_main_readiness(CS, intent, now_ns)
+      self.aol_fault_reason = ('availabilityPause' if ordinary_availability or cold_main_wait else
                                'critical' if self.aol_authority_lost or self.events.contains(ET.IMMEDIATE_DISABLE) or
                                aol_hard_soft_fault and not availability else
                                'availabilityPause' if availability else 'transportPause' if pause else 'none')
@@ -1892,6 +1935,8 @@ class SelfdriveD:
         # Preserve the exact current SOFT event and normal countdown. A live
         # standard-axis proof describes healthy current authority, not critical.
         self.aol_fault_reason = 'none'
+      if cold_main_wait:
+        self.aol_axis_decision = AxisDecision()
       if self.aol_ordinary_source_pause:
         self.aol_axis_decision = self.ordinary_source_withdrawal()
       elif availability:

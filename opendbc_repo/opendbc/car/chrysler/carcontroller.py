@@ -2,6 +2,7 @@ from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL
 from opendbc.car.lateral import apply_meas_steer_torque_limits
 from opendbc.car.chrysler import chryslercan
+from opendbc.car.chrysler.aol_contract import qualified as aol_qualified
 from opendbc.car.chrysler.values import CUSW_CARS, RAM_CARS, RAM_DT, CarControllerParams, ChryslerFlags
 from opendbc.car.structs import CarState
 from opendbc.car.interfaces import CarControllerBase
@@ -33,12 +34,17 @@ class CarController(CarControllerBase):
       das_bus = 2 if self.CP.carFingerprint in RAM_CARS else 0
 
       # ACC cancellation
-      if CC.cruiseControl.cancel:
+      pause_stock_acc = bool(aol_qualified(self.CP, marked_only=True) and
+        CS.aol_pause_longitudinal and 0 < CS.aol_pause_longitudinal_stamp_ns <= now_nanos and
+        now_nanos - CS.aol_pause_longitudinal_stamp_ns <= 30_000_000 and
+        CS.out.canValid and not CS.out.canTimeout)
+      if CC.cruiseControl.cancel or (pause_stock_acc and CS.out.cruiseState.enabled):
         self.last_button_frame = self.frame
         can_sends.append(chryslercan.create_cruise_buttons(self.packer, CS.button_counter + 1, das_bus, cancel=True))
 
       # ACC resume from standstill
-      elif CC.cruiseControl.resume:
+      elif (CC.cruiseControl.resume and not pause_stock_acc and
+            (not aol_qualified(self.CP, marked_only=True) or CS.out.cruiseState.enabled)):
         self.last_button_frame = self.frame
         can_sends.append(chryslercan.create_cruise_buttons(self.packer, CS.button_counter + 1, das_bus, resume=True))
 

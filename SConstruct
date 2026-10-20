@@ -201,6 +201,10 @@ if arch == "comma_arm64":
     env.Prepend(LIBPATH=[os.path.join(build_sysroot, part) for part in ("usr/local/lib", "usr/lib/aarch64-linux-gnu", "lib/aarch64-linux-gnu")])
     env.Append(CCFLAGS=[f"--sysroot={build_sysroot}"])
     env.Append(LINKFLAGS=[f"--sysroot={build_sysroot}"])
+    env.Prepend(LIBPATH=[ffmpeg.LIB_DIR])
+    env.Prepend(CPPPATH=["#third_party/linux/include"])
+  else:
+    env.Append(CPPPATH=["#third_party/linux/include"])
 elif arch == "Darwin":
   env.Append(LIBPATH=[
     "/System/Library/Frameworks/OpenGL.framework/Libraries",

@@ -343,7 +343,7 @@ class SoftwareOperations:
       elif reboot:
         reason = "Reboot is pending"
       elif not process:
-        reason = "Please wait a moment" if COMMA_HARDWARE else "Updater status is unavailable"
+        reason = "Getting the updater ready…" if COMMA_HARDWARE else "Updater status is unavailable"
       elif pending or not updater_idle:
         reason = "Updater is busy"
       fast = status["updater"].get("fast")

@@ -1,4 +1,4 @@
-"""Compatibility policy for two recorded GM configurations; native authority stays separate.
+"""Compatibility policy for qualified Bosch Honda AOL and two recorded GM configurations; native authority stays separate.
 
 Register divergence remains a protected-register diagnostic, not a benign-fault
 claim. Raw fault reports are retained. Every unlisted configuration/bit blocks.
@@ -9,6 +9,13 @@ from opendbc.car.gm.cancel_remap import aol_enabled
 
 def _diagnostic_mask(cp):
   try:
+    if cp.brand == 'honda':
+      from opendbc.car.honda.stock_aol import qualified
+      from opendbc.car.honda.values import HondaFlags
+      # Only the reported CAN2 interrupt-rate diagnostic is exempt. Qualification
+      # requires a marked, supported, single-panda Bosch AOL configuration.
+      # Other interrupt rates and mixed faults remain blocking.
+      return (1 << 3) if int(cp.flags) & int(HondaFlags.BOSCH) and qualified(cp, marked_only=True) else 0
     from opendbc.car.gm.aol import qualified_gm
     from opendbc.car.gm.values import CAR, is_volt_sdgm_profile, is_bolt_present_no_acc_pedal_profile
     if cp.brand != 'gm' or len(cp.safetyConfigs) != 1:

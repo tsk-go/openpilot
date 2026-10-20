@@ -75,6 +75,8 @@ class CarInterface(CarInterfaceBase):
     smart_dsu = (candidate in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT) and 0x2FF in fingerprint[0] and
                  any(fw.ecu == Ecu.eps and bytes(fw.fwVersion) == b"8965B47070\x00\x00\x00\x00\x00\x00"
                      for fw in car_fw))
+    if candidate in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT) and fingerprint.get(0, {}).get(0x23) == 8:
+      ret.flags |= int(ToyotaFlags.ZSS)
     stop_and_go = bool(ret.flags & ToyotaFlags.TSS2)
 
     # In TSS2 cars, the camera does long control

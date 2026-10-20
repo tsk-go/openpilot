@@ -278,6 +278,9 @@ class Controls:
     # accel PID loop
     publish_takeoff_state = getattr(self.LoC, 'takeoff_starting', False)
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
+    from opendbc.car.tesla.preap.pedal_profile import accel_limits as preap_pedal_limits
+    pid_accel_limits = preap_pedal_limits(self.CP, CS.vEgo,
+      getattr(self.sm['selfdriveState'].personality, 'raw', 1), pid_accel_limits)
     longitudinal_output = self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
                                           context=self.longitudinal_inputs.context(CC.longActive))
     actuators.accel = final_output(longitudinal_output)

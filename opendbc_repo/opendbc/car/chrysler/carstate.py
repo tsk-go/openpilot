@@ -1,5 +1,6 @@
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
+from opendbc.car.chrysler.aol_contract import qualified as aol_qualified
 from opendbc.car.chrysler.values import CUSW_CARS, DBC, STEER_THRESHOLD, RAM_CARS, ChryslerFlags
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
@@ -23,6 +24,9 @@ class CarState(CarStateBase):
       self.shifter_values = can_define.dv["GEAR"]["PRNDL"]
 
     self.distance_button = 0
+    self.aol_pause_longitudinal = False
+    self.aol_pause_longitudinal_stamp_ns = 0
+    self.aol_buttons = {ButtonType.mainCruise: 0, ButtonType.cancel: 0}
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -97,7 +101,15 @@ class CarState(CarStateBase):
     self.lkas_car_model = cp_cam.vl["DAS_6"]["CAR_MODEL"]
     self.button_counter = cp.vl["CRUISE_BUTTONS"]["COUNTER"]
 
-    ret.buttonEvents = create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
+    button_events = create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
+    if aol_qualified(self.CP, marked_only=True):
+      buttons = cp.vl["CRUISE_BUTTONS"]
+      values = {ButtonType.mainCruise: bool(buttons["Cruise_OnOff"] or buttons["ACC_OnOff"]),
+                ButtonType.cancel: bool(buttons["ACC_Cancel"])}
+      for button, value in values.items():
+        button_events += create_button_events(value, self.aol_buttons[button], {1: button})
+        self.aol_buttons[button] = value
+    ret.buttonEvents = button_events
 
     return ret
 

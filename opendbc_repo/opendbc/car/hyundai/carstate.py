@@ -1,3 +1,4 @@
+from opendbc.car.hyundai.left_paddle import has_left_paddle
 from opendbc.car.hyundai.ioniq5pe_long_profile import qualified as pe_long_qualified
 from opendbc.car.hyundai.ioniq5pe_ready import PEReadySource
 from opendbc.car.hyundai.blended_stock_aol import qualified as qualified_blended_stock, qualified_alpha as qualified_blended_alpha, MixedStockLkasSources
@@ -7,6 +8,8 @@ from opendbc.car.hyundai.ev9_camera_lead import EV9CameraLead
 from opendbc.car.hyundai.canfd_camera_lead import CANFDCameraLead
 from opendbc.car.hyundai.torque_ev_scc import eligible as torque_ev_scc_eligible
 from opendbc.car.hyundai.ev9_longitudinal import qualified as ev9_long_qualified
+from opendbc.car.hyundai.canfd_angle_aol import qualified as angle_aol_qualified
+from opendbc.car.hyundai.long_buttons import LongCruiseButtons, qualified as long_buttons_qualified
 from collections import deque
 import copy
 import math
@@ -64,6 +67,8 @@ class CarState(CarStateBase):
       self.forte_lkas_sources = ClassicSccLkasSources(CP.carFingerprint)
     if qualified_blended_stock(CP) or qualified_blended_alpha(CP):
       self.forte_lkas_sources = MixedStockLkasSources(CP)
+    self.long_buttons = (LongCruiseButtons(track_main=CP.carFingerprint != CAR.HYUNDAI_IONIQ_5_PE)
+                         if long_buttons_qualified(CP) else None)
     self.pe_long = pe_long_qualified(CP)
     self.pe_ready = PEReadySource() if self.pe_long else None
     self.ev9_long = ev9_long_qualified(CP) or self.pe_long
@@ -161,10 +166,23 @@ class CarState(CarStateBase):
     return not any(cp.vl[name][signal] != 0 or any(value != 0 for value in cp.vl_all[name][signal])
                    for name, signal in signals)
 
+  def update_button_enable(self, buttonEvents):
+    if self.long_buttons is not None:
+      return self.long_buttons.button_enable
+    return super().update_button_enable(buttonEvents)
+
+  def create_main_button_events(self, cur_button, prev_button):
+    if self.long_buttons is not None:
+      return [event for current, previous in self.long_buttons.main_transitions
+              for event in create_button_events(current, previous, {1: ButtonType.mainCruise})]
+    return create_button_events(cur_button, prev_button, {1: ButtonType.mainCruise})
+
   def create_cruise_button_events(self, cur_button, prev_button, samples=()):
-    # Preserve every real edge in an alpha parser batch, including a complete
-    # Cancel press/release while the host is already enabled.
-    if is_blended(self.CP) and self.CP.openpilotLongitudinalControl:
+    if self.long_buttons is not None:
+      return [event for current, previous in self.long_buttons.cruise_transitions
+              for event in create_button_events(current, previous, BUTTONS_DICT)]
+    if (is_blended(self.CP) and self.CP.openpilotLongitudinalControl or
+        samples and self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and angle_aol_qualified(self.CP, marked_only=True)):
       events = []
       for button in samples:
         events.extend(create_button_events(int(button), prev_button, BUTTONS_DICT))
@@ -326,6 +344,31 @@ class CarState(CarStateBase):
     else:
       self.lkas11 = copy.copy(cp_cam.vl["LKAS11"])
     self.clu11 = copy.copy(cp.vl["CLU11"])
+    from opendbc.car.hyundai.classic_long_aol import independent_buttons_qualified
+    self.ev6_aol_samples = ()
+    self.ev6_aol_source_healthy = False
+    if independent_buttons_qualified(self.CP):
+      from opendbc.can.parser import MAX_BAD_COUNTER
+      source = cp.message_states.get(cp.dbc.name_to_msg['CLU11'].address)
+      self.ev6_aol_sample_stamp_ns = int(source.timestamps[-1]) if source is not None and source.timestamps else 0
+      self.ev6_aol_timeout_ns = int(source.timeout_threshold) if source is not None else 0
+      now = cp._last_update_nanos
+      bus_timeout = cp.bus_timeout
+      self.ev6_aol_source_healthy = bool(
+        not bus_timeout and source is not None and source.timestamps
+        and source.valid(now, bus_timeout) and source.counter_fail < MAX_BAD_COUNTER
+        and 0 < self.ev6_aol_sample_stamp_ns <= now
+        and now - self.ev6_aol_sample_stamp_ns <= source.timeout_threshold)
+      values = cp.vl_all['CLU11']
+      self.ev6_aol_samples = tuple((main, 0, cruise) for main, cruise in zip(
+        values['CF_Clu_CruiseSwMain'], values['CF_Clu_CruiseSwState'], strict=True))
+
+    if self.long_buttons is not None:
+      values = cp.vl_all['CLU11']
+      self.long_buttons.observe((main, False, cruise) for main, cruise in zip(
+        values['CF_Clu_CruiseSwMain'], values['CF_Clu_CruiseSwState'], strict=True))
+      ret.cruiseState.available = self.long_buttons.available(ret.cruiseState.available)
+
     self.steer_state = cp.vl["MDPS12"]["CF_Mdps_ToiActive"]  # 0 NOT ACTIVE, 1 ACTIVE
     prev_cruise_buttons = self.cruise_buttons[-1]
     prev_main_buttons = self.main_buttons[-1]
@@ -348,7 +391,7 @@ class CarState(CarStateBase):
 
     button_events = [*self.create_cruise_button_events(self.cruise_buttons[-1], prev_cruise_buttons,
                                                         cp.vl_all["CLU11"]["CF_Clu_CruiseSwState"]),
-                        *create_button_events(self.main_buttons[-1], prev_main_buttons, {1: ButtonType.mainCruise}),
+                        *self.create_main_button_events(self.main_buttons[-1], prev_main_buttons),
                         *create_button_events(self.lda_button, prev_lda_button, {1: ButtonType.lkas})]
 
     if self.forte_lkas_sources is not None and getattr(self.forte_lkas_sources, 'active', True):
@@ -514,6 +557,11 @@ class CarState(CarStateBase):
         and now - self.ev6_aol_sample_stamp_ns <= source.timeout_threshold)
       values = cp.vl_all[self.cruise_btns_msg_canfd]
       self.ev6_aol_samples = tuple(zip(values['ADAPTIVE_CRUISE_MAIN_BTN'], values['LDA_BTN'], values['CRUISE_BUTTONS'], strict=True))
+    if self.long_buttons is not None:
+      values = cp.vl_all[self.cruise_btns_msg_canfd]
+      self.long_buttons.observe(zip(values['ADAPTIVE_CRUISE_MAIN_BTN'], values['NORMAL_CRUISE_MAIN_BTN'],
+                                    values['CRUISE_BUTTONS'], strict=True))
+      ret.cruiseState.available = self.long_buttons.available(ret.cruiseState.available)
     prev_cruise_buttons = self.cruise_buttons[-1]
     prev_main_buttons = self.main_buttons[-1]
     prev_lda_button = self.lda_button
@@ -521,7 +569,7 @@ class CarState(CarStateBase):
     self.main_buttons.extend(cp.vl_all[self.cruise_btns_msg_canfd]["ADAPTIVE_CRUISE_MAIN_BTN"])
     self.lda_button = cp.vl[self.cruise_btns_msg_canfd]["LDA_BTN"]
     prev_left_paddle = self.left_paddle
-    self.left_paddle = cp.vl["CRUISE_BUTTONS"]["LEFT_PADDLE"] if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 else 0
+    self.left_paddle = cp.vl["CRUISE_BUTTONS"]["LEFT_PADDLE"] if has_left_paddle(self.CP) else 0
     self.buttons_counter = cp.vl[self.cruise_btns_msg_canfd]["COUNTER"]
     if not self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and self.CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CARNIVAL_ALT_RESUME:
       self.cruise_buttons_alt_ts_ns = cp.ts_nanos["CRUISE_BUTTONS_ALT"]["COUNTER"]
@@ -535,8 +583,9 @@ class CarState(CarStateBase):
       if self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
         self.angle_lkas_status = copy.copy(cp_cam.vl["LKAS_ALT" if self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG_ALT else "LKAS"])
 
-    ret.buttonEvents = [*create_button_events(self.cruise_buttons[-1], prev_cruise_buttons, BUTTONS_DICT),
-                        *create_button_events(self.main_buttons[-1], prev_main_buttons, {1: ButtonType.mainCruise}),
+    ret.buttonEvents = [*self.create_cruise_button_events(self.cruise_buttons[-1], prev_cruise_buttons,
+                                                        cp.vl_all[self.cruise_btns_msg_canfd]["CRUISE_BUTTONS"]),
+                        *self.create_main_button_events(self.main_buttons[-1], prev_main_buttons),
                         *create_button_events(self.lda_button, prev_lda_button, {1: ButtonType.lkas}),
                         *create_button_events(self.left_paddle, prev_left_paddle, {1: ButtonType.altButton2})]
 

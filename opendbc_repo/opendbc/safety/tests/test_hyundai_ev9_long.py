@@ -36,6 +36,9 @@ class Ev9LongFixture:
   def ready(self):
     for _ in range(6):
       self.feed()
+    self.assertTrue(self.safety.safety_rx_hook(self.packet('CRUISE_BUTTONS', 1, {'ADAPTIVE_CRUISE_MAIN_BTN': 1})))
+    self.assertTrue(self.safety.safety_rx_hook(self.packet('CRUISE_BUTTONS', 1, {})))
+    self.feed()
     self.assertAlmostEqual(self.safety.get_vehicle_speed_min(), 40.0 / 3.6, places=3)
     self.assertTrue(self.safety.get_controls_allowed())
 
@@ -95,7 +98,8 @@ class TestEv9LongDebugContract(Ev9LongFixture, unittest.TestCase):
       for tick in range(1, 701):
         self.now = tick * 10_000
         self.safety.set_timer(self.now)
-        frames = packets(self.packer, tick, moving=False, advance_counter=True, cruise_button=2 if tick == 12 else 0)
+        frames = packets(self.packer, tick, moving=False, advance_counter=True, cruise_button=2 if tick == 12 else 0,
+                         adaptive_main=tick == 8)
         # Low physical speed permits the target cap to be observed directly.
         wheel_addr = self.packer.make_can_msg('WHEEL_SPEEDS', 1, {})[0]
         frames = [f for f in frames if f[0] != wheel_addr]
