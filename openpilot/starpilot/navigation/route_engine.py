@@ -94,6 +94,11 @@ class NavigationRoute:
       self.starts = [step.start for step in self.steps]
     except (KeyError, TypeError, IndexError, AttributeError):
       raise ValidationError('The map service returned an incomplete route') from None
+    # StarView's map: traffic, incidents and the step list. Optional: a route without them still drives.
+    try:
+      self.details = route_details(data, self.points, self.cumulative)
+    except (KeyError, TypeError, IndexError, AttributeError, ValueError):
+      self.details = {}
 
   def preview(self) -> list[dict]:
     stride = max(1, math.ceil((len(self.points) - 1) / 511))
@@ -138,6 +143,90 @@ class NavigationRoute:
     return Progress(instruction, next_maneuver, separation > threshold or misaligned, arrived)
 
 
+CONGESTION = {'unknown': 0, 'low': 1, 'moderate': 2, 'heavy': 3, 'severe': 4}
+CLOSED = 5
+# Values sent to Mapbox's `exclude` that are still beta: a route request refused with them is asked again without them.
+BETA_EXCLUSIONS = ('tunnel', 'country_border')
+
+
+def encode_polyline(points) -> str:
+  """Google's encoded polyline (precision 5, ~1 m): a 20000-point route in about 100 kB instead of 600 kB of JSON."""
+  out, last = [], (0, 0)
+  for lon, lat in points:
+    now = (round(lat * 1e5), round(lon * 1e5))
+    for value in (now[0] - last[0], now[1] - last[1]):
+      value = ~(value << 1) if value < 0 else value << 1
+      while value >= 0x20:
+        out.append(chr((0x20 | (value & 0x1f)) + 63))
+        value >>= 5
+      out.append(chr(value + 63))
+    last = now
+  return ''.join(out)
+
+
+def _text(value, limit=160) -> str:
+  return value.strip()[:limit] if isinstance(value, str) else ''
+
+
+def route_details(data: dict, points, cumulative) -> dict:
+  """What the StarView tablet's map shows beside the route line: live traffic along it (distance runs), closures,
+  incidents, the turn-by-turn list, what kind of roads it uses and how long it usually takes."""
+  leg = data['legs'][0]
+  last = len(points) - 1
+  # in Mapbox's step metres, like the steps and progress() (the line's own length differs a little)
+  scale = sum(float(step['distance']) for step in leg['steps']) / max(cumulative[-1], 1.)
+  cumulative = [value * scale for value in cumulative]
+
+  def along(index):
+    return cumulative[min(max(int(index), 0), last)]
+
+  levels = (leg.get('annotation') or {}).get('congestion') or []
+  closed = [0] * max(0, last)
+  for row in leg.get('closures') or []:
+    for index in range(max(0, int(row['geometry_index_start'])), min(last, int(row['geometry_index_end']))):
+      closed[index] = 1
+  traffic = []
+  for index in range(last):
+    level = CLOSED if closed[index] else CONGESTION.get(levels[index], 0) if index < len(levels) else 0
+    if traffic and traffic[-1][2] == level:
+      traffic[-1][1] = round(cumulative[index + 1], 1)
+    else:
+      traffic.append([round(cumulative[index], 1), round(cumulative[index + 1], 1), level])
+  if len(traffic) == 1 and traffic[0][2] == 0:
+    traffic = []
+  incidents = []
+  for row in (leg.get('incidents') or [])[:40]:
+    start = int(row.get('geometry_index_start', 0))
+    point = points[min(max(start, 0), last)]
+    incidents.append({'id': _text(str(row.get('id', '')), 64), 'type': _text(row.get('type'), 40),
+                      'subType': _text(row.get('sub_type'), 40), 'impact': _text(row.get('impact'), 20),
+                      'description': _text(row.get('description')), 'closed': row.get('closed') is True,
+                      'startMeters': round(along(start), 1), 'endMeters': round(along(row.get('geometry_index_end', start)), 1),
+                      'longitude': round(point[0], 6), 'latitude': round(point[1], 6)})
+  steps, classes, offset = [], set(), 0.
+  for index, step in enumerate(leg['steps'][:2048]):
+    maneuver = step['maneuver']
+    for crossing in step.get('intersections') or []:
+      classes.update(value for value in crossing.get('classes') or [] if value in ('toll', 'motorway', 'ferry', 'tunnel', 'restricted'))
+    location = maneuver.get('location') or points[0]
+    previous = leg['steps'][index - 1].get('bannerInstructions') if index else None
+    text = maneuver.get('instruction') or (previous[-1].get('primary', {}).get('text') if previous else None) or ''
+    steps.append({'text': _text(text, 256), 'type': _text(maneuver.get('type'), 40), 'modifier': _text(modifier(maneuver.get('modifier', '')), 40),
+                  'road': _text(step.get('name'), 120), 'ref': _text(step.get('ref'), 60), 'startMeters': round(offset, 1),
+                  'distanceMeters': round(float(step['distance']), 1), 'durationSeconds': round(float(step['duration']), 1),
+                  'longitude': round(float(location[0]), 6), 'latitude': round(float(location[1]), 6)})
+    offset += float(step['distance'])
+  typical = data.get('duration_typical')
+  return {'via': _text(leg.get('summary'), 120), 'typicalSeconds': float(typical) if type(typical) in (int, float) and math.isfinite(typical) else None,
+          'classes': sorted(classes), 'traffic': traffic, 'incidents': incidents, 'steps': steps,
+          'polyline': encode_polyline(points)}
+
+
+def _request_values(exclusions):
+  """exclusions: Mapbox `exclude` values, and `include` values marked with a leading '+' (carpool / express lanes)."""
+  return [value for value in exclusions if not value.startswith('+')], [value[1:] for value in exclusions if value.startswith('+')]
+
+
 class MapboxRouteEngine:
   def __init__(self, session, budget=None):
     self.session = session
@@ -149,12 +238,30 @@ class MapboxRouteEngine:
       self.budget.spend(enforce=False)  # upstream routing: counted for Setup, never refused
     url = ('https://api.mapbox.com/directions/v5/mapbox/driving-traffic/' +
            f'{position[0]},{position[1]};{destination["longitude"]},{destination["latitude"]}')
-    params = {'access_token': token, 'geometries': 'geojson', 'steps': 'true', 'overview': 'full', 'banner_instructions': 'true', 'alternatives': 'true'}
-    if exclusions:
-      params['exclude'] = ','.join(exclusions)
+    params = {'access_token': token, 'geometries': 'geojson', 'steps': 'true', 'overview': 'full', 'banner_instructions': 'true', 'alternatives': 'true',
+              'annotations': 'congestion,closure'}
+    exclude, include = _request_values(exclusions)
+    if exclude:
+      params['exclude'] = ','.join(exclude)
+    if include:
+      params['include'] = ','.join(include)
     if bearing is not None:
       params['bearings'] = f'{int(bearing % 360)},90;'
-    data = response_json(self.session, url, params)
+    try:
+      data = response_json(self.session, url, params)
+    except ValidationError:
+      if not include and not any(value in BETA_EXCLUSIONS for value in exclude):
+        raise
+      # Mapbox's beta exclusions and lane includes can be refused: route without them rather than not at all.
+      stable = [value for value in exclude if value not in BETA_EXCLUSIONS]
+      if stable:
+        params['exclude'] = ','.join(stable)
+      else:
+        params.pop('exclude', None)
+      params.pop('include', None)
+      if self.budget is not None:
+        self.budget.spend(enforce=False)
+      data = response_json(self.session, url, params)
     if data.get('code') != 'Ok' or not data.get('routes'):
       raise ValidationError('No driving route was found')
     routes = [NavigationRoute(row) for row in data['routes'][:3]]

@@ -5,11 +5,13 @@ free tier for the calendar month (UTC, as Mapbox bills). The last 1% absorbs
 small differences between this count and Mapbox's (sessions Mapbox splits on its
 own, counts not yet written when a process restarts). Requests made with the
 same key elsewhere (another comma, a web page) are not seen here. Counts persist across
-restarts. One file per service, written only by the process that uses it.
+restarts. One file per service; processes that share a service (Galaxy and StarView both show map tiles) add their
+own counts to the file under a lock instead of overwriting each other's.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
@@ -53,6 +55,7 @@ class MonthlyBudget:
     self.limit = int(FREE[service] * STOP_FRACTION)
     self._lock = threading.Lock()
     self._dirty = 0
+    self._pending = 0   # counted here since the last write, not yet added to the file
     self.month, self.used = _month(clock()), 0
     try:
       value = json.loads(self.path.read_text())
@@ -64,7 +67,7 @@ class MonthlyBudget:
   def _roll(self) -> None:
     month = _month(self.clock())
     if month != self.month:
-      self.month, self.used, self._dirty = month, 0, 1
+      self.month, self.used, self._dirty, self._pending = month, 0, 1, 0
 
   def remaining(self) -> int:
     with self._lock:
@@ -82,6 +85,7 @@ class MonthlyBudget:
         raise BudgetExhausted(f"This month's free Mapbox {LABELS[self.service]} are used up. They reset on the 1st.")
       self.used += count
       self._dirty += count
+      self._pending += count
       if self._dirty >= self.flush_every:
         self._flush_locked()
 
@@ -99,11 +103,21 @@ class MonthlyBudget:
       return
     try:
       self.path.parent.mkdir(parents=True, exist_ok=True)
-      fd, temp = tempfile.mkstemp(dir=self.path.parent, prefix=".tmp-")
-      with os.fdopen(fd, "w") as handle:
-        json.dump({"month": self.month, "used": self.used}, handle)
-      os.replace(temp, self.path)
-      self._dirty = 0
+      with open(self.path.with_name(f".{self.service}.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        stored = 0
+        try:
+          value = json.loads(self.path.read_text())
+          if isinstance(value, dict) and value.get("month") == self.month and type(value.get("used")) is int and value["used"] >= 0:
+            stored = value["used"]
+        except (OSError, ValueError):
+          pass
+        used = max(stored + self._pending, self.used if stored == 0 else 0)
+        fd, temp = tempfile.mkstemp(dir=self.path.parent, prefix=".tmp-")
+        with os.fdopen(fd, "w") as handle:
+          json.dump({"month": self.month, "used": used}, handle)
+        os.replace(temp, self.path)
+      self.used, self._dirty, self._pending = used, 0, 0
     except OSError:
       pass  # counting continues in memory; the next write retries
 

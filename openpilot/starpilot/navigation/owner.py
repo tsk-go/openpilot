@@ -40,8 +40,34 @@ MAX_FAVORITES = 100
 MAX_RECENTS = 10
 FAVORITE_LABELS = ('home', 'work')
 ROUTE_AVOIDANCES = {'avoidTolls': 'toll', 'avoidHighways': 'motorway', 'avoidFerries': 'ferry'}
+# StarView's further route options, beside upstream's three (missing in older settings = off). Carpool lanes (HOV) are
+# left out of routes unless the car has the people for them; express lanes (HOT) charge a toll below that.
+ROUTE_MORE_AVOIDANCES = {'avoidUnpaved': 'unpaved', 'avoidCashTolls': 'cash_only_tolls', 'avoidTunnels': 'tunnel',
+                         'avoidBorders': 'country_border'}
+CARPOOL_INCLUDES = {0: (), 2: ('hov2',), 3: ('hov2', 'hov3')}
+ROUTE_MORE_KEYS = (*ROUTE_MORE_AVOIDANCES, 'carpool', 'expressLanes')
+
+
+def route_more(settings: dict) -> dict:
+  carpool = settings.get('carpool')
+  return {**{key: settings.get(key) is True for key in ROUTE_MORE_AVOIDANCES},
+          'carpool': carpool if type(carpool) is int and carpool in CARPOOL_INCLUDES else 0,
+          'expressLanes': settings.get('expressLanes') is True}
+
+
+def route_exclusions(settings: dict) -> tuple[str, ...]:
+  """Mapbox `exclude` values for the saved route options; `include` values carry a leading '+'."""
+  more = route_more(settings)
+  values = [value for key, value in ROUTE_AVOIDANCES.items() if settings.get(key) is True]
+  values += [value for key, value in ROUTE_MORE_AVOIDANCES.items() if more[key]]
+  values += ['+' + value for value in CARPOOL_INCLUDES[more['carpool']]]
+  if more['expressLanes'] and settings.get('avoidTolls') is not True:
+    values.append('+hot')
+  return tuple(values)
 # Fixed provider styles matching Galaxy; cache entries are separate for each theme.
-MAP_STYLES = {'light': 'mapbox/light-v11', 'dark': 'mapbox/dark-v11'}
+MAP_STYLES = {'light': 'mapbox/light-v11', 'dark': 'mapbox/dark-v11',
+              # StarView's map: Mapbox's navigation styles, with live traffic drawn on every road
+              'trafficLight': 'mapbox/navigation-day-v1', 'trafficDark': 'mapbox/navigation-night-v1'}
 
 
 class ValidationError(ValueError):
@@ -395,6 +421,43 @@ class NavigationOwner:
         os.replace(name, self.transient_root / 'routes.cache')
       finally:
         Path(name).unlink(missing_ok=True)
+      self._record_details(routes)
+
+  def route_details(self) -> list[dict]:
+    """Traffic, incidents, steps and full geometry of the routes last offered (StarView's map), matched to
+    route_options() rows by distance and duration."""
+    try:
+      value = json.loads((self.transient_root / 'routes.detail').read_text())
+      return value['routes'] if time.monotonic() < value['expires'] else []
+    except (OSError, ValueError, KeyError, TypeError):
+      return []
+
+  def _record_details(self, routes):
+    rows = [dict(getattr(route, 'details', None) or {}, durationSeconds=route.total_duration, distanceMeters=route.total_distance)
+            for route in routes]
+    fd, name = tempfile.mkstemp(dir=self.transient_root, prefix='.details-')
+    try:
+      with os.fdopen(fd, 'w') as out:
+        json.dump({'expires': time.monotonic() + ACTIVE_TTL, 'routes': rows}, out, allow_nan=False, separators=(',', ':'))
+      os.replace(name, self.transient_root / 'routes.detail')
+    except (OSError, ValueError, TypeError):
+      pass
+    finally:
+      Path(name).unlink(missing_ok=True)
+
+  def configure_more(self, patch: dict, expected_revision: str, authorized) -> dict:
+    """StarView's further route options (ROUTE_MORE_KEYS); a change asks for new routes like upstream's options."""
+    if not isinstance(patch, dict) or not patch or set(patch) - set(ROUTE_MORE_KEYS):
+      raise ValidationError('Unknown navigation setting')
+    if any(type(patch[key]) is not bool for key in patch if key != 'carpool'):
+      raise ValidationError('Route avoidance settings must be on or off')
+    if 'carpool' in patch and (type(patch['carpool']) is not int or patch['carpool'] not in CARPOOL_INCLUDES):
+      raise ValidationError('Carpool lanes are off, 2+ or 3+ people')
+    def update(value):
+      if any(patch[key] != route_more(value)[key] for key in patch):
+        value['routeChoice'] = 0
+      value.update(patch)
+    return self._change(update, expected_revision, authorized, preserve_active=True)
 
   def select_route(self, index, expected_revision, authorized):
     if self.read()['revision'] != expected_revision:

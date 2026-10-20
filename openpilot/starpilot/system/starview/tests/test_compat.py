@@ -90,11 +90,11 @@ def _nav(status="guiding"):
 
 
 def test_nav_instruction_state_from_70_navigation():
-  s = compat.nav_instruction_state(_nav(), extra={"wazeFresh": False})
+  s = compat.nav_instruction_state(_nav())
   assert s["valid"] and s["maneuverPrimaryText"] == "Avenue N"
   assert (s["maneuverType"], s["maneuverModifier"], s["maneuverDistance"]) == ("turn", "left", 120.0)
   assert s["nextManeuverModifier"] == "right" and s["updatedAtMonotonic"] == 5.0
-  assert s["destination"] == "Home" and s["wazeFresh"] is False
+  assert s["destination"] == "Home"
   assert compat.nav_instruction_state(_nav("routing")) is None
 
 
