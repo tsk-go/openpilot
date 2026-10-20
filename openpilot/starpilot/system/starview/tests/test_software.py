@@ -44,7 +44,8 @@ def test_fast_update_of_the_installed_branch(monkeypatch):
   owner = FakeOwner()
   d = ops(monkeypatch, owner)
   assert d.software_fast() == {"ok": True, "branch": "SecretGoodStarPilot_v2"}
-  assert owner.calls == [("fast", {"action": "fast", "branch": "SecretGoodStarPilot_v2"})]
+  # Galaxy's Update button: fast when possible, the full update otherwise
+  assert owner.calls == [("update", {"action": "update", "branch": "SecretGoodStarPilot_v2"})]
   assert d._software() is owner                       # one owner, kept
 
 
