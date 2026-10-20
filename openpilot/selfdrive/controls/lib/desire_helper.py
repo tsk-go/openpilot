@@ -13,6 +13,8 @@ LANE_CHANGE_START_TIME = 0.5
 # this long, and only within STARVIEW_CONFIRM_MAX_S of the confirmation; an occupied blind spot cancels it
 STARVIEW_SETTLE_S = 0.5
 STARVIEW_CONFIRM_MAX_S = 5.0
+# StarView's nudge strength (starpilot/system/starview/nudge.py): the driver's torque toward that side, held this long
+NUDGE_HOLD_S = 0.15
 
 class DesireHelper:
   def __init__(self, policy: LaneChangePolicy | None = None):
@@ -27,6 +29,7 @@ class DesireHelper:
     self.auto_signal_blocked = False
     self.last_signal_direction = LaneChangeDirection.none
     self.auto_status = "manualRequired"
+    self.nudge_s = 0.0
     self._starview_reset()
 
   def _starview_reset(self):
@@ -39,12 +42,13 @@ class DesireHelper:
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
   def update(self, carstate, lateral_active, lane_change_prob, *, auto_evidence=False, engaged=False, navigation_turn=False,
-             starview_lane=False, starview_evidence=False):
+             starview_lane=False, starview_evidence=False, nudge_torque=None):
     """starview_lane: StarView's tablet holds this blinker for a lane change the driver confirmed there (tap, nudge or
     its countdown; starpilot/system/starview/blinker_signal.py). It stands in for the nudge once per blinker hold, when
     starview_evidence (the adjacent lane, as for an automatic lane change) and a clear blind spot have held for
     STARVIEW_SETTLE_S, within STARVIEW_CONFIRM_MAX_S. Confirmed while openpilot wasn't steering, or with the blind spot
-    occupied: void (the driver nudges, or confirms again)."""
+    occupied: void (the driver nudges, or confirms again).
+    nudge_torque: StarView's nudge strength in the car's torque units; None = the stock steeringPressed rule."""
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     if not carstate.leftBlinker and not carstate.rightBlinker:
@@ -77,6 +81,7 @@ class DesireHelper:
         self.lane_change_state = LaneChangeState.preLaneChange
         self.lane_change_timer = 0.0
         self.pre_lane_change_timer = 0.0
+        self.nudge_s = 0.0
         # Initialize lane change direction to prevent UI alert flicker
         self.lane_change_direction = self.get_lane_change_direction(carstate)
 
@@ -84,9 +89,13 @@ class DesireHelper:
         # Update lane change direction
         self.lane_change_direction = self.get_lane_change_direction(carstate)
 
-        torque_applied = carstate.steeringPressed and \
-                         ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
-                          (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+        toward = ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
+                  (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+        if nudge_torque is None:
+          torque_applied = carstate.steeringPressed and toward
+        else:
+          self.nudge_s = self.nudge_s + DT_MDL if toward and abs(carstate.steeringTorque) >= nudge_torque else 0.0
+          torque_applied = self.nudge_s >= NUDGE_HOLD_S - 1e-6
 
         blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
                               (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))

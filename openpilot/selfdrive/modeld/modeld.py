@@ -40,6 +40,7 @@ from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
 from openpilot.starpilot.lateral.auto_lane_change import ClockEpochGuard, auto_evidence, paired_clocks_ns, session_policy, steering_capable
 from openpilot.starpilot.system.starview.blinker_signal import StarViewSignal
+from openpilot.starpilot.system.starview.nudge import NudgeSetting
 from openpilot.starpilot.lateral.lane_change_status_wire import (
   Direction as StatusDirection, LaneChangeStatus, Phase as StatusPhase, encode_optional as encode_lane_status,
 )
@@ -476,6 +477,7 @@ def main(demo=False):
   DH = DesireHelper(runtime_lane_policy)
   navigation_turn = TurnIntent()
   starview = StarViewSignal()
+  nudge_setting = NudgeSetting(CP.brand)   # the tablet's nudge strength for lane changes (Toyota)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
 
@@ -643,7 +645,8 @@ def main(demo=False):
       route_turn = matching_turn_signal(sm, mono_now_ns, supported=turn_supported) and starview_why != "lane"
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=route_turn or starview_why == "turn", starview_lane=starview_lane, starview_evidence=starview_evidence)
+                navigation_turn=route_turn or starview_why == "turn", starview_lane=starview_lane, starview_evidence=starview_evidence,
+                nudge_torque=nudge_setting.torque())
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 
