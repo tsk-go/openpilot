@@ -1552,6 +1552,14 @@ class Hub:
         return self.nav.cancel()
       if act == "nav_route":
         return self.nav.select_route(req.get("index"))
+      if act == "nav_search":
+        return self.nav.search(req.get("query"), req.get("searchId"), req.get("clientId"), req.get("latitude"), req.get("longitude"))
+      if act == "nav_tiles":
+        return self.nav.tiles_used(req.get("count"))
+      if act == "nav_pick":
+        return self.nav.pick(req.get("id"), req.get("searchId"))
+      if act == "nav_category":
+        return self.nav.category(req.get("category"), req.get("latitude"), req.get("longitude"), req.get("route"))
       if act == "nav_options":
         return self.nav.options(req.get("options"))
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
@@ -1663,8 +1671,8 @@ async def _action(ws, hub, c, req):
     await ws.send_str(json.dumps(ack))
   except Exception as e:
     cloudlog.warning(f"starview: action {req.get('action')}: {e}")
-  if req.get("action") in ("nav_state", "nav_list"):
-    return   # reads only: no params resend (the map asks every 2 s)
+  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles"):
+    return   # reads only: no params resend (the map asks every 2 s, the search on every keystroke)
   hub.invalidate_params_snapshot()
   c.force_params = True
 

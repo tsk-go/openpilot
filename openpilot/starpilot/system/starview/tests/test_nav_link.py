@@ -1,5 +1,6 @@
 """The tablet's navigation map: route details from Mapbox, route options, traffic refresh, nav_link.NavLink."""
 import json
+import uuid
 from concurrent.futures import Future
 from types import SimpleNamespace
 import pytest
@@ -20,6 +21,8 @@ def mapbox_route(lat=0., duration=300., congestion=('low', 'heavy', 'heavy'), in
            {'distance': 2224., 'duration': duration - 100, 'name': 'Main Street', 'maneuver': {'type': 'depart', 'instruction': 'Head east on Main Street',
             'location': points[0]}, 'intersections': [{'classes': ['toll']}, {'classes': ['motorway', 'bogus']}]},
            {'distance': 1112., 'duration': 100., 'name': 'Ocean Parkway', 'ref': 'NY 908',
+            'voiceInstructions': [{'distanceAlongGeometry': 1000., 'announcement': 'Continue for a half mile'},
+                                  {'distanceAlongGeometry': 100., 'announcement': 'In 300 feet, you will arrive'}],
             'maneuver': {'type': 'turn', 'modifier': 'slight right', 'instruction': 'Turn right onto Ocean Parkway', 'location': points[2]}},
            {'distance': 0., 'duration': 0., 'name': '', 'maneuver': {'type': 'arrive', 'instruction': 'You have arrived', 'location': points[3]}}]}
   if incidents:
@@ -289,3 +292,100 @@ def test_refused_carpool_lanes_route_without_them(monkeypatch):
   monkeypatch.setattr(ENGINE, answer)
   MapboxRouteEngine(None).fetch('pk.test', (0., 0.), PLACE, None, ('toll', '+hov2'))
   assert [(c.get('exclude'), c.get('include')) for c in calls] == [('toll', 'hov2'), ('toll', None)]
+
+
+def test_spoken_guidance_where_mapbox_times_it():
+  d = NavigationRoute(mapbox_route()).details
+  assert d['voice'] == [[2336., 'Continue for a half mile'], [3236., 'In 300 feet, you will arrive']]
+
+
+def test_route_request_asks_for_spoken_guidance(monkeypatch):
+  sent = []
+  monkeypatch.setattr(ENGINE, lambda session, url, params: sent.append(params) or {'code': 'Ok', 'routes': [mapbox_route()]})
+  MapboxRouteEngine(None).fetch('pk.test', (0., 0.), PLACE, None, ())
+  assert sent[0]['voice_instructions'] == 'true' and sent[0]['voice_units'] in ('imperial', 'metric')
+
+
+OWNER_JSON = 'openpilot.starpilot.navigation.owner.response_json'
+LINK_JSON = 'openpilot.starpilot.system.starview.nav_link.response_json'
+
+
+def test_search_as_you_type_near_the_car_then_pick(owner, monkeypatch):
+  link = NavLink(owner=owner)
+  owner.runtime_source = link._source      # as starviewd builds it: searches are near the car the tablet reports
+  sent = []
+  suggestion = {'mapbox_id': 'poi/1', 'name': 'Starbucks', 'feature_type': 'poi', 'full_address': '1 Kings Hwy, Brooklyn', 'distance': 804.,
+                'maki': 'cafe', 'poi_category': ['coffee', 'cafe']}
+  monkeypatch.setattr(OWNER_JSON, lambda session, url, params: sent.append(params) or {'suggestions': [suggestion]})
+  sid, cid = str(uuid.uuid4()), str(uuid.uuid4())
+  assert link.search('s', sid, cid, 40.6, -73.95) == {'ok': True, 'results': []}       # one letter: nothing asked
+  res = link.search('starb', sid, cid, 40.6, -73.95)
+  row = res['results'][0]
+  assert row['name'] == 'Starbucks' and row['distanceMeters'] == 804. and row['maki'] == 'cafe' and row['category'] == 'coffee'
+  assert sent[0]['proximity'] == '-73.950000,40.600000'
+  link.search('starbu', sid, cid, 40.6, -73.95)
+  assert sent[0]['session_token'] == sent[1]['session_token']             # one billed session while typing
+  feature = {'features': [{'properties': {'mapbox_id': 'poi/1', 'name': 'Starbucks', 'full_address': '1 Kings Hwy'},
+                           'geometry': {'coordinates': [-73.96, 40.61]}}]}
+  monkeypatch.setattr(OWNER_JSON, lambda *a: feature)
+  picked = link.pick('poi/1', sid)
+  assert picked['destination']['name'] == 'Starbucks' and picked['destination']['temporary'] is True
+
+
+def test_category_near_the_car_and_along_the_route(owner, monkeypatch):
+  link = NavLink(owner=owner)
+  calls = []
+  def answer(session, url, params):
+    calls.append((url, dict(params)))
+    if url.endswith('/list/category'):
+      return {'listItems': [{'canonical_id': 'gas_station'}, {'canonical_id': 'ev_charging_station'}]}
+    if 'route' in params and len(calls) == 3:
+      raise ValidationError('refused')
+    return {'features': [{'properties': {'name': 'Shell', 'full_address': '9 Ocean Pkwy', 'distance': 1200.}, 'geometry': {'coordinates': [-73.9, 40.6]}},
+                         {'properties': {'name': 'bad'}, 'geometry': {'coordinates': ['x']}}]}
+  monkeypatch.setattr(LINK_JSON, answer)
+  with pytest.raises(ValidationError, match='Unknown'):
+    link.category('casino', 40.6, -73.9)
+  res = link.category('gas', 40.6, -73.9)
+  assert [r['name'] for r in res['results']] == ['Shell'] and res['results'][0]['distanceMeters'] == 1200. and not res['alongRoute']
+  assert calls[1][0].endswith('/category/gas_station') and calls[1][1]['proximity'] == '-73.900000,40.600000'
+  ev = link.category('ev', 40.6, -73.9, route='_p~iF~ps|U_ulLnnqC')           # refused along the route: near the car instead
+  assert calls[2][0].endswith('/category/ev_charging_station') and calls[2][1]['sar_type'] == 'isochrone'
+  assert 'route' not in calls[3][1] and ev['alongRoute'] is False
+  link.category('gas', 40.6, -73.9, route='_p~iF~ps|U_ulLnnqC')
+  assert calls[4][1]['route_geometry'] == 'polyline'
+  assert owner.search_budget.snapshot()['used'] == 3                         # each one counted with the searches
+  owner.search_budget.used = owner.search_budget.limit
+  with pytest.raises(ValidationError, match='used up'):
+    link.category('gas', 40.6, -73.9)
+
+
+def test_lane_guidance_from_the_banner_else_the_intersection():
+  raw = mapbox_route()
+  steps = raw['legs'][0]['steps']
+  steps[0]['bannerInstructions'] = [{'primary': {'text': 'Ocean Parkway'}, 'sub': {'components': [
+    {'type': 'lane', 'directions': ['left'], 'active': False},
+    {'type': 'lane', 'directions': ['straight', 'right'], 'active': True, 'active_direction': 'right'},
+    {'type': 'lane', 'directions': ['right'], 'active': True}]}}]
+  steps[2]['intersections'] = [{'lanes': [{'indications': ['straight'], 'valid': True, 'valid_indication': 'straight'},
+                                          {'indications': ['right'], 'valid': False}]}]
+  lanes = [s['lanes'] for s in NavigationRoute(raw).details['steps']]
+  assert lanes[0] == []
+  assert lanes[1] == [{'d': ['left'], 'ok': False, 'use': ''}, {'d': ['straight', 'right'], 'ok': True, 'use': 'right'},
+                      {'d': ['right'], 'ok': True, 'use': 'right'}]
+  assert lanes[2] == [{'d': ['straight'], 'ok': True, 'use': 'straight'}, {'d': ['right'], 'ok': False, 'use': ''}]
+  steps[0]['bannerInstructions'] = [{'sub': {'components': [{'type': 'lane', 'directions': 'bad'}, 'junk']}}]
+  assert NavigationRoute(raw).details['steps'][1]['lanes'] == []          # odd data: no lanes, the rest still there
+
+
+def test_tablet_fetches_tiles_itself_and_reports_them(owner):
+  link = NavLink(owner=owner)
+  s = link.state()
+  assert s['tileKey'] == 'pk.test'
+  before = owner.tile_budget.snapshot()['used']
+  assert link.tiles_used(40)['ok'] and owner.tile_budget.snapshot()['used'] == before + 40
+  link.tiles_used(-3)
+  link.tiles_used('9')
+  assert owner.tile_budget.snapshot()['used'] == before + 40
+  owner.tile_budget.used = owner.tile_budget.limit
+  assert 'tileKey' not in link.state()                                      # the free map views are used up

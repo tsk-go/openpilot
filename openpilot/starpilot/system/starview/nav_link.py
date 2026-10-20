@@ -8,8 +8,15 @@
          --control "nav_route" {index}                               drive another of the offered routes
          --control "nav_options" {avoidTolls: true, carpool: 2, ...} route options (upstream's three + StarView's)
          --control "nav_list"                                        favourites and recent destinations
+         --control "nav_search" {query, searchId, clientId, latitude?, longitude?}   places as you type (Mapbox Search
+                                     Box, one billed session per search; near the car)
+         --control "nav_pick" {id, searchId}                         drive to a place from those results
+         --control "nav_category" {category, latitude, longitude, route?}   gas, EV charging, coffee, food ... near the car,
+                                     or along the route (route: encoded polyline of the road ahead)
          --GET /nav/tile/{style}/{z}/{x}/{y}.png-->                  Mapbox map tiles through owner.map_tile (cached,
                                                                      counted in the comma's Mapbox usage)
+         --control "nav_tiles" {count}                               tiles the tablet fetched from Mapbox itself (with
+                                                                     the key nav_state gives it), added to that count
 navigationd plans the route, offers the alternatives, follows the drive and asks again for live traffic every 5 minutes
 (runtime.py); this module only reads its results and changes its settings, like Galaxy does.
 """
@@ -17,13 +24,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import threading
+import time
 
 from openpilot.starpilot.navigation.owner import (ConflictError, NavigationOwner, ROUTE_AVOIDANCES, ROUTE_MORE_KEYS,
-                                                  ValidationError, route_more)
+                                                  ValidationError, response_json, route_more)
 from openpilot.starpilot.navigation.wire import navigation_state
+
+CALLER = "starview"
+SEARCH_URL = "https://api.mapbox.com/search/searchbox/v1"
+# the tablet's quick searches -> Mapbox canonical categories (the first one Mapbox lists is used)
+CATEGORIES = {
+  "gas": ("gas_station",), "ev": ("charging_station", "ev_charging_station", "electric_vehicle_charging_station"),
+  "coffee": ("coffee", "cafe", "coffee_shop"), "food": ("restaurant", "food"), "fast_food": ("fast_food", "fast_food_restaurant"),
+  "parking": ("parking_lot", "parking", "parking_garage"), "grocery": ("grocery", "supermarket", "grocery_store"),
+  "pharmacy": ("pharmacy", "drugstore"), "hotel": ("hotel", "lodging"), "rest_area": ("rest_area", "rest_stop"),
+}
+CATEGORY_WORDS = {"gas": "gas station", "ev": "EV charging", "coffee": "coffee", "food": "restaurant", "fast_food": "fast food",
+                  "parking": "parking", "grocery": "grocery store", "pharmacy": "pharmacy", "hotel": "hotel", "rest_area": "rest area"}
 
 TILE_STYLES = ("light", "dark", "trafficLight", "trafficDark")
 # What the old Waze bridge left behind (StarView 2.48 has no Waze): removed once
@@ -51,8 +72,11 @@ class _HubNavigation:
   def map_position(self):
     return None   # the owner falls back to the saved last position
 
+  position = None   # (lon, lat, monotonic time) the tablet sent with its last search
+
   def search_position(self):
-    return None
+    p = self.position
+    return (p[0], p[1]) if p is not None and time.monotonic() - p[2] < 120 else None
 
   def network_status(self):
     return "unknown"
@@ -72,12 +96,14 @@ class NavLink:
     self._owner = owner
     self._newest = newest or (lambda: None)
     self._lock = threading.Lock()
+    self._source = _HubNavigation(self._newest)
+    self._category_ids = None   # Mapbox's category list (asked once)
 
   @property
   def owner(self) -> NavigationOwner:
     with self._lock:
       if self._owner is None:
-        self._owner = NavigationOwner(runtime_source=_HubNavigation(self._newest))
+        self._owner = NavigationOwner(runtime_source=self._source)
       return self._owner
 
   # ------------------------------------------------------------------ reads
@@ -108,7 +134,12 @@ class NavLink:
            "isMetric": snap.get("isMetric"), "routes": routes,
            "options": {**{key: document.get(key) is True for key in ROUTE_AVOIDANCES}, **route_more(document)},
            "usage": {k: usage[k] for k in ("directions", "staticTiles") if k in usage}}
-    out["routeKey"] = _key([out["revision"], routes, out["selectedRoute"], out["status"], out["destination"]])
+    # the tablet fetches map tiles straight from Mapbox when it is online (the comma's link is often the slower one);
+    # it reports how many (nav_tiles) so the month's count stays whole, and stops at the same free allowance
+    tiles = owner.tile_budget
+    if tiles.remaining() > 0 and document.get("token"):
+      out["tileKey"] = document["token"]
+    out["routeKey"] = _key([out["revision"], routes, out["selectedRoute"], out["status"], out["destination"], "tileKey" in out])
     out["detailKey"] = _key([(r["durationSeconds"], r["distanceMeters"]) for r in routes] +
                             [hashlib.sha256((x or {}).get("polyline", "").encode()).hexdigest()[:8] + _key((x or {}).get("traffic"))
                              for x in lines])
@@ -121,6 +152,77 @@ class NavLink:
   def lists(self) -> dict:
     doc = self.owner.read()
     return {"ok": True, "favorites": doc.get("favorites", []), "recents": doc.get("recents", [])}
+
+  # ------------------------------------------------------------------ search
+  def _near(self, lat, lon) -> None:
+    try:
+      lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+      return
+    if math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180:
+      self._source.position = (lon, lat, time.monotonic())
+
+  def search(self, query, search_id, client_id, lat=None, lon=None) -> dict:
+    """Places as the driver types (owner.search_places, autocomplete: one Mapbox session until a place is picked)."""
+    self._near(lat, lon)
+    if not isinstance(query, str) or len(query.strip()) < 2:
+      return {"ok": True, "results": []}
+    results = self.owner.search_places(query[:256], CALLER, search_id, client_id, autocomplete=True)
+    return {"ok": True, "results": results}
+
+  def pick(self, identity, search_id) -> dict:
+    """A place from the search list becomes the destination (Mapbox's retrieve; kept as a temporary destination)."""
+    self._change(lambda rev: self.owner.select_place(identity, search_id, CALLER, rev, True))
+    return {"ok": True, "destination": self.owner.read_routing().get("destination")}
+
+  def _categories(self, token) -> set:
+    if self._category_ids is None:
+      try:
+        data = response_json(self.owner.session, f"{SEARCH_URL}/list/category", {"access_token": token, "language": "en"})
+        self._category_ids = {row["canonical_id"] for row in data.get("listItems", []) if isinstance(row, dict) and isinstance(row.get("canonical_id"), str)}
+      except (ValidationError, AttributeError, TypeError):
+        return set()
+    return self._category_ids
+
+  def category(self, name, lat, lon, route=None) -> dict:
+    """Places of a kind near the car, or along the route ahead (Mapbox category search; counted with the searches)."""
+    from openpilot.starpilot.navigation.mapbox_budget import BudgetExhausted
+    if name not in CATEGORIES:
+      raise ValidationError("Unknown kind of place")
+    self._near(lat, lon)
+    position = self._source.search_position()
+    if position is None:
+      raise ValidationError("The car's position isn't known yet")
+    token = self.owner.read()["token"]
+    if not token:
+      raise ValidationError("Add your Mapbox access token first")
+    known = self._categories(token)
+    canonical = next((c for c in CATEGORIES[name] if c in known), CATEGORIES[name][0])
+    try:
+      self.owner.search_budget.spend()
+    except BudgetExhausted as error:
+      raise ValidationError(str(error)) from None
+    params = {"access_token": token, "limit": 15, "language": "en", "proximity": f"{position[0]:.6f},{position[1]:.6f}"}
+    along = isinstance(route, str) and 10 <= len(route) <= 6000
+    if along:
+      params.update(sar_type="isochrone", route=route, route_geometry="polyline", time_deviation=8)
+    try:
+      data = response_json(self.owner.session, f"{SEARCH_URL}/category/{canonical}", params)
+    except ValidationError:
+      if not along:
+        raise
+      along = False
+      for key in ("sar_type", "route", "route_geometry", "time_deviation"):
+        params.pop(key)
+      data = response_json(self.owner.session, f"{SEARCH_URL}/category/{canonical}", params)
+    results = [row for row in (_place(f) for f in (data.get("features") or [])[:25]) if row is not None]
+    return {"ok": True, "results": results, "alongRoute": along, "words": CATEGORY_WORDS[name]}
+
+  def tiles_used(self, count) -> dict:
+    """Map tiles the tablet fetched from Mapbox itself, added to the comma's count of the month's map views."""
+    if type(count) is int and 0 < count <= 5000:
+      self.owner.tile_budget.spend(count, enforce=False)
+    return {"ok": True, "remaining": self.owner.tile_budget.remaining()}
 
   def tile(self, style: str, z: int, x: int, y: int) -> bytes:
     if style not in TILE_STYLES:
@@ -170,6 +272,25 @@ class NavLink:
       self._change(lambda rev: self.owner.configure_more(more, rev, True))
     doc = self.owner.read()
     return {"ok": True, "options": {**{key: doc.get(key) is True for key in ROUTE_AVOIDANCES}, **route_more(doc)}}
+
+
+def _place(feature) -> dict | None:
+  try:
+    p = feature["properties"]
+    lon, lat = (float(v) for v in feature["geometry"]["coordinates"][:2])
+    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180) or not isinstance(p.get("name"), str):
+      return None
+    row = {"name": p["name"].strip()[:256], "address": str(p.get("full_address") or p.get("place_formatted") or "")[:512],
+           "latitude": lat, "longitude": lon}
+    if type(p.get("distance")) in (int, float) and math.isfinite(p["distance"]):
+      row["distanceMeters"] = float(p["distance"])
+    if isinstance(p.get("maki"), str):
+      row["maki"] = p["maki"][:40]
+    if isinstance(p.get("poi_category"), list) and p["poi_category"] and isinstance(p["poi_category"][0], str):
+      row["category"] = p["poi_category"][0][:60]
+    return row
+  except (KeyError, TypeError, ValueError, IndexError):
+    return None
 
 
 def remove_leftovers() -> None:
