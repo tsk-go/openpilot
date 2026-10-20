@@ -152,7 +152,8 @@ def test_observed_availability_and_big_eligibility(monkeypatch, present, cable, 
 
 @pytest.mark.parametrize("timeout,worker_alive", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("custom", [False, True])
-def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive):
+@pytest.mark.parametrize("cached", [1, 0])
+def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive, cached):
   body = main_body()
   start = next(i for i, node in enumerate(body) if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "st")
   end = next(i for i, node in enumerate(body) if ast.unparse(node).startswith("config_realtime_process("))
@@ -203,6 +204,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
          "CHESTNUT": True, "vipc_client_main": SimpleNamespace(width=1928, height=1208), "wait_for_chestnut": wait,
          "ModelState": state, "load_verified_model": verified, "modeld_pkl_path": lambda big: "bundled-big" if big else "bundled-small",
          "receipt_owner": receipt, "threading": SimpleNamespace(Thread=Thread), "BIG_MODEL_TIMEOUT": 30,
+         "BIG_MODEL_FIRST_TIMEOUT": 90, "program_cache": SimpleNamespace(preload=Mock(return_value=cached), save=Mock(), forget=Mock()),
          "report_load_timeout": Mock(),
          "params": params, "requested_model_id": "big", "ModelVariant": ModelVariant,
          "CP": SimpleNamespace(brand="mock"), "demo": False,
@@ -212,7 +214,11 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
   wrapper = ast.parse("def startup():\n  pass").body[0]
   wrapper.body = body[start:end] + [ast.Return(value=ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]))]
   execute([wrapper], env)
+  join = 30 if cached else 90
+  cache = env["program_cache"]
   if timeout:
+    cache.save.assert_not_called()   # still waiting for the GPU: nothing new to keep
+    cache.forget.assert_not_called()  # a missing GPU says nothing about the saved programs
     from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
     with pytest.raises(SystemExit) as failed:
       env["startup"]()
@@ -232,7 +238,9 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
   assert ("big" in events) is not timeout
   assert env["model"].chestnut is not timeout
   assert env["small_model"].chestnut is False
-  assert events.index("wait") < events.index(("join", 30))
+  cache.preload.assert_called_once_with("big" if custom else None)
+  cache.save.assert_called_once_with("big" if custom else None)
+  assert events.index("wait") < events.index(("join", join))
   if not timeout:
     assert events.index("wait") < events.index("power") < events.index("big")
   assert env["drop_chestnut"].call_count == int(timeout)

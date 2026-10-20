@@ -47,6 +47,7 @@ from openpilot.starpilot.models.receipt import ModelReceiptOwner
 from openpilot.starpilot.models.status import ModelVariant
 from openpilot.starpilot.models.startup import report_load_timeout, wait_for_chestnut_power
 from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
+from openpilot.starpilot.models import program_cache
 from openpilot.starpilot.navigation.intent import TurnIntent, matching_turn_signal
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID, DEFAULT_SMALL, DEFAULT_SMALL_SHA256
 from openpilot.starpilot.models.runner import CatalogModelState, load_verified_model
@@ -64,6 +65,8 @@ LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 BIG_MODEL_TIMEOUT = 60
+# the first start of a model compiles its GPU programs on the comma's CPU; later starts read them back
+BIG_MODEL_FIRST_TIMEOUT = 180
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
@@ -364,12 +367,17 @@ def main(demo=False):
     big_path = selection.big_path or modeld_pkl_path(True)
     big_artifact_identity = receipt_owner.capture(big_path)
     big_model = None
+    big_stage = "wait"
+    cache_tag = selection.big_id if selection.big_path is not None else None
+    cached = program_cache.preload(cache_tag)
+    big_timeout = BIG_MODEL_TIMEOUT if cached else BIG_MODEL_FIRST_TIMEOUT
     def load_big():
-      nonlocal big_model, big_prepared
+      nonlocal big_model, big_prepared, big_stage
       try:
         wait_for_chestnut()
         if not demo:
           wait_for_chestnut_power(CP, timeout=BIG_MODEL_TIMEOUT / 2)
+        big_stage = "load"
         if selection.big_path is not None:
           m, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                             big_path, selection.big_version, True, selection.big_id, selection.big_sha256)
@@ -380,12 +388,18 @@ def main(demo=False):
         big_prepared = prepared
         big_model = m
       except Exception:
+        big_stage = "failed-" + big_stage
         cloudlog.exception("big model load failed")
     loader = threading.Thread(target=load_big, daemon=True)
     loader.start()
-    loader.join(BIG_MODEL_TIMEOUT)
+    loader.join(big_timeout)
     if loader.is_alive():
-      report_load_timeout(loader, BIG_MODEL_TIMEOUT)
+      report_load_timeout(loader, big_timeout)
+    if big_model is not None or (loader.is_alive() and big_stage == "load"):
+      # a timed-out start still keeps the programs it finished, so the next one gets further
+      program_cache.save(cache_tag)
+    elif cached and big_stage == "failed-load":
+      program_cache.forget(cache_tag)
     model = big_model
     params.put_bool("ChestnutActive", model is not None)
     if model is None:
