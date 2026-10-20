@@ -19,6 +19,7 @@ class TestHyundaiStockAngleAol(unittest.TestCase):
     self.safety.set_alternative_experience(32)
     self.assertEqual(self.safety.set_safety_hooks(structs.CarParams.SafetyModel.hyundaiCanfd, word), 0)
     self.safety.init_tests()
+    self.safety.set_alternative_experience(32)
     self.safety.set_timer(1_000_000)
 
   def rx(self, name, bus, values):
@@ -150,8 +151,11 @@ class TestHyundaiStockAngleAol(unittest.TestCase):
           self.assertEqual(self.safety.aol_get_permission_mask(), 1)
           self.assertTrue(self.safety.safety_tx_hook(self.command(word, counter)))
         self.sources(word, gas=True, brake=True)
+        self.assertEqual(self.safety.aol_get_permission_mask(), 1)
+        self.assertTrue(self.safety.safety_tx_hook(self.command(word, 5)))
+        self.sources(word, gas=True, brake=True, gear=7)
         self.assertEqual(self.safety.aol_get_permission_mask(), 0)
-        self.assertFalse(self.safety.safety_tx_hook(self.command(word, 5)))
+        self.assertFalse(self.safety.safety_tx_hook(self.command(word, 6)))
 
   def test_gas_never_substitutes_for_physical_latch_or_fresh_host_request(self):
     for word in WORDS:
@@ -168,7 +172,7 @@ class TestHyundaiStockAngleAol(unittest.TestCase):
         self.assertEqual(self.safety.aol_get_permission_mask(), 0)
         self.assertFalse(self.safety.safety_tx_hook(self.command(word, 2)))
 
-  def test_actual_host_intent_and_native_permission_keep_latch_through_gas(self):
+  def test_actual_host_intent_and_native_permission_keep_latch_through_pedals(self):
     from opendbc.car.hyundai.canfd_angle_aol import MODELS, command_allowed, temporary_restriction, native_observation
     from opendbc.car.hyundai.tests.test_stock_angle_aol import source_profile
     from opendbc.car.hyundai.values import CAR
@@ -197,10 +201,11 @@ class TestHyundaiStockAngleAol(unittest.TestCase):
         self.sources(word)
         self.gesture(word)
         self.safety.aol_set_host_request(1)
-        for counter, gas in enumerate((True, False, True, False), start=1):
+        for counter, (gas, brake) in enumerate(((True, False), (False, False), (False, True), (True, True), (False, False)), start=1):
           state.gasPressed = gas
+          state.brakePressed = brake
           self.safety.set_timer(1_000_000 + counter * 10_000)
-          self.sources(word, gas=gas)
+          self.sources(word, gas=gas, brake=brake)
           permission = self.safety.aol_get_permission_mask()
           native = SafetyState(1, True, now, now + 200_000_000, cp.safetyConfigs[0].safetyModel.raw, word,
                                bool(permission & 1), bool(permission & 2), True, False, 'gas-test', 'gas-session')

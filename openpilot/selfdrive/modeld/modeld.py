@@ -433,6 +433,9 @@ def main(demo=False):
     # the joining model drives as small_model until the big model is ready
     model = HOOKS.attach(model, small_model, vipc_client_main.width, vipc_client_main.height)
     jetlink_model = model if model is not small_model else None
+    if jetlink_model is not None:
+      from openpilot.starpilot.models.jetlink_status import start_latency_writer
+      start_latency_writer(jetlink_model)
   # fork fix (starpilot/models/warmup.py): the big model's first real passes are slow, so it stays "loading" until steady
   big_warmup = BigModelWarmup(time.monotonic()) if model.chestnut and model is not jetlink_model else None
   if big_warmup is None:

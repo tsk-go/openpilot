@@ -3,7 +3,6 @@ from copy import deepcopy
 import time
 
 from opendbc.car import Bus
-from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.hyundai.values import CAR, HyundaiFlags
 from opendbc.car.isotp_parallel_query import IsoTpParallelQuery
 from opendbc.can.parser import MAX_BAD_COUNTER
@@ -19,9 +18,6 @@ def required(cp):
 class G90Startup(HyundaiECUStartup):
   def __init__(self, cp, callbacks):
     super().__init__(cp, callbacks, address=0x7d0, bus=0, label='G90')
-
-  def _disable(self, *args, **kwargs):
-    return disable_ecu(*args, **kwargs)
 
   def _query(self, *args, **kwargs):
     return IsoTpParallelQuery(*args, **kwargs)

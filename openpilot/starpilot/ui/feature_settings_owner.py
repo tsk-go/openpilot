@@ -53,6 +53,7 @@ from openpilot.starpilot.ui.wheel_feature import WheelFeature, PREFIX as WHEEL_P
 from openpilot.starpilot.longitudinal.output_max import KEY as OUTPUT_MAX_KEY
 from openpilot.starpilot.ui.tesla_screen_feature import TeslaScreenFeature, KEYS as TESLA_SCREEN_KEYS
 from openpilot.starpilot.ui.ford_lateral_feature import FordLateralFeature
+from openpilot.starpilot.ui.preap_radar_feature import PreAPRadarFeature, KEYS as PREAP_RADAR_KEYS, capability as preap_radar_capability
 from openpilot.starpilot.ui.gm_tune_feature import GmTuneFeature, GmTruckFeature, GmEvPresetFeature
 from openpilot.starpilot.car.gm.tune_preferences import KEY as GM_TUNE_KEY
 from openpilot.starpilot.car.gm.radar_recovery import KEY as RADAR_RECOVERY_KEY
@@ -152,6 +153,8 @@ class FeatureSettingsOwner:
     self.tesla_screen = TeslaScreenFeature(self)
     from openpilot.starpilot.ui.gm_cancel_remap_feature import GmCancelRemapFeature
     self.gm_cancel_remap = GmCancelRemapFeature(self)
+
+    self.preap_radar = PreAPRadarFeature(self)
     self.gm_tune = GmTuneFeature(self)
     self.gm_truck = GmTruckFeature(self)
     self.gm_ev_preset = GmEvPresetFeature(self)
@@ -715,7 +718,7 @@ class FeatureSettingsOwner:
           self._gm_stop_capability("GMAutoHold") is not None or self.tesla_screen.capability() is not None or
           self.gm_tune.capability() is not None or self.gm_truck.capability() is not None or
           self.gm_ev_preset.capability() is not None or self.volt_radar.capability() is not None or
-          self.panda_wake.capability() is not None):
+          self.panda_wake.capability() is not None or preap_radar_capability(self.vehicle_params()) is not None):
         rows.append(FeatureRow("", "Vehicle Settings", "Configure features supported by your vehicle", page=FeaturePage.VEHICLE, available=True))
       rows.extend(FeatureRow("", name.title() + " Personality", "", page=name, available=True)
                   for name in (*PROFILE_NAMES, "traffic"))
@@ -739,6 +742,8 @@ class FeatureSettingsOwner:
           capability=radar_capability, default_value="Off"))
       rows.extend(self.tesla_screen.rows(parked))
       rows.extend(self.gm_cancel_remap.rows(parked))
+
+      rows.extend(self.preap_radar.rows())
       rows.extend(self.gm_tune.rows(parked))
       rows.extend(self.gm_truck.rows(parked))
       rows.extend(self.gm_ev_preset.rows(parked))
@@ -795,7 +800,7 @@ class FeatureSettingsOwner:
         nostalgia, source, valid = self._value("NostalgiaMode")
         readable = self._readable("NostalgiaMode")
         nostalgia_allowed = configurable and self.authority("aol") and capability is not None and readable
-        rows.append(FeatureRow("NostalgiaMode", "Ioniq 6 Nostalgia Mode — Left Paddle",
+        rows.append(FeatureRow("NostalgiaMode", "Left Paddle Longitudinal Pause",
                                "On" if nostalgia == "1" else "Off" if nostalgia == "0" else "Invalid saved value",
                                source, ("Off", "On") if valid and nostalgia in ("0", "1") else (),
                                available=nostalgia_allowed,
@@ -1175,6 +1180,8 @@ class FeatureSettingsOwner:
       return self.gm_cancel_remap.apply(request)
     if key == "GMPedalLongitudinal":
       return self._apply_pedal_setup(request)
+    if key in PREAP_RADAR_KEYS:
+      return self.preap_radar.apply(request)
     if key in TESLA_SCREEN_KEYS:
       return self.tesla_screen.apply(request)
     if key == GM_TUNE_KEY:

@@ -85,7 +85,8 @@ class VCruiseHelper:
     if not self.CP.pcmCruise:
       for button in CS.buttonEvents:
         self.pending_resume_ns = 0
-        if (not enabled and CS.cruiseState.available and not button.pressed and
+        resume_edge = not button.pressed or self.CP.brand == 'gm' and CS.buttonEnable
+        if (not enabled and CS.cruiseState.available and resume_edge and
             button.type in (ButtonType.accelCruise, ButtonType.resumeCruise) and self.v_cruise_initialized):
           self.pending_resume_ns = now_ns
 

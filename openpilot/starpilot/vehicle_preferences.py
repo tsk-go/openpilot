@@ -4,6 +4,8 @@ from opendbc.car.gm.startup_preferences import prepare_disable_longitudinal
 from opendbc.car.toyota.interface import apply_toyota_auto_hold
 from opendbc.car.toyota.values import ToyotaFlags
 from openpilot.starpilot.saved_source import read_saved
+from openpilot.starpilot.car.tesla.radar_settings import RadarSettings
+from openpilot.starpilot.car.tesla.pedal_preferences import PedalSettings
 
 
 def bolt_disable_supported(cp) -> bool:
@@ -22,6 +24,8 @@ class VehicleStartupPreferences:
   disable_bolt_long: bool = False
   honda_bosch_a_radar: bool = True
   tesla_preap_stock: bool = True
+  tesla_preap_radar: RadarSettings | None = None
+  tesla_preap_pedal: PedalSettings | None = None
   volt_sng: bool = False
   gm_auto_hold: bool = False
   volt_one_pedal: bool = False
@@ -42,7 +46,11 @@ class VehicleStartupPreferences:
     from openpilot.starpilot.car.toyota.radar_preferences import selected as toyota_radar_mode
     from openpilot.starpilot.car.gm.tune_preferences import selected_tune
     from openpilot.starpilot.car.tesla.preap_preferences import stock_configuration
-    preap_stock = stock_configuration(params)
+    from openpilot.starpilot.car.tesla.radar_settings import read_radar_settings
+    from openpilot.starpilot.car.tesla.pedal_preferences import read_pedal_settings
+    radar = read_radar_settings(params)
+    pedal = read_pedal_settings(params)
+    preap_stock = stock_configuration(params, radar, pedal)
     try:
       raw_radar, radar_readable = read_saved(params, "HondaBoschARadar", 8)
       honda_radar = radar_readable and raw_radar in (None, b"1")
@@ -65,6 +73,7 @@ class VehicleStartupPreferences:
                             readable and safe in (None, b"0"))
     except (OSError, TypeError, ValueError):
       return cls(disable_bolt_long=disable_bolt, honda_bosch_a_radar=honda_radar, tesla_preap_stock=preap_stock,
+                 tesla_preap_radar=radar, tesla_preap_pedal=pedal,
                  gm_camera_pedal=False, toyota_filter=False)
     try:
       pitch, pitch_readable = read_saved(params, "LongPitch", 8)
@@ -94,7 +103,8 @@ class VehicleStartupPreferences:
                gm_camera_pedal=bool(enabled and not disable_bolt and readable and safe in (None, b"0")),
                toyota_filter=bool(enabled and not disable_bolt and readable and safe in (None, b"0")),
                turn_assist=bool(enabled and assist and readable and safe in (None, b"0")),
-               gm_long_pitch=pitch_enabled, disable_bolt_long=disable_bolt, honda_bosch_a_radar=honda_radar, tesla_preap_stock=preap_stock)
+               gm_long_pitch=pitch_enabled, disable_bolt_long=disable_bolt, honda_bosch_a_radar=honda_radar,
+               tesla_preap_stock=preap_stock, tesla_preap_radar=radar, tesla_preap_pedal=pedal)
 
   def _prepare_honda_radar(self, cp) -> None:
     if cp.brand != "honda":
@@ -145,7 +155,7 @@ class VehicleStartupPreferences:
   def prepare(self, cp, *, fingerprints=None):
     from opendbc.car.gm.values import apply_gm_auto_hold, apply_volt_one_pedal
     from openpilot.starpilot.car.tesla.preap_preferences import prepare_stock
-    prepare_stock(cp, self.tesla_preap_stock)
+    prepare_stock(cp, self.tesla_preap_stock, self.tesla_preap_radar, self.tesla_preap_pedal)
     from opendbc.car.tesla.screen_button import apply_screen_button
     apply_screen_button(cp, self.tesla_screen, self.tesla_screen_brake)
     self._prepare_honda_radar(cp)
@@ -172,7 +182,7 @@ class VehicleStartupPreferences:
     admitted_one_pedal = is_volt_one_pedal(cp)
     admitted_hold = is_gm_auto_hold(cp)
     from openpilot.starpilot.car.tesla.preap_preferences import prepare_stock
-    prepare_stock(cp, self.tesla_preap_stock)
+    prepare_stock(cp, self.tesla_preap_stock, self.tesla_preap_radar, self.tesla_preap_pedal)
     from opendbc.car.tesla.screen_button import apply_screen_button
     apply_screen_button(cp, self.tesla_screen, self.tesla_screen_brake)
     self._prepare_honda_radar(cp)

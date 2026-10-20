@@ -47,7 +47,10 @@ static uint8_t chrysler_get_counter(const CANPacket_t *msg) {
   return (uint8_t)(msg->data[6] >> 4);
 }
 
+#include "opendbc/safety/modes/chrysler_aol.h"
+
 static void chrysler_rx_hook(const CANPacket_t *msg) {
+  chrysler_aol_rx(msg);
   // Measured EPS torque
   if (msg_matches(msg, CHRYSLER_ADDR(EPS_2), 0U)) {
     int torque_meas_new = ((msg->data[4] & 0x7U) << 8) + msg->data[5] - 1024U;
@@ -207,12 +210,19 @@ static safety_config chrysler_init(uint16_t param) {
     chrysler_platform = CHRYSLER_PACIFICA;
     ret = BUILD_SAFETY_CFG(chrysler_rx_checks, CHRYSLER_TX_MSGS);
   }
+  chrysler_aol_configure(param);
+  // The allocated Hybrid guard never falls back to ordinary or Ram output.
+  if (((param & 8U) != 0U) && !chrysler_aol_enabled) {
+    ret.tx_msgs = NULL;
+    ret.tx_msgs_len = 0;
+  }
   return ret;
 }
 
 const safety_hooks chrysler_hooks = {
   .init = chrysler_init,
   .rx = chrysler_rx_hook,
+  .optional_rx = chrysler_aol_optional_rx,
   .tx = chrysler_tx_hook,
   .get_counter = chrysler_get_counter,
   .get_checksum = chrysler_get_checksum,

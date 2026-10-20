@@ -79,6 +79,7 @@ class ToyotaFlags(IntFlag):
   RAISED_ACCEL_LIMIT = 1024
   SECOC = 2048
   AUTO_BRAKE_HOLD = 4096
+  ZSS = 1 << 16  # Detected Prius secondary steering sensor; host-only, no safetyParam allocation
 
   # deprecated flags
   # these cars are speculated to allow stop and go when the DSU is unplugged

@@ -9,25 +9,26 @@ from opendbc.can import CANPacker
 from opendbc.car import Bus
 from opendbc.car.gm.tests.test_volt_sdgm_control import sdgm_params
 from opendbc.car.gm.bolt_cc import button_bytes
-from opendbc.car.gm.values import DBC, CruiseButtons
+from opendbc.car.gm.values import DBC, CruiseButtons, CAR, is_bolt_pedal_profile
+from opendbc.car.gm.tests.test_bolt_pedal import params as bolt_params
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.starpilot.aol.tests import test_ioniq_availability as fixture
 from openpilot.starpilot.aol.tests import test_gm as gm_fixture
 from openpilot.starpilot.aol.tests.test_gm_startup_main import parsed_packets
-from openpilot.starpilot.aol.tests.test_seatbelt_cold_start import deliver_card
+from openpilot.starpilot.aol.tests.test_gm_route18e_recovery import deliver_card
 from openpilot.selfdrive.selfdrived.events import Events, EventName
 from openpilot.starpilot.aol.wire import decode_safety, encode_safety
 
 BASE = 10_000_000_000
 
 
-def callers(cleanup):
+def callers(cleanup, cp=None):
   params = Params()
   cleanup.callback(params._finalizer)
   params.put_bool('AlwaysOnLateral', True, block=True)
-  card = gm_fixture.TestGmAol.card(sdgm_params(), params)
+  card = gm_fixture.TestGmAol.card(sdgm_params() if cp is None else cp, params)
   cleanup.callback(card.vehicle_startup.close)
   case = fixture.IoniqAvailabilityTests(methodName='runTest')
   cleanup.callback(case.doCleanups)
@@ -37,6 +38,17 @@ def callers(cleanup):
 
   def state(tick, pedal='none', main=True):
     now = BASE + tick * 10_000_000
+    if is_bolt_pedal_profile(card.CP):
+      from openpilot.starpilot.aol.tests.test_gm_held_native import parse
+      packets = parse(card, now, gesture={'regen': 'paddle'}.get(pedal, pedal), counter=tick % 4, packets_only=True)
+      packets = [packet for packet in packets if packet[0] != 0xC9]
+      packets.append(packer.make_can_msg('ASCMActiveCruiseControlStatus', 2, {'ACCCruiseState': 0}))
+      packets.append(packer.make_can_msg('ECMEngineStatus', 0, {'CruiseMainOn': int(main), 'BrakePressed': int(pedal == 'brake')}))
+      if tick == 0:
+        card.CI.update([(now - 1_000_000, packets)])
+      cs = card.CI.update([(now, packets)])
+      assert cs.canValid and not cs.canTimeout
+      return cs
     packets = parsed_packets(card.CP, packer, now, tick, 20., main)
     addresses = {packer.make_can_msg(name, 0, {})[0] for name in ('ECMAcceleratorPos', 'EBCMRegenPaddle')}
     packets = [p for p in packets if p[0] not in addresses]
@@ -68,11 +80,15 @@ def callers(cleanup):
   return card, sd, controls, state, drive
 
 
+@pytest.mark.parametrize('profile', [None, *[(candidate, removed) for candidate in
+  (CAR.CHEVROLET_BOLT_CC_2017, CAR.CHEVROLET_BOLT_CC_2018_2021, CAR.CHEVROLET_BOLT_CC_2022_2023,
+   CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL) for removed in (False, True)]])
 @pytest.mark.parametrize('pedal', ['brake', 'regen'])
 @pytest.mark.parametrize('order', ['together', 'axis_first', 'event_first'])
-def test_parsed_pedal_lag_keeps_intent_without_renewing_authority(pedal, order):
+def test_parsed_pedal_lag_keeps_intent_without_renewing_authority(pedal, order, profile):
   with OpenpilotPrefix(), ExitStack() as cleanup:
-    card, sd, controls, parse, drive = callers(cleanup)
+    cp = None if profile is None else bolt_params(profile[0], pedal=True, camera=not profile[1], removed=profile[1])
+    card, sd, controls, parse, drive = callers(cleanup, cp)
     feedback = card.aol_transport_feedback
     baseline = (feedback.lateral_baseline_ns, feedback.lateral_source_ns, feedback.lateral_native_ns,
                 feedback.healthy_feedback_ns, feedback.healthy_native_ns)
@@ -99,9 +115,11 @@ def test_parsed_pedal_lag_keeps_intent_without_renewing_authority(pedal, order):
     assert baseline == (feedback.lateral_baseline_ns, feedback.lateral_source_ns, feedback.lateral_native_ns,
                         feedback.healthy_feedback_ns, feedback.healthy_native_ns)
     cs = parse(3)
-    with mock.patch.object(sd.rk.avg_dt, 'get_average', return_value=.02):
-      axis, _, command = drive(3, cs, allowed=False, native_request_lat=False)
+    axis, _, command = drive(3, cs, allowed=False, native_request_lat=False)
     assert not axis.lateralActive and not command.latActive and not command.longActive
+    assert axis.desiredLateral and str(axis.faultReason) == 'none'
+    deliver_card(card, sd, controls, cs, 3)
+    assert card.aol_card_intent.allowed_latch and not feedback.failed
     cs = parse(4)
     axis, _, command = drive(4, cs)
     assert axis.lateralActive and command.latActive and not command.longActive

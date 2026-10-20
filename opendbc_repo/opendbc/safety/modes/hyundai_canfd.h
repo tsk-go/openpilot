@@ -70,7 +70,6 @@
 #define HYUNDAI_IONIQ5_PE_LONG_PARAM 0x5495U
 static bool hyundai_canfd_ccnc_ev_long = false;
 static bool hyundai_canfd_pe_long = false;
-static bool hyundai_canfd_pe_main_blocked = false;
 static uint8_t hyundai_ev9_inactive_accel_count = 0U;
 static bool hyundai_angle_aol_enabled = false;
 static bool hyundai_angle_aol_drive = false;
@@ -107,7 +106,6 @@ static void hyundai_ordinary_angle_reset(void) {
   hyundai_ordinary_angle_stock = false;
   hyundai_canfd_ccnc_ev_long = false;
   hyundai_canfd_pe_long = false;
-  hyundai_canfd_pe_main_blocked = false;
   hyundai_ev9_inactive_accel_count = 0U;
   hyundai_ordinary_angle_drive = false;
   hyundai_ordinary_angle_eps_fault = false;
@@ -359,7 +357,7 @@ static uint8_t hyundai_angle_aol_permission_mask(void) {
   const bool gear_current = hyundai_angle_aol_gear_seen &&
     (safety_get_ts_elapsed(microsecond_timer_get(), hyundai_angle_aol_gear_ts) <= 100000U);
   return (((request & 1U) != 0U) && gear_current && hyundai_angle_aol_drive && vehicle_moving &&
-         !hyundai_angle_aol_eps_fault && !brake_pressed) ? 1U : 0U;
+         !hyundai_angle_aol_eps_fault) ? 1U : 0U;
 }
 
 static void aol_ioniq6_rx_invalid(void) {
@@ -544,13 +542,9 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
     }
     const bool previous_controls_allowed = controls_allowed;
     const int previous_cruise_button = cruise_button_prev;
-    hyundai_common_cruise_buttons_check(cruise_button, main_button);
-    const bool pe_main_pressed = main_button || GET_BIT(msg, 21U);
-    if (hyundai_canfd_pe_long && (pe_main_pressed || hyundai_canfd_pe_main_blocked)) {
-      controls_allowed = false;
-      cruise_button_prev = HYUNDAI_BTN_NONE;
-      hyundai_canfd_pe_main_blocked = pe_main_pressed || (cruise_button != HYUNDAI_BTN_NONE);
-    }
+    const int main_policy = hyundai_canfd_ccnc_ev_long ? (hyundai_canfd_pe_long ? HYUNDAI_MAIN_WITHDRAW : HYUNDAI_MAIN_TRACK) : HYUNDAI_MAIN_NONE;
+    const bool normal_main_button = hyundai_canfd_ccnc_ev_long && GET_BIT(msg, 21U);
+    hyundai_common_cruise_buttons_check(cruise_button, main_button, normal_main_button, main_policy);
     if (hyundai_canfd_ioniq6_long && aol_ioniq6_long) {
       static uint8_t aol_ioniq6_enable_counter = 0U;
       static uint32_t aol_ioniq6_enable_ts = 0U;
@@ -622,11 +616,8 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
       const bool gesture = main_button || (hyundai_canfd_alt_buttons ? GET_BIT(msg, 39U) : GET_BIT(msg, 23U)); // LDA/LKAS button
       if (cruise_button == HYUNDAI_BTN_CANCEL) {
         aol_ioniq6_enable_reset();
-        // Keep only a claimed torque lateral token. CANCEL cannot turn an
-        // unclaimed gesture/release into authority or renew any source lease.
-        // Ordinary LONG cancellation above remains independent of this token.
         aol_optional_release_pending = false;
-        if (!hyundai_torque_aol_cancel_preserves_lateral ||
+        if ((!hyundai_torque_aol_cancel_preserves_lateral && !hyundai_angle_aol_enabled) ||
             (!aol_ioniq6_lateral_token_claimed && !aol_optional_release_latch)) {
           aol_ioniq6_lateral_latch = false;
           aol_optional_release_policy = false;

@@ -69,19 +69,16 @@ TROUBLESHOOTING
   * All values stay at 0 while a stick moves -> the code column will still change;
     if it doesn't, that physical axis isn't emitting events under any code.
 """
-import sys
+import inputs
+from openpilot.tools.joystick.devices import refresh_gamepads
+from inputs import get_gamepad, UnpluggedError
 
-try:
-  from inputs import get_gamepad, devices, UnpluggedError
-except Exception as e:
-  print(f"inputs import failed: {e}")
-  sys.exit(1)
-
+refresh_gamepads()
 print("Detected gamepads:")
-if not devices.gamepads:
+if not inputs.devices.gamepads:
   print("  <none>  -> 'inputs' does not see your controller (driver/enumeration issue)")
 else:
-  for g in devices.gamepads:
+  for g in inputs.devices.gamepads:
     print(f"  {g}")
 
 print("\nMove ONE stick at a time, fully both ways. Note the CODE + range for:")

@@ -12,6 +12,7 @@ Ecu = CarParams.Ecu
 class ChryslerSafetyFlags(IntFlag):
   RAM_DT = 1
   RAM_HD = 2
+  AOL_PACIFICA_HYBRID_SET_GUARD = 8
 
 
 class ChryslerFlags(IntFlag):

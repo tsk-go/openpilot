@@ -143,6 +143,7 @@ class CarController(CarControllerBase):
     hud_control = CC.hudControl
     pcm_cancel_cmd = CC.cruiseControl.cancel
     lat_active = CC.latActive and abs(CS.out.steeringTorque) < MAX_USER_TORQUE
+    CS.zss_lateral_active = bool(CC.latActive)
 
     if len(CC.orientationNED) == 3:
       self.pitch.update(CC.orientationNED[1])

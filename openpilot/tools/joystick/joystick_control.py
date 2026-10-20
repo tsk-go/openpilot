@@ -13,6 +13,7 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.hardware import HARDWARE
 from openpilot.tools.lib.kbhit import KBHit
+from openpilot.tools.joystick.devices import refresh_gamepads
 
 EXPO = 0.4
 
@@ -21,6 +22,7 @@ CONTROLLER_PROFILES = {
   'Stadia':    {'name': 'Stadia',    'steer': 'ABS_X', 'accel': 'ABS_RZ', 'lo': 0.,      'hi': 255.},
   'X-Box':     {'name': 'Xbox',      'steer': 'ABS_X', 'accel': 'ABS_RY', 'lo': -32768., 'hi': 32767.},
   'DualSense': {'name': 'DualSense', 'steer': 'ABS_X', 'accel': 'ABS_RY', 'lo': 0.,      'hi': 255.},
+  'Wireless Controller': {'name': 'DualShock 4', 'steer': 'ABS_X', 'accel': 'ABS_RZ', 'lo': 0., 'hi': 255.},
 }
 DEFAULT_PROFILE = 'X-Box'
 
@@ -56,6 +58,8 @@ class Joystick:
     self.cancel_button = 'BTN_NORTH'  # BTN_NORTH=X/triangle
     self.is_pc = HARDWARE.get_device_type() == 'pc'
     self._last_scan = 0.
+    if not self.is_pc:
+      refresh_gamepads()
     self._load_profile()
 
   def _load_profile(self):
@@ -86,7 +90,7 @@ class Joystick:
     if now - self._last_scan < 1.0:
       return
     self._last_scan = now
-    inputs.devices = inputs.DeviceManager()
+    refresh_gamepads()
     if not self.is_pc and inputs.devices.gamepads:
       self._load_profile()
 

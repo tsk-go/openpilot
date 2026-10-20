@@ -57,6 +57,11 @@ class CarState(CarStateBase):
     self.gvc = 0.0
     self.secoc_synchronization = None
     self.pre_collision_2 = {}
+    self.zss_lateral_active = False
+    self.zss_previous_active = False
+    self.zss_needs_offset = False
+    self.zss_offset = 0.0
+    self.zss_last_timestamp = 0
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -225,6 +230,25 @@ class CarState(CarStateBase):
       self.distance_button = cp.vl["PCM_CRUISE_4"]["DISTANCE"]
       buttonEvents += create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
 
+    if self.CP.flags & ToyotaFlags.ZSS:
+      # ZSS support - credit to Erich! Align on each real lateral engagement.
+      # A repeated parser value is not a new sensor sample; fall back to stock.
+      active = self.zss_lateral_active
+      if active and not self.zss_previous_active:
+        self.zss_needs_offset = True
+      self.zss_previous_active = active
+      stamp = cp.ts_nanos.get("SECONDARY_STEER_ANGLE", {}).get("ZORRO_STEER", 0)
+      if cp.can_valid and stamp > self.zss_last_timestamp:
+        self.zss_last_timestamp = stamp
+        zorro = cp.vl["SECONDARY_STEER_ANGLE"]["ZORRO_STEER"]
+        if math.isfinite(zorro):
+          if self.zss_needs_offset:
+            if abs(ret.steeringAngleDeg) > 1e-3 and abs(zorro) > 1e-3:
+              self.zss_offset = zorro - ret.steeringAngleDeg
+              self.zss_needs_offset = False
+          elif abs(ret.steeringAngleDeg - (zorro - self.zss_offset)) < 4.0:
+            ret.steeringAngleDeg = zorro - self.zss_offset
+
     ret.buttonEvents = buttonEvents
     timestamp, expiry = parser_expiry(cp_cam, "RSA1", "TSGN1")
     if timestamp > self.dashboard_limit.observation.observed_ns:
@@ -249,6 +273,8 @@ class CarState(CarStateBase):
 
     if CP.flags & ToyotaFlags.LONG_FILTER:
       pt_messages.append(("SDSU", 50))
+    if CP.flags & ToyotaFlags.ZSS:
+      pt_messages.append(("SECONDARY_STEER_ANGLE", math.nan))
 
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),

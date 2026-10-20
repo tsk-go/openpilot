@@ -329,6 +329,12 @@ class PEPendingStartup:
     if (not valid or self.configured_ci is None or not self.can_emit(self.configured_ci.CC)):
       return
 
+    if not self.handed_off:
+      critical = [(address, bus) for address, _, bus in frames
+                  if (address, bus) in ((0x1A0, 1), (0x100, 0), (0xCB, 1), (0x730, 1))]
+      if len(critical) != len(set(critical)):
+        self.fault = 'PE first emitted replacement contains duplicate critical frame'
+        return
     by_id = {(address, bus): data for address, data, bus in frames}
     tester = make_tester_present_msg(0x730, 1, suppress_response=True)
     scc, heartbeat, angle = by_id.get((0x1A0, 1)), by_id.get((0x100, 0)), by_id.get((0xCB, 1))

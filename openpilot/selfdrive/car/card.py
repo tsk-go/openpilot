@@ -62,7 +62,8 @@ from openpilot.starpilot.aol.vehicle import create_intent as create_aol_intent, 
 from openpilot.starpilot.aol.wire import IntentState, encode_intent
 from openpilot.starpilot.conditional_mode.manual import Button, ButtonTracker, IoniqMediaMapCache, WheelMapCache, Press, ioniq6_media_eligible
 from openpilot.starpilot.longitudinal.ioniq6_start import eligible as ioniq6_long_eligible
-from opendbc.car.gm.aol import native_bootstrap_supported, qualified_gm
+from opendbc.car.gm.aol import qualified_gm
+from openpilot.starpilot.aol.vehicle import native_bootstrap_supported
 from opendbc.car.gm.values import CAR as GM_CAR, GMFlags, is_volt_ascm_longitudinal, is_volt_sdgm_profile, is_bolt_present_no_acc_pedal_profile
 from opendbc.car.gm.lateral import lane_centering_supported as gm_lane_centering_supported
 from opendbc.car.gm.ordinary_cc import control_transport_required as gm_cc_transport_required
@@ -418,6 +419,11 @@ class Car:
     # Write CarParams for controls and radard
     self.vehicle_startup.seal_publication()
     cp_bytes = self.CP.to_bytes()
+    from openpilot.starpilot.car.tesla.pedal_startup import install as install_preap_pedal
+    install_preap_pedal(self.CI, self.CP, cp_bytes, startup_preferences.tesla_preap_pedal, self.params)
+    from openpilot.starpilot.car.tesla.radar_context import install_startup_context
+    self.tesla_preap_radar_context = install_startup_context(
+      self.RI, self.CP, cp_bytes, startup_preferences.tesla_preap_radar)
     self.params.put("CarParams", cp_bytes, block=True)
     put_cache(self.params, "CarParamsCache", self.CP)
     put_cache(self.params, "CarParamsPersistent", self.CP)
@@ -568,7 +574,8 @@ class Car:
         brake_source_ns=brake_source_ns,
         gm_withdrawal_source_ns=gm_withdrawal_source_ns,
         intent_producer_session=getattr(self, 'slc_producer_session', ''),
-        main_arm_ns=getattr(self.aol_card_intent, 'main_arm_ns', 0))
+        main_arm_ns=getattr(self.aol_card_intent, 'main_arm_ns', 0),
+        startup_calibration_pending=getattr(self.aol_card_intent, 'startup_calibration_pending', False))
       fault_active = True if transport_reset else None
       event_ns = int(self.sm.logMonoTime['onroadEvents'])
       if (getattr(self.aol_card_intent, 'requires_fault_observation', self.aol_card_intent.explicit_latch) and
@@ -612,7 +619,8 @@ class Car:
           native,
           latched=self.aol_card_intent.allowed_latch,
           panda_ready=angle_panda_ready,
-          restricted=restrict(self.CP, CS) or ((mazda_aol or preap_aol) and self.aol_card_intent.pause_lateral),
+          restricted=restrict(self.CP, CS) or ((angle_aol or mazda_aol or preap_aol) and self.aol_card_intent.pause_lateral) or
+            (angle_aol and CS.brakePressed and not CS.standstill and CS.vEgo < self.aol_settings.pause_brake_mps),
           now_ns=now_ns,
           pending_since_ns=getattr(self, '_angle_aol_pending_since_ns', 0),
           **preap_observation,
@@ -823,7 +831,7 @@ class Car:
       getattr(self, '_aol_can_observation', None), now_ns)
 
   def aol_disarming_fault(self, CS, event_ns: int, now_ns: int, *, transport_observed_healthy=False) -> bool:
-    from openpilot.starpilot.car.gm.aol import intent_disarming_fault
+    from openpilot.starpilot.aol.vehicle import intent_disarming_fault
     if getattr(self, 'aol_transport_feedback', None) is None:
       self.aol_transport_feedback = TransportPauseFeedback(self.CP)
     hkg_cancel_retained = hkg_cancel_intent_retained(self.CP, CS, self.sm, self.aol_transport_feedback,
@@ -834,7 +842,8 @@ class Car:
         cancel_source_ns=self.aol_cancel_source(CS, now_ns), brake_source_ns=self.aol_honda_brake_source(CS, now_ns),
         gm_withdrawal_source_ns=self.aol_gm_withdrawal_source(CS, now_ns),
         intent_producer_session=getattr(self, 'slc_producer_session', ''),
-        main_arm_ns=getattr(self.aol_card_intent, 'main_arm_ns', 0)):
+        main_arm_ns=getattr(self.aol_card_intent, 'main_arm_ns', 0),
+        startup_calibration_pending=getattr(self.aol_card_intent, 'startup_calibration_pending', False)):
       return True
     events = self.sm['onroadEvents']
     if self.aol_transport_feedback.retention_qualified or self.aol_transport_feedback.retention_pending:
@@ -978,6 +987,12 @@ class Car:
                              sequence=self.slc_cruise_event_id, car_state_stamp=int(cs_send.logMonoTime),
                              valid=bool(cs_send.valid and not CS.canTimeout))
     companion = None
+    if self.CP.brand == 'tesla' and self.CP.openpilotLongitudinalControl and qualified_tesla_preap(self.CP):
+      internal = self.CI.CS.preap
+      companion = messaging.new_message('starpilotCarState', valid=bool(cs_send.valid), logMonoTime=int(cs_send.logMonoTime))
+      companion.starpilotCarState.sourceCarStateMonoTime = int(cs_send.logMonoTime)
+      companion.starpilotCarState.pedalLongActive = bool(internal.enableLongControl)
+      companion.starpilotCarState.pedalMaxRegen = internal.pccEvent == 'pedalMaxRegen'
     steering_authority = getattr(self.CI.CS, 'steering_authority', None)
     if self.CP.brand == 'gm' and steering_authority is not None and steering_authority.enabled:
       companion = messaging.new_message('starpilotCarState', valid=bool(cs_send.valid), logMonoTime=int(cs_send.logMonoTime))
