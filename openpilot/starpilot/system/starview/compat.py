@@ -148,6 +148,11 @@ class Translator:
           out.append((name, [built]))
       elif name == "starpilotRadarState":
         out.append((name, [adjacent_leads(m, self._v_ego) for m in msgs]))
+      elif name == "ubloxGnss":
+        # the tablet's GPS card wants only the 1 Hz satellite report, not the 10 Hz raw measurements and ephemerides
+        sats = [m for m in msgs if sat_report(m)]
+        if sats:
+          out.append((name, sats))
       else:
         if name == "carState":
           self._note_v_ego(msgs[-1], now)
@@ -186,6 +191,13 @@ class Translator:
       except Exception:
         self._toggles = "{}"
     return build_plan(self._slc, self._lp, self._toggles)
+
+
+def sat_report(raw: bytes) -> bool:
+  try:
+    return messaging.log_from_bytes(raw).ubloxGnss.which() == "satReport"
+  except Exception:
+    return False
 
 
 def slc_reading(slc, source: str) -> float:

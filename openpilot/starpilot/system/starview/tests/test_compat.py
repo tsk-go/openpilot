@@ -177,3 +177,19 @@ def test_chestnut_state_like_the_comma_screen():
   assert cs(True, False, True, False, False, True, True, True, False, False) == "failed"     # gone from USB
   assert cs(True, True, True, False, False, True, True, False, False, False) == "failed"     # modeld gave up
   assert cs(True, False, False, False, False, False, False, None, False, False) == "disconnected"
+
+
+def test_gps_card_gets_only_the_satellite_reports():
+  def ublox(kind):
+    m = messaging.new_message("ubloxGnss")
+    if kind == "sats":
+      svs = m.ubloxGnss.init("satReport").init("svs", 2)
+      svs[0].svId, svs[0].cno, svs[0].flagsBitfield = 12, 36, 0x0f
+    else:
+      m.ubloxGnss.init("measurementReport").numMeas = 20
+    return m.to_bytes()
+  t = compat.Translator()
+  assert t.route({"ubloxGnss"}) == {"ubloxGnss"}
+  sats, meas = ublox("sats"), ublox("meas")
+  assert t.feed("ubloxGnss", [meas, sats, meas], now=1.0) == [("ubloxGnss", [sats])]
+  assert t.feed("ubloxGnss", [meas, meas, b"junk"], now=1.1) == []
