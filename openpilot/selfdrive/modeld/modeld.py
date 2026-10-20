@@ -49,6 +49,7 @@ from openpilot.starpilot.models.status import ModelVariant
 from openpilot.starpilot.models.startup import report_load_timeout, wait_for_chestnut_power
 from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
 from openpilot.starpilot.models import load_profile, program_cache
+from openpilot.starpilot.models.warmup import BigModelWarmup
 from openpilot.starpilot.navigation.intent import TurnIntent, matching_turn_signal
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID, DEFAULT_SMALL, DEFAULT_SMALL_SHA256
 from openpilot.starpilot.models.runner import CatalogModelState, load_verified_model
@@ -432,7 +433,10 @@ def main(demo=False):
     # the joining model drives as small_model until the big model is ready
     model = HOOKS.attach(model, small_model, vipc_client_main.width, vipc_client_main.height)
     jetlink_model = model if model is not small_model else None
-  params.put_bool("ChestnutLoading", False)
+  # fork fix (starpilot/models/warmup.py): the big model's first real passes are slow, so it stays "loading" until steady
+  big_warmup = BigModelWarmup(time.monotonic()) if model.chestnut and model is not jetlink_model else None
+  if big_warmup is None:
+    params.put_bool("ChestnutLoading", False)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
   release_compile_pool()
   # gc stays off for the realtime loop, so drop the load's cyclic garbage once now
@@ -482,6 +486,11 @@ def main(demo=False):
   lane_status_sequence = 0
 
   while True:
+    if big_warmup is not None and big_warmup.finished(time.monotonic()):
+      params.put_bool("ChestnutLoading", False)
+      cloudlog.event("chestnut.warmup", **big_warmup.summary(time.monotonic()))
+      big_warmup = None
+
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
       buf_main = vipc_client_main.recv()
@@ -546,7 +555,7 @@ def main(demo=False):
     # tracked dropped frames
     vipc_dropped_frames = max(0, meta_main.frame_id - last_vipc_frame_id - 1)
     frames_dropped = frame_dropped_filter.update(min(vipc_dropped_frames, 10))
-    if run_count < 10: # let frame drops warm up
+    if run_count < 10 or big_warmup is not None: # let frame drops warm up (and the big model, see big_warmup)
       frame_dropped_filter.x = 0.
       frames_dropped = 0.
     run_count = run_count + 1
@@ -592,6 +601,8 @@ def main(demo=False):
         drop_chestnut()
         params.put_bool("ChestnutActive", False)
       cloudlog.exception("big model failed, fall back to small")
+      if big_warmup is not None:
+        big_warmup.failed = True
       model = small_model
       receipt_owner.loaded(small_prepared, ModelVariant.SMALL, fallback_reason, model_id=model.model_id)
       if chestnut_state is not None:
@@ -600,6 +611,8 @@ def main(demo=False):
       model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+    if big_warmup is not None and model_output is not None:
+      big_warmup.record(model_execution_time, vipc_dropped_frames)
     if model is jetlink_model and HOOKS.handed_over(model):
       frame_dropped_filter.x = 0.
       frame_drop_ratio = 0.

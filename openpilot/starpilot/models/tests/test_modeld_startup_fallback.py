@@ -9,6 +9,7 @@ import pytest
 
 from jetlink.openpilot.testing import FakeJoinedModel
 from openpilot.starpilot.models.status import ModelVariant
+from openpilot.starpilot.models.warmup import BigModelWarmup
 
 
 MODEL_SOURCE = Path(__file__).resolve().parents[3] / "selfdrive/modeld/modeld.py"
@@ -57,7 +58,8 @@ def test_inference_failure_uses_runner_identity(runner_chestnut, stored_active):
   env: dict = {"model": failed_model, "small_model": small_model, "params": params, "receipt_owner": receipt,
              "chestnut_state": chestnut_state, "run_count": 1, "ModelConstants": SimpleNamespace(MODEL_RUN_FREQ=20),
              "SERVICE_LIST": {"chestnutGpuState": SimpleNamespace(frequency=1)}, "bufs": {}, "transforms": {}, "inputs": {},
-             "small_prepared": object(), "ModelVariant": ModelVariant, "jetlink_model": None, "drop_chestnut": Mock(), "cloudlog": Mock()}
+             "small_prepared": object(), "ModelVariant": ModelVariant, "jetlink_model": None, "drop_chestnut": Mock(), "cloudlog": Mock(),
+             "big_warmup": BigModelWarmup(0.)}
   code = compile(ast.fix_missing_locations(ast.Module(body=[fallback], type_ignores=[])), str(MODEL_SOURCE), "exec")
   if runner_chestnut:
     exec(code, env)
@@ -65,6 +67,7 @@ def test_inference_failure_uses_runner_identity(runner_chestnut, stored_active):
     assert env["model_output"] is None
     assert env["run_count"] == 0
     assert not chestnut_state.big
+    assert env["big_warmup"].failed   # the loop then clears ChestnutLoading for the small model
     env["drop_chestnut"].assert_called_once_with()
     params.put_bool.assert_called_once_with("ChestnutActive", False)
     receipt.loaded.assert_called_once_with(env["small_prepared"], ModelVariant.SMALL, "chestnut-load-failed", model_id="fallback-small")
@@ -89,7 +92,7 @@ def test_remote_inference_failure_does_not_change_chestnut_status():
   params, receipt = Mock(), Mock()
   env = {"model": failed_model, "small_model": small_model, "params": params, "receipt_owner": receipt,
          "chestnut_state": None, "run_count": 1, "bufs": {}, "transforms": {}, "inputs": {},
-         "small_prepared": object(), "ModelVariant": ModelVariant, "jetlink_model": failed_model, "drop_chestnut": Mock(), "cloudlog": Mock()}
+         "small_prepared": object(), "ModelVariant": ModelVariant, "jetlink_model": failed_model, "drop_chestnut": Mock(), "cloudlog": Mock(), "big_warmup": None}
   execute([fallback], env)
   failed_model.close.assert_called_once_with()
   env["drop_chestnut"].assert_not_called()
@@ -211,7 +214,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
          "CP": SimpleNamespace(brand="mock"), "demo": False,
          "wait_for_chestnut_power": lambda CP, timeout: events.append("power"),
          "jetlink_adapter": SimpleNamespace(hooks=lambda: hooks), "drop_chestnut": Mock(),
-         "release_compile_pool": Mock(), "gc": Mock()}
+         "release_compile_pool": Mock(), "gc": Mock(), "BigModelWarmup": BigModelWarmup}
   wrapper = ast.parse("def startup():\n  pass").body[0]
   wrapper.body = body[start:end] + [ast.Return(value=ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]))]
   execute([wrapper], env)
@@ -250,7 +253,9 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
   env["release_compile_pool"].assert_called_once_with()
   env["gc"].collect.assert_called_once_with()
   params.put_bool.assert_any_call("ChestnutActive", not timeout)
-  params.put_bool.assert_any_call("ChestnutLoading", False)
+  # the big model stays "loading" until its first real passes are steady (the realtime loop clears it)
+  assert isinstance(env["big_warmup"], BigModelWarmup)
+  assert ("ChestnutLoading", False) not in [c.args for c in params.put_bool.call_args_list]
   assert receipt.loaded.call_args.args[1] == (ModelVariant.SMALL if timeout else ModelVariant.CHESTNUT)
   assert receipt.loaded.call_args.args[2] == ("chestnut-load-failed" if timeout else None)
 
