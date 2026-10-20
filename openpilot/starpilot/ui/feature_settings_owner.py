@@ -84,7 +84,7 @@ BOOL_DEFAULTS = {
   LEAD_TAKEOFF_KEY: False,
   CURVE_MASTER_KEY: False, CURVE_NO_LEAD_KEY: False,
   "ShowCSCStatus": False,
-  "ForceAutoTuneOff": False, "AlwaysOnLateral": False, "NostalgiaMode": False,
+  "ForceAutoTuneOff": False, "AlwaysOnLateral": True, "NostalgiaMode": False,
 }
 FLOAT_SPECS = {
   "ForceStopDistanceOffset": (-20, 20, 1, "ft"),
@@ -956,9 +956,9 @@ class FeatureSettingsOwner:
       rows.extend(offset_rows)
       title = "Speed Limit Controller"
     elif page == FeaturePage.LANE:
-      allowed = (configurable and lateral_context) or (not parked and self.authority("lane_live"))
       from openpilot.starpilot.lateral.lane_runtime import runtime_supported
       strength_supported = runtime_supported(self.vehicle_params())
+      allowed = strength_supported and ((configurable and lateral_context) or (not parked and self.authority("lane_live")))
       lane_enabled, _, _ = self._value("LaneCentering")
       rows.extend((self._bool_row("LaneCentering", "Enable Lane Centering", allowed),
                    replace(self._bool_row("LaneCenteringPauseOnSignal", "Pause on signal", allowed and lane_enabled == "1"),
@@ -1286,7 +1286,7 @@ class FeatureSettingsOwner:
           return False
       if key in (SLC_PRIORITY, SLC_SECONDARY) and request.capability != self._source_capability():
         return False
-      if key == "LaneCenteringStrength":
+      if key in LANE_LIVE_KEYS:
         from openpilot.starpilot.lateral.lane_runtime import runtime_supported
         if not runtime_supported(self.vehicle_params()):
           return False
@@ -1410,7 +1410,7 @@ class FeatureSettingsOwner:
         if request.value not in self._source_choices():
           return False
         encoded = "Map Data" if request.value == "Maps" else request.value
-      if key == "LaneCenteringStrength":
+      if key in LANE_LIVE_KEYS:
         from openpilot.starpilot.lateral.lane_runtime import runtime_supported
         if not runtime_supported(self.vehicle_params()):
           return False

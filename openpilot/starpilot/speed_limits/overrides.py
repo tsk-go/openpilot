@@ -312,8 +312,10 @@ def step(state: State, acceptance: acc.Decision, authority: acc.Authority, polic
           old.active and old.context is not None and not rotate and change.context_id == old.context.context_id and
           change.started_at_ns is not None and old.context.issued_at_ns <= change.started_at_ns <= now_ns and
           change.selected_mps == selected.speed_mps):
-      state = replace(state, persistent_selected_mps=(change.selected_mps if
-                      effective_target is not None and change.selected_mps + selected_delta > effective_target else None))
+      if (change.selected_mps > change.previous_mps or
+          state.persistent_selected_mps is not None and change.selected_mps < state.persistent_selected_mps):
+        state = replace(state, persistent_selected_mps=(change.selected_mps if
+                        effective_target is not None and change.selected_mps + selected_delta > effective_target else None))
       receipt = replace(receipt, consumed=True, status="driver_intent")
     else:
       receipt = replace(receipt, status="unqualified_effect")

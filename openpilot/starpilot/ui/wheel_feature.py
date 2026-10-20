@@ -2,6 +2,7 @@ import hashlib
 
 from openpilot.starpilot.aol.vehicle import policy_for
 from openpilot.starpilot.conditional_mode.manual import ioniq6_media_eligible
+from openpilot.starpilot.feature_capabilities import lateral_supported
 from openpilot.starpilot.controllers.wheel_actions import ACTIONS, DEFAULTS, KEYS, button_reported, eligible
 from openpilot.starpilot.saved_document import commit_exact
 from openpilot.starpilot.saved_source import read_saved
@@ -51,14 +52,11 @@ class WheelFeature:
         return ()
     if key in KEYS[8:] and not media:
       return ()
-    if key in KEYS[:5] and not policy.settings_supported and not (
-        key == "LKASButtonControl" and policy.auxiliary_lkas_supported):
-      return ()
     codes = {0, 8, 11, 12, 13}
     if self.owner.longitudinal_available():
       codes.update((1, 2, 5, 10, 14))
       codes.add(6)
-    if media:
+    if lateral_supported(cp):
       codes.add(7)
     if not policy.fixed_cruise_buttons and policy.settings_supported:
       if key in KEYS[:5] or not policy.explicit_latch:

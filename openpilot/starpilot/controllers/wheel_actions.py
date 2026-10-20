@@ -36,15 +36,45 @@ def eligible(cp):
 
 
 def button_reported(cp, key):
-  """Match known parser omissions without changing other ports' button contracts."""
-  if cp.brand == 'toyota':
-    # Toyota CarState emits LKAS and distance events, never Cancel.
-    if key in KEYS[5:8]:
+  """Expose only button events the current vehicle parser actually emits."""
+  brand = cp.brand
+  if key not in KEYS[:8]:
+    return True  # Physical media rows have their separate receiver contract.
+  if brand in ('body', 'byd', 'mg', 'mock', 'psa', 'rivian', 'subaru'):
+    return False
+  if brand == 'toyota':
+    from opendbc.car.toyota.values import CAR, ToyotaFlags
+    if key == 'MainCruiseButtonControl' or key in KEYS[5:8]:
       return False
     if key == 'LKASButtonControl':
-      from opendbc.car.toyota.values import CAR, ToyotaFlags
       return bool(cp.flags & (ToyotaFlags.TSS2 | ToyotaFlags.LONG_FILTER) or
                   cp.carFingerprint == CAR.TOYOTA_PRIUS_RETROFIT)
+    return bool(cp.flags & ToyotaFlags.TSS2 and not cp.flags & (ToyotaFlags.RADAR_ACC | ToyotaFlags.SECOC) or
+                cp.flags & ToyotaFlags.LONG_FILTER or cp.carFingerprint in
+                (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT, CAR.TOYOTA_SIENNA_4TH_GEN))
+  if brand == 'tesla':
+    from opendbc.car.tesla.values import CAR, TeslaFlags
+    if key == 'LKASButtonControl':
+      return bool(cp.carFingerprint not in (CAR.TESLA_MODEL_S_PREAP, CAR.TESLA_MODEL_S_HW1) and
+                  cp.flags & TeslaFlags.AOL_SCREEN_BUTTON)
+    return bool(key in KEYS[5:8] and cp.carFingerprint == CAR.TESLA_MODEL_S_PREAP)
+  if key == 'LKASButtonControl':
+    if brand in ('chrysler', 'gm', 'mazda', 'nissan', 'volkswagen', 'volvo'):
+      return False
+    if brand == 'hyundai':
+      from opendbc.car.hyundai.values import CAR, HyundaiFlags, is_blended
+      return bool(cp.flags & (HyundaiFlags.CANFD | HyundaiFlags.HAS_LDA_BUTTON) or
+                  cp.carFingerprint == CAR.HYUNDAI_ELANTRA_HEV_2024 or is_blended(cp))
+  if key == 'MainCruiseButtonControl' and brand in ('chrysler', 'ford', 'mazda', 'nissan', 'volkswagen'):
+    return False
+  if key in KEYS[5:8]:
+    if brand in ('chrysler', 'nissan'):
+      return False
+    if brand == 'ford':
+      return bool(cp.openpilotLongitudinalControl)
+    if brand == 'mazda':
+      from opendbc.car.mazda.aol import qualified
+      return qualified(cp, marked_only=True)
   return True
 
 

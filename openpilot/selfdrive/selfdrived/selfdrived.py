@@ -49,7 +49,7 @@ from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordin
 from openpilot.starpilot.conditional_mode.consumer import ConsumerResult, ModeConsumer
 from openpilot.starpilot.conditional_mode.effective_status import publish_ack
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
-from openpilot.starpilot.conditional_mode.manual import ioniq6_media_eligible
+from openpilot.starpilot.feature_capabilities import lateral_supported
 from openpilot.starpilot.controllers.mode_actions import SwitchbackStatusOwner, SwitchbackCooldown, ModeActionOwner
 from openpilot.starpilot.conditional_mode.projection import paired_clocks_ns
 from openpilot.starpilot.conditional_mode.runtime_settings import (ConditionalSettingsOwner, experimental_requested, read_mode_sources)
@@ -126,7 +126,7 @@ class SelfdriveD:
     self.conditional_status = 'disabled'
     self.controller_action_sock = messaging.sub_sock('slcAction', conflate=False)
     self.controller_action_owner = ModeActionOwner()
-    self.switchback_capable = ioniq6_media_eligible(self.CP) and not self.CP.passive and not self.CP.dashcamOnly and not self.CP.notCar
+    self.switchback_capable = lateral_supported(self.CP)
     self.switchback_status = SwitchbackStatusOwner()
     self.switchback_cooldown = SwitchbackCooldown()
     self.low_speed_advisory = LowSpeedAdvisory()
@@ -1031,6 +1031,11 @@ class SelfdriveD:
     pers = LONGITUDINAL_PERSONALITY_MAP[self.personality]
     alerts = self.events.create_alerts(self.state_machine.current_alert_types, [self.CP, CS, self.sm, self.is_metric,
                                                                                 self.state_machine.soft_disable_timer, pers])
+    if getattr(self, 'aol_lag_takeover_alert', False) and not self.events.contains(ET.IMMEDIATE_DISABLE):
+      lag = Events(self.events.event_rules)
+      lag.add(EventName.selfdrivedLagging)
+      # Steering is already withdrawn, irrespective of any old ordinary timer.
+      alerts.extend(lag.create_alerts([ET.SOFT_DISABLE], [self.CP, CS, self.sm, self.is_metric, 0, pers]))
     alerts.extend(alert for alert in getattr(self, 'tesla_stock_alerts', [])
                   if alert.event_type in self.state_machine.current_alert_types)
     now_ns = time.monotonic_ns()
@@ -1668,6 +1673,7 @@ class SelfdriveD:
 
 
   def step(self):
+    self.aol_lag_takeover_alert = False
     initial_state = (self.state_machine.state, self.state_machine.soft_disable_timer, self.enabled, self.active)
     previous_deferred = getattr(self, 'aol_axis_publication_deferred', False)
     self.aol_axis_publication_deferred = False
@@ -1904,6 +1910,17 @@ class SelfdriveD:
                        CS.canValid and not CS.canTimeout and
                        ordinary_lateral_requested(self.active, CS, self.CP) and
                        ordinary_axis_request_allowed(self.CP, CS)), native=native)
+    if (self.aol_replay and source_current and not was_enabled and not self.enabled and
+        previous.lateral_active and previous.native_acknowledged and not self.aol_axis_decision.lateral_active and
+        self.aol_fault_reason == 'critical' and not self.aol_authority_lost and
+        intent is not None and intent.allowedLatch and EventName.selfdrivedLagging in self.events.names and
+        not self.events.contains(ET.IMMEDIATE_DISABLE) and
+        not any(event.softDisable and event.name != EventName.selfdrivedLagging for event in self.events.to_msg()) and
+        self._decide_aol_axes(CS, intent, native, now_ns=now_ns, ordinary_lag=True).lateral_active):
+      # Independent AOL has no ordinary enabled state to select a SOFT alert.
+      # Removing only lag proves the cause of this acknowledged steering loss;
+      # this notification-only result never replaces the withdrawn axis decision.
+      self.aol_lag_takeover_alert = True
     if (self.aol_replay and intent is not None and intent.lateralArmed and
         CS.steerFaultTemporary and not CS.steerFaultPermanent):
       # An armed AOL session still needs the ordinary temporary-steering warning

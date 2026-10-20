@@ -424,8 +424,21 @@ class TransportPauseFeedback:
       return False
     users = [event for event in events if event.userDisable]
     if users:
+      from opendbc.car.gm.values import is_volt_sdgm_accepted_envelope
+      from openpilot.starpilot.nostalgia import physical_cancel
+      # On the accepted Volt SDGM owner, an already LAT-only physical brake
+      # or regen sample also emits ordinary pedalPressed/USER_DISABLE. It
+      # must not turn an otherwise source-qualified temporary lag withdrawal
+      # into a permanent driver-intent reset. No axis or lease is retained.
+      volt_pedal = bool(self.lateral_only_baseline and is_volt_sdgm_accepted_envelope(cp) and
+        (cs.brakePressed or cs.regenBraking) and cs.cruiseState.available and
+        not cs.doorOpen and not cs.seatbeltUnlatched and not cs.steeringDisengage and not physical_cancel(cs, cp) and
+        not axis.desiredLongitudinal and not axis.longitudinalActive and
+        not native.requestedLongitudinal and not native.longitudinalAllowed and
+        all(event.name == log.OnroadEvent.EventName.pedalPressed and event.noEntry and
+            not event.softDisable and not event.immediateDisable for event in users))
       stock_user = stock_lateral_user_event(cp)
-      if (not getattr(self, 'lateral_only_baseline', False) or stock_user is None or
+      if not volt_pedal and (not getattr(self, 'lateral_only_baseline', False) or stock_user is None or
           any(event.name != stock_user or event.softDisable or event.immediateDisable for event in users) or
           not stock_lateral_off(cp, cs, native)):
         return False
