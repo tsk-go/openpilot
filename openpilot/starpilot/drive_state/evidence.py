@@ -22,7 +22,9 @@ class PhysicalSource:
   def allowed(self) -> bool:
     return self.status()['allowed']
 
-  def status(self):
+  def status(self, *, parked_marker=False):
+    """[parked_marker] (updates only): with the ignition on and card stopped (offroad), accept card's last word that the
+    car was stopped in Park and disengaged (park_marker.py) while every panda confirms noOutput and no controls."""
     def result(allowed, reason=None):
       return {'allowed': bool(allowed), 'reason': reason}
     with self.lock:
@@ -70,6 +72,10 @@ class PhysicalSource:
           safe = all(str(p.safetyModel) == 'noOutput' and not p.controlsAllowed for p in pandas)
           return result(safe, None if safe else 'Panda must confirm noOutput safety and controls disabled')
         if not fresh('carState', True):
+          if parked_marker and all(str(p.safetyModel) == 'noOutput' and not p.controlsAllowed for p in pandas):
+            from openpilot.starpilot.drive_state.park_marker import parked_when_card_stopped
+            if parked_when_card_stopped():
+              return result(True)
           return result(False, 'Current speed and gear are unavailable; turn off the vehicle ignition to confirm parked state')
         if not fresh('selfdriveState', True):
           return result(False, 'Driving services cannot confirm disengagement; turn off the vehicle ignition to confirm parked state')
@@ -87,7 +93,7 @@ class PhysicalSource:
   def update_status(self, manager_offroad):
     if manager_offroad is not True:
       return {'allowed': False, 'reason': 'Switch the device Offroad before updating'}
-    physical = self.status()
+    physical = self.status(parked_marker=True)
     if not physical['allowed']:
       return physical
     actual = self.effective()
