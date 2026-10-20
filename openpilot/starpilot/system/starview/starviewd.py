@@ -539,7 +539,9 @@ class DeviceOps:
     try:
       sw = self._software()
       branch = sw.status.snapshot()["installed"]["branch"]
-      sw.action("fast", {"action": "fast", "branch": branch}, authorized=lambda: True)
+      # "update" like Galaxy's Update button: fast when it can be, else the full update (this fork's commits change files
+      # outside the fast-update allowlist, which "fast" alone refuses: "Native build inputs or artifacts changed ...")
+      sw.action("update", {"action": "update", "branch": branch}, authorized=lambda: True)
     except SoftwareOperationError as e:
       return {"ok": False, "error": str(e.args[0]) if e.args else "Update refused"}
     except Exception as e:

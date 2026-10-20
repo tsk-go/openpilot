@@ -52,7 +52,8 @@ Paths are under `openpilot/` unless noted.
 9. Satellite reports for the tablet's GPS card (patch 15): `starview/compat.py` passes only `ubloxGnss.satReport`.
 10. Lane-change nudge strength from the tablet (patch 18): `starview/nudge.py`, `desire_helper.py` `nudge_torque`,
     modeld `NudgeSetting` (Toyota only; no file = stock rule).
-11. Fast update from the tablet on 7.0 (patch 19): starviewd `software_status` / `software_fast` (7.0's software owner).
+11. Update from the tablet on 7.0 (patches 19, 23): starviewd `software_status` / `software_fast` (7.0's software owner;
+    action "update" like Galaxy's Update button: fast when allowed, else the full update).
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
