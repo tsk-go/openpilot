@@ -6,13 +6,57 @@ import math
 import time
 import uuid
 
-from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ValidationError, ROUTE_AVOIDANCES
-from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine
+from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ValidationError, route_exclusions
+from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine, distance
 
 from openpilot.starpilot.gps.source import GPS_MAX_AGE_NS, GPS_SOURCES, bearing, select_location
 
 ARRIVED_NS = 5_000_000_000      # stopped at the destination this long shows "You have arrived"
 END_ROUTE_NS = 15_000_000_000   # ...and this long ends navigation, like tapping End navigation
+REFRESH_NS = 300_000_000_000    # while guiding, routes are asked again this often for live traffic and arrival time
+
+
+def _cells(points, step=25.):
+  """Grid cells (about 33 m) a route line passes through, filled in every `step` metres."""
+  cells = set()
+  for a, b in zip(points, points[1:], strict=False):
+    count = max(1, int(distance(a, b) / step))
+    for k in range(count + 1):
+      cells.add((round((a[0] + (b[0] - a[0]) * k / count) * 3000), round((a[1] + (b[1] - a[1]) * k / count) * 3000)))
+  return cells
+
+
+def _slot(choice, count: int) -> int:
+  # where the driven route sits: the chosen index, or 0 when that index is gone (the runtime then drives routes[0])
+  return choice if type(choice) is int and 0 <= choice < count else 0
+
+
+def keep_road(current, current_along: float, routes: list, choice) -> list:
+  """Refreshed routes ordered so the one that follows the road being driven takes the driven route's place: a traffic
+  refresh updates times and traffic without moving the driver onto another road. current_along: metres along
+  `current`'s line. The whole rest of the driven route is compared (alternatives often share the first miles); a tie
+  goes to the route whose length is closest to what is left."""
+  ahead = [p for p, along in zip(current.points, current.cumulative, strict=False) if along >= current_along]
+  if len(routes) < 2 or len(ahead) < 2:
+    return routes
+  samples = ahead[::max(1, len(ahead) // 120)] + [ahead[-1]]
+  remaining = current.cumulative[-1] - current_along
+
+  def score(index):
+    route = routes[index]
+    cells = _cells(route.points, step=max(25., route.cumulative[-1] / 20000.))
+    near = sum(any((round(lon * 3000) + i, round(lat * 3000) + j) in cells for i in (-1, 0, 1) for j in (-1, 0, 1)) for lon, lat in samples)
+    return round(near / len(samples), 2), -abs(route.cumulative[-1] - remaining)
+  best = max(range(len(routes)), key=score)
+  ordered = [route for index, route in enumerate(routes) if index != best]
+  ordered.insert(_slot(choice, len(routes)), routes[best])
+  return ordered
+
+
+def fastest_first(routes: list, choice) -> list:
+  """After leaving the route, Mapbox's best new route goes where the driven one is (not an arbitrary alternative)."""
+  slot = _slot(choice, len(routes))
+  return routes if slot == 0 or len(routes) < 2 else [*routes[1:slot + 1], routes[0], *routes[slot + 1:]]
 
 
 def location(sm, now_ns: int):
@@ -44,6 +88,10 @@ class RouteRuntime:
     self.arrived_since = 0
     self.ended_revision = None
     self.session = uuid.uuid4().hex
+    self.fetched_at = 0
+    self.refreshing = False
+    self.rerouting = False
+    self.along = 0.
 
   def update(self, now_ns: int, position, drive_id: int) -> dict:
     if position is not None:
@@ -55,13 +103,14 @@ class RouteRuntime:
     settings = self.owner.read_routing()
     selected = settings['destination']
     destination_key = None if selected is None else (selected['id'], selected['longitude'], selected['latitude'])
-    exclusions = tuple(value for key, value in ROUTE_AVOIDANCES.items() if settings[key])
+    exclusions = route_exclusions(settings)
     key = settings['enabled'], hashlib.sha256(settings['token'].encode()).digest(), destination_key, drive_id, exclusions
     if key != self.key:
       self.key, self.route = key, None
       self.routes = []
       self.preview_only = False
       self.retry_after = self.off_route_since = self.arrived_since = 0
+      self.refreshing = self.rerouting = False
     # A saved origin can draw a preview, but a fresh fix must calculate its own route.
     if position is not None and self.preview_only:
       self.route, self.routes = None, []
@@ -79,13 +128,27 @@ class RouteRuntime:
         route = self.future.result()
       except (ValidationError, OSError, ValueError):
         route = None
-      if self.fetch_key == self.key:
+      if self.fetch_key == self.key and self.refreshing:
+        # live traffic refresh: a failed one keeps the route; a new one keeps the road being driven
+        if route is not None and self.route is not None:
+          choice = settings.get('routeChoice', 0)
+          self.routes = keep_road(self.route, self.along, getattr(route, 'alternatives', [route]), choice)
+          self.route = None
+          self.owner.record_routes(settings['revision'], self.routes)
+        self.fetched_at = now_ns
+      elif self.fetch_key == self.key:
         self.routes = getattr(route, 'alternatives', [route]) if route is not None else []
+        if self.rerouting and self.routes:
+          self.routes = fastest_first(self.routes, settings.get('routeChoice', 0))
+          route = self.routes[0]
+        self.rerouting = False
         self.route = route
         if self.routes:
           self.owner.record_routes(settings['revision'], self.routes)
         self.retry_after = now_ns + 30_000_000_000 if route is None else 0
+        self.fetched_at = now_ns
       self.future = None
+      self.refreshing = False
     if self.routes:
       if getattr(self, 'routes_revision', None) != settings['revision']:
         self.owner.record_routes(settings['revision'], self.routes)
@@ -119,11 +182,22 @@ class RouteRuntime:
         self.future = self.executor.submit(self.engine.fetch, settings['token'], coordinates, settings['destination'], bearing, exclusions)
       return result
     progress = self.route.progress(coordinates, speed, bearing)
+    # metres along the line (progress() counts in Mapbox's step metres; the line's own length differs a little)
+    self.along = (max(0., self.route.steps[-1].end - progress.instruction['remainingDistanceMeters']) *
+                  self.route.cumulative[-1] / max(self.route.steps[-1].end, 1.))
+    if (self.future is None and not progress.off_route and not progress.arrived and self.fetched_at and
+        now_ns - self.fetched_at >= REFRESH_NS):
+      self.fetch_key, self.refreshing = self.key, True
+      self.future = self.executor.submit(self.engine.fetch, settings['token'], coordinates, settings['destination'], bearing, exclusions)
     self.off_route_since = (self.off_route_since or now_ns) if progress.off_route else 0
     self.arrived_since = (self.arrived_since or now_ns) if progress.arrived else 0
     if self.off_route_since and now_ns - self.off_route_since >= 2_000_000_000:
       self.route = None
       self.routes = []
+      if self.refreshing:
+        self.future = self.fetch_key = None   # the refresh in flight was asked from the old position: not used
+      self.refreshing = False
+      self.rerouting = True
       result['status'] = 'routing'
       return result
     arrived = self.arrived_since and now_ns - self.arrived_since >= ARRIVED_NS

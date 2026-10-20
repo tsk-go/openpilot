@@ -276,7 +276,6 @@ class MemParams:
     self._read_t = {}
     self._local: dict[str, object] = {}
     self.lock = threading.Lock()
-    self.nav_extra = None     # callable(base state) -> dict merged into NavInstructionState (the Waze bridge's fields)
     # callable(service) -> (time, event) | None, or NO_SOURCE: while a drive replay plays, its messages (or nothing)
     # instead of msgq's live ones
     self.source = None
@@ -345,22 +344,18 @@ class MemParams:
   def remove(self, key):
     self._local.pop(key, None)
 
-  def nav_base(self):
-    """StarPilot's turn instruction in the old NavInstructionState form (no Waze fields)."""
+  def navigation(self):
+    """The newest starpilotNavigation state (live, or the replayed drive's), or None."""
     m = self._newest("starpilotNavigation")
-    return nav_instruction_state(m[1].starpilotNavigation.navigation) if m is not None else None
+    return m[1].starpilotNavigation.navigation if m is not None else None
 
   def nav_state(self):
-    base = self.nav_base()
-    if base is not None and self.nav_extra is not None:
-      try:
-        base.update(self.nav_extra(base))
-      except Exception as e:
-        cloudlog.warning(f"starview compat: waze fields: {e}")
-    return base
+    """StarPilot's turn instruction in the old NavInstructionState form."""
+    nav = self.navigation()
+    return nav_instruction_state(nav) if nav is not None else None
 
 
-def nav_instruction_state(nav, extra=None):
+def nav_instruction_state(nav):
   """7.0's starpilotNavigation -> the old NavInstructionState JSON (what the tablet's turn card and turn signals read)."""
   try:
     if nav.version != 2 or not nav.enabled or str(nav.status) != "guiding" or not nav.instruction.text:
@@ -381,8 +376,6 @@ def nav_instruction_state(nav, extra=None):
       "timeRemaining": _f(i.remainingDurationSeconds),
       "destination": str(nav.destinationName),
     }
-    if extra:
-      state.update(extra)
     return state
   except Exception:
     return None

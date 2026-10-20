@@ -15,8 +15,9 @@ Endpoints (default port 8090, env STARVIEW_PORT):
   WS   /term             bash in a pty, persistent per ?sid=
   GET  /hello?n=<nonce>  pairing step 1: proof that this comma holds the tablet's pairing key (see pairing.py)
   POST /auth             pairing step 2: the tablet's proof -> a session pass for every other endpoint
-  POST /waze             the tablet's Waze reader: raw Waze screen snapshot -> parsed + compared with the Mapbox
-                         route (starpilot/navigation/waze_bridge.py); GET /waze = last result
+  GET  /nav/tile/{style}/{z}/{x}/{y}.png
+                         map tiles for the tablet's navigation map (nav_link.py); the route, its traffic and steps come
+                         with the control actions "nav_state", "nav_set", "nav_cancel", "nav_route", "nav_options"
   HTTP /fs/*             file browser API for the tablet's Files screen (same guard) -- see the files section
   GET  /techstream/     TechStream, Toyota diagnostics (techstream/, from toyopilot); its API is /api/toyota/*
   Drive replay (replay.py): control actions "replay_list", "replay_start" {route, at}, "replay_control" {op, value};
@@ -769,13 +770,10 @@ class Hub:
     self.params = Params()
     self.params_mem = compat.MemParams()   # 7.0 has no memory params: built from messages (compat.py)
     self.translator = compat.Translator(self.params, toggles=self._toggles)
-    # Waze: compared with StarPilot's next maneuver in the tablet's NavInstructionState (waze_bridge.py)
-    try:
-      waze = _waze_feed()
-      waze.nav_state = self.params_mem.nav_base
-      self.params_mem.nav_extra = waze.fields
-    except Exception as e:
-      cloudlog.warning(f"starview: waze bridge unavailable: {e}")
+    # the tablet's navigation map (nav_link.py): StarPilot 7's own routes, traffic and steps
+    from openpilot.starpilot.system.starview.nav_link import NavLink, remove_leftovers
+    self.nav = NavLink(newest=self.params_mem.navigation)
+    threading.Thread(target=remove_leftovers, name="starview-oldfiles", daemon=True).start()
     self._param_keys = None
     self.last_params_json = None
     self.lock = threading.Lock()
@@ -1536,22 +1534,26 @@ class Hub:
         cur = self.params.get_bool("ExperimentalMode")
         self.params.put_bool("ExperimentalMode", not cur)
         return {"ok": True, "ExperimentalMode": not cur}
-      if act == "nav_set":  # StarView 2.30: destination picked in the tablet's search (it opens Waze on it as well)
+      # ---- the tablet's navigation map (nav_link.py) ----
+      if act == "nav_state":
+        return self.nav.state(req.get("routeKey"), req.get("detailKey"))
+      if act == "nav_set":  # a place picked in the tablet's search
         try:
           lat, lon = float(req.get("latitude")), float(req.get("longitude"))
         except (TypeError, ValueError):
           return {"ok": False, "error": "latitude / longitude missing"}
-        return _waze_feed().set_tablet_destination(str(req.get("name") or ""), str(req.get("address") or ""), lat, lon)
-      if act == "nav_list":  # StarView 2.30: StarPilot's favourites and recent destinations for the tablet's search
-        doc = _waze_feed().dest.owner.read()     # 7.0's navigation settings (starpilot/navigation/owner.py)
-        return {"ok": True, "favorites": doc.get("favorites", []), "recents": doc.get("recents", [])}
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+          return {"ok": False, "error": "latitude / longitude missing"}
+        return self.nav.set_destination(str(req.get("name") or ""), str(req.get("address") or ""), lat, lon)
+      if act == "nav_list":  # StarPilot's favourites and recent destinations for the tablet's search
+        return self.nav.lists()
       if act == "nav_cancel":
         self.params_mem.remove("NavInstructionCollapsed")
-        dest = _waze_feed().dest
-        cur = dest.current()
-        if cur:
-          dest.clear_if(cur["id"])
-        return {"ok": True}
+        return self.nav.cancel()
+      if act == "nav_route":
+        return self.nav.select_route(req.get("index"))
+      if act == "nav_options":
+        return self.nav.options(req.get("options"))
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
@@ -1661,6 +1663,8 @@ async def _action(ws, hub, c, req):
     await ws.send_str(json.dumps(ack))
   except Exception as e:
     cloudlog.warning(f"starview: action {req.get('action')}: {e}")
+  if req.get("action") in ("nav_state", "nav_list"):
+    return   # reads only: no params resend (the map asks every 2 s)
   hub.invalidate_params_snapshot()
   c.force_params = True
 
@@ -2198,36 +2202,18 @@ async def fs_op(request):
   return web.json_response({"ok": True})
 
 
-_WAZE_FEED = None
-
-
-def _waze_feed():
-  global _WAZE_FEED
-  if _WAZE_FEED is None:
-    from openpilot.starpilot.system.starview.waze_bridge import WazeFeed
-    _WAZE_FEED = WazeFeed()
-  return _WAZE_FEED
-
-
-async def http_waze_post(request):
+async def http_nav_tile(request):
+  """A map tile for the tablet's navigation map (nav_link.py -> owner.map_tile: cached on the comma, counted)."""
   require_paired(request)
   try:
-    snap = await request.json()
-  except Exception:
-    raise web.HTTPBadRequest(text="JSON body expected") from None
-  if not isinstance(snap, dict):
-    raise web.HTTPBadRequest(text="JSON object expected")
+    z, x, y = (int(request.match_info[k]) for k in ("z", "x", "y"))
+  except ValueError:
+    raise web.HTTPBadRequest(text="bad tile") from None
   try:
-    res = await asyncio.get_running_loop().run_in_executor(None, _waze_feed().ingest, snap)
+    tile = await asyncio.get_running_loop().run_in_executor(None, request.app["hub"].nav.tile, request.match_info["style"], z, x, y)
   except Exception as e:
-    cloudlog.warning(f"starview: waze ingest: {e}")
-    return web.json_response({"ok": False, "error": str(e)[:300]}, status=500)
-  return web.json_response(res)
-
-
-async def http_waze_get(request):
-  require_paired(request)
-  return web.json_response(_waze_feed().status())
+    return web.json_response({"ok": False, "error": str(e)[:300]}, status=503)
+  return web.Response(body=tile, content_type="image/png", headers={"Cache-Control": "private, max-age=900"})
 
 
 async def http_status(request):
@@ -2592,8 +2578,7 @@ def main():
     web.get("/term", ws_term),
     web.get("/hello", http_hello),
     web.post("/auth", http_auth),
-    web.post("/waze", http_waze_post),
-    web.get("/waze", http_waze_get),
+    web.get("/nav/tile/{style}/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.png", http_nav_tile),
     web.get("/fs/list", fs_list),
     web.get("/fs/walk", fs_walk),
     web.get("/fs/get", fs_get),
