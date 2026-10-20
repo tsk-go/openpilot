@@ -54,6 +54,8 @@ Paths are under `openpilot/` unless noted.
     modeld `NudgeSetting` (Toyota only; no file = stock rule).
 11. Update from the tablet on 7.0 (patches 19, 23): starviewd `software_status` / `software_fast` (7.0's software owner;
     action "update" like Galaxy's Update button: fast when allowed, else the full update).
+15. RTK receiver on the hub (patch 25): `starview/rtk.py` reads a u-blox (ZED-F9R) for the tablet's GPS card (params "k")
+    and writes the RTCM corrections the tablet fetches from an NTRIP caster (`rtk_rtcm`). Not used by openpilot.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

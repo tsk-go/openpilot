@@ -838,6 +838,10 @@ class Hub:
     self.ops = DeviceOps(self.params, self.params_mem)
     self.tablet_mode = True   # tablet asks to turn the comma screen off while connected (control action "tablet_mode")
     self.blinker = PicoBlinker()
+    # the RTK receiver on the hub (rtk.py): its fix goes to the tablet ("k"), the tablet's NTRIP corrections come back
+    from openpilot.starpilot.system.starview.rtk import Rtk
+    self.rtk = Rtk()
+    self.rtk.start()
     self._flag_t = 0.0
     self.engaged = False
     self.started = False
@@ -1501,6 +1505,10 @@ class Hub:
     name = self._model_label()
     if name:
       out["p"]["DrivingModelName"] = name
+    rtk = getattr(self, "rtk", None)
+    k = rtk.status() if rtk is not None else None
+    if k is not None:
+      out["k"] = k                    # the RTK receiver (rtk.py); absent = none on this comma
     r = getattr(self, "replay", None)
     if r is not None:
       out["r"] = r.status()           # also tells the tablet this comma can replay drives
@@ -1688,6 +1696,16 @@ class Hub:
           return {"ok": True, "pct": nudge.write(req.get("pct")) or 100}
         except (TypeError, ValueError) as e:
           return {"ok": False, "error": str(e)}
+      if act == "rtk_rtcm":  # {"b64": RTCM3 bytes}: corrections the tablet fetched from the NTRIP caster, for rtk.py
+        import base64
+        b64 = req.get("b64")
+        if not isinstance(b64, str) or len(b64) > 64 * 1024:
+          return {"ok": False, "error": "bad corrections"}
+        try:
+          data = base64.b64decode(b64, validate=True)
+        except ValueError:
+          return {"ok": False, "error": "bad corrections"}
+        return self.rtk.feed_rtcm(data)
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
