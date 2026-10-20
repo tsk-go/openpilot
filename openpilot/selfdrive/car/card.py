@@ -13,6 +13,7 @@ from openpilot.cereal import log
 from opendbc.car.structs import car
 
 from openpilot.common.params import Params
+from openpilot.starpilot.drive_state.park_marker import ParkMarker
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog, ForwardingHandler
 
@@ -1591,7 +1592,10 @@ class Car:
 
   def params_thread(self, evt):
     next_cruise_read = 0.0
+    # fork fix (starpilot/drive_state/park_marker.py): leave the last parked state for Galaxy's update check offroad
+    park_marker = ParkMarker()
     while not evt.is_set():
+      park_marker.update(getattr(self, 'CS_prev', None), lambda: self.sm['carControl'].enabled)
       settings_worker = getattr(self, 'conditional_settings_worker', None)
       if settings_worker is not None:
         settings_worker.refresh(time.monotonic_ns())
