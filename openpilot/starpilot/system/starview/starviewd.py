@@ -499,8 +499,9 @@ class DeviceOps:
   # ---- updater (software.py) ----
   def _updater(self, action):
     from openpilot.starpilot.galaxy.software_operations import UpdaterProcess, SoftwareOperationError
-    if getattr(self, "_upd", None) is None:
-      self._upd = UpdaterProcess()        # kept: one managerState reader for good, like Galaxy's
+    with self._sw_lock:
+      if getattr(self, "_upd", None) is None:
+        self._upd = UpdaterProcess()        # kept: one managerState reader for good, like Galaxy's
     deadline = time.monotonic() + 2.0     # managerState comes at 2 Hz; a new reader waits for the next one
     while True:
       try:
@@ -509,6 +510,41 @@ class DeviceOps:
         if time.monotonic() > deadline:
           raise
         time.sleep(0.25)
+
+  # 7.0's fast update (Galaxy's Software › Update): the tablet's Software page used Dom's Galaxy /api/update/fast,
+  # which 7.0's Galaxy no longer has. Same owner and checks as Galaxy's /api/software/action, sharing the updater link.
+  _sw_lock = threading.Lock()
+
+  def _software(self):
+    from openpilot.starpilot.galaxy.software_operations import SoftwareOperations, UpdaterProcess
+    with self._sw_lock:
+      if getattr(self, "_sw", None) is None:
+        if getattr(self, "_upd", None) is None:
+          self._upd = UpdaterProcess()
+        self._sw = SoftwareOperations(process=self._upd)
+      return self._sw
+
+  def software_status(self):
+    try:
+      sw = self._software()
+      st = sw.status.snapshot()
+      ops = sw.snapshot(include_history=False)
+    except Exception as e:
+      return {"ok": False, "error": str(e) or "Software status is unavailable"}
+    keep = ("progress", "parked", "canFastUpdate", "canCheck", "reason", "request", "updaterAvailable")
+    return {"ok": True, "installed": st["installed"], "updater": st["updater"], "operations": {k: ops.get(k) for k in keep}}
+
+  def software_fast(self):
+    from openpilot.starpilot.galaxy.software_operations import SoftwareOperationError
+    try:
+      sw = self._software()
+      branch = sw.status.snapshot()["installed"]["branch"]
+      sw.action("fast", {"action": "fast", "branch": branch}, authorized=lambda: True)
+    except SoftwareOperationError as e:
+      return {"ok": False, "error": str(e.args[0]) if e.args else "Update refused"}
+    except Exception as e:
+      return {"ok": False, "error": str(e) or "Software status is unavailable"}
+    return {"ok": True, "branch": branch}
 
   def update_check(self):
     try:
@@ -1581,6 +1617,12 @@ class Hub:
       if act == "tether_password":
         return self.ops.tether_password(req.get("password"))
       # ---- Software panel ----
+      if act == "software_status":   # 7.0 fast update for the tablet's Software page
+        return self.ops.software_status()
+      if act == "software_fast":
+        if self.started or self._onroad():
+          return {"ok": False, "error": "Updates are installed while the car is off."}
+        return self.ops.software_fast()
       if act == "update_check":
         return self.ops.update_check()
       if act == "update_download":
@@ -1755,7 +1797,7 @@ async def _action(ws, hub, c, req):
     await ws.send_str(json.dumps(ack))
   except Exception as e:
     cloudlog.warning(f"starview: action {req.get('action')}: {e}")
-  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles", "nav_relay"):
+  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles", "nav_relay", "software_status"):
     return   # reads only: no params resend (the map asks every 2 s, the search on every keystroke)
   hub.invalidate_params_snapshot()
   c.force_params = True
