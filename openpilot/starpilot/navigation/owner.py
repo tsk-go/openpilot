@@ -688,7 +688,15 @@ class NavigationOwner:
             isinstance(name, str) and 1 <= len(name.strip()) <= 256):
           description = item.get('full_address') or item.get('place_formatted') or ''
           description = description.strip()[:512] if isinstance(description, str) else ''
-          results.append({'id':identity, 'name':name.strip(), 'description':description, 'searchId':search_id, 'temporary':True})
+          row = {'id':identity, 'name':name.strip(), 'description':description, 'searchId':search_id, 'temporary':True}
+          # StarView's search list: how far, and what kind of place
+          if type(item.get('distance')) in (int, float) and math.isfinite(item['distance']):
+            row['distanceMeters'] = float(item['distance'])
+          if isinstance(item.get('maki'), str):
+            row['maki'] = item['maki'][:40]
+          if isinstance(item.get('poi_category'), list) and item['poi_category'] and isinstance(item['poi_category'][0], str):
+            row['category'] = item['poi_category'][0][:60]
+          results.append(row)
       with self._lock:
         if (self._searches.get(key) is not entry or entry['expires'] <= time.monotonic() or
             self.read()['token'] != current['token']):

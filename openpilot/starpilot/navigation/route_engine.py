@@ -168,6 +168,36 @@ def _text(value, limit=160) -> str:
   return value.strip()[:limit] if isinstance(value, str) else ''
 
 
+def _lanes(leg, index) -> list:
+  try:
+    return _lane_list(leg, index)
+  except (AttributeError, TypeError, KeyError, IndexError):
+    return []   # lanes are a nicety: never lose the route's details over them
+
+
+def _lane_list(leg, index) -> list:
+  """The lanes at step `index`'s maneuver, as Waze / Google Maps show them: [{"d": arrows, "ok": a lane for the route,
+  "use": its arrow}]. From the banner shown before the maneuver (Mapbox's lane guidance), else the intersection."""
+  out = []
+  if index:
+    for banner in leg['steps'][index - 1].get('bannerInstructions') or []:
+      for part in ((banner.get('sub') or {}).get('components') or []):
+        if part.get('type') == 'lane' and isinstance(part.get('directions'), list):
+          d = [_text(v, 20) for v in part['directions'][:4] if isinstance(v, str)]
+          use = part.get('active_direction') if isinstance(part.get('active_direction'), str) else (d[0] if d and part.get('active') else '')
+          out.append({'d': d, 'ok': part.get('active') is True, 'use': _text(use, 20)})
+      if out:
+        break
+  if not out:
+    crossings = leg['steps'][index].get('intersections') or []
+    for lane in (crossings[0].get('lanes') or []) if crossings else []:
+      d = [_text(v, 20) for v in (lane.get('indications') or [])[:4] if isinstance(v, str)]
+      ok = lane.get('valid') is True
+      use = lane.get('valid_indication') if isinstance(lane.get('valid_indication'), str) else (d[0] if d and ok else '')
+      out.append({'d': d, 'ok': ok, 'use': _text(use, 20)})
+  return out[:12] if len(out) >= 2 else []
+
+
 def route_details(data: dict, points, cumulative) -> dict:
   """What the StarView tablet's map shows beside the route line: live traffic along it (distance runs), closures,
   incidents, the turn-by-turn list, what kind of roads it uses and how long it usually takes."""
@@ -203,8 +233,12 @@ def route_details(data: dict, points, cumulative) -> dict:
                       'description': _text(row.get('description')), 'closed': row.get('closed') is True,
                       'startMeters': round(along(start), 1), 'endMeters': round(along(row.get('geometry_index_end', start)), 1),
                       'longitude': round(point[0], 6), 'latitude': round(point[1], 6)})
-  steps, classes, offset = [], set(), 0.
+  steps, classes, voice, offset = [], set(), [], 0.
   for index, step in enumerate(leg['steps'][:2048]):
+    # Mapbox's spoken guidance, timed for the road: [metres from the start where it is said, words]
+    for row in step.get('voiceInstructions') or []:
+      if len(voice) < 600 and isinstance(row.get('announcement'), str) and type(row.get('distanceAlongGeometry')) in (int, float):
+        voice.append([round(offset + max(0., float(step['distance']) - float(row['distanceAlongGeometry'])), 1), row['announcement'].strip()[:300]])
     maneuver = step['maneuver']
     for crossing in step.get('intersections') or []:
       classes.update(value for value in crossing.get('classes') or [] if value in ('toll', 'motorway', 'ferry', 'tunnel', 'restricted'))
@@ -214,12 +248,20 @@ def route_details(data: dict, points, cumulative) -> dict:
     steps.append({'text': _text(text, 256), 'type': _text(maneuver.get('type'), 40), 'modifier': _text(modifier(maneuver.get('modifier', '')), 40),
                   'road': _text(step.get('name'), 120), 'ref': _text(step.get('ref'), 60), 'startMeters': round(offset, 1),
                   'distanceMeters': round(float(step['distance']), 1), 'durationSeconds': round(float(step['duration']), 1),
-                  'longitude': round(float(location[0]), 6), 'latitude': round(float(location[1]), 6)})
+                  'longitude': round(float(location[0]), 6), 'latitude': round(float(location[1]), 6), 'lanes': _lanes(leg, index)})
     offset += float(step['distance'])
   typical = data.get('duration_typical')
   return {'via': _text(leg.get('summary'), 120), 'typicalSeconds': float(typical) if type(typical) in (int, float) and math.isfinite(typical) else None,
-          'classes': sorted(classes), 'traffic': traffic, 'incidents': incidents, 'steps': steps,
+          'classes': sorted(classes), 'traffic': traffic, 'incidents': incidents, 'steps': steps, 'voice': voice,
           'polyline': encode_polyline(points)}
+
+
+def _voice_units() -> str:
+  try:
+    from openpilot.common.params import Params
+    return 'metric' if Params().get_bool('IsMetric') else 'imperial'
+  except Exception:
+    return 'imperial'
 
 
 def _request_values(exclusions):
@@ -239,7 +281,7 @@ class MapboxRouteEngine:
     url = ('https://api.mapbox.com/directions/v5/mapbox/driving-traffic/' +
            f'{position[0]},{position[1]};{destination["longitude"]},{destination["latitude"]}')
     params = {'access_token': token, 'geometries': 'geojson', 'steps': 'true', 'overview': 'full', 'banner_instructions': 'true', 'alternatives': 'true',
-              'annotations': 'congestion,closure'}
+              'annotations': 'congestion,closure', 'voice_instructions': 'true', 'voice_units': _voice_units()}
     exclude, include = _request_values(exclusions)
     if exclude:
       params['exclude'] = ','.join(exclude)
