@@ -162,3 +162,18 @@ def test_translator_rewrites_radar_state_and_learns_speed():
   (name, msgs), = t.feed("starpilotRadarState", [m.to_bytes()], 1.1)
   r = messaging.log_from_bytes(msgs[0]).starpilotRadarState
   assert name == "starpilotRadarState" and r.leadRight.status and abs(r.leadRight.vRel + 2.0) < 1e-5
+
+
+def test_chestnut_state_like_the_comma_screen():
+  cs = compat.chestnut_state
+  # offroad
+  assert cs(False, True, True, False, False, False, False, None, False, alert=True) == "failed"
+  assert cs(False, False, False, False, False, False, False, None, False, alert=False) == "disconnected"
+  assert cs(False, True, True, False, False, False, False, None, False, alert=False) == "ready"
+  # driving
+  assert cs(True, True, True, True, True, True, True, True, False, False) == "active"
+  assert cs(True, True, True, True, False, True, False, None, False, False) == "failed"      # small model driving
+  assert cs(True, True, True, False, False, False, False, None, True, False) == "loading"
+  assert cs(True, False, True, False, False, True, True, True, False, False) == "failed"     # gone from USB
+  assert cs(True, True, True, False, False, True, True, False, False, False) == "failed"     # modeld gave up
+  assert cs(True, False, False, False, False, False, False, None, False, False) == "disconnected"

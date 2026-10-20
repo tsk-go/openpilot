@@ -355,6 +355,32 @@ class MemParams:
     return nav_instruction_state(nav) if nav is not None else None
 
 
+CHESTNUT_ALERTS = ("Offroad_ChestnutModelError", "Offroad_ChestnutNotDetected", "Offroad_ChestnutOverheated",
+                   "Offroad_ChestnutPcieUnavailable", "Offroad_ChestnutUpdateFailed", "Offroad_ChestnutUsbSlow")
+
+
+def chestnut_state(started: bool, present: bool, present_at_start: bool, model_fresh: bool, model_big: bool,
+                   model_seen: bool, output_seen: bool, active, loading: bool, alert: bool) -> str:
+  """The eGPU's state as the comma's own screen shows it (selfdrive/ui/ui_state.py _update_chestnut_state):
+  "active" (big model driving: green), "loading" (gray, pulsing), "failed" (orange "GPU!"), "ready" (offroad, found),
+  "disconnected" (no icon). active: ChestnutActive (True / False / None = not decided yet)."""
+  if not started:
+    return "failed" if alert else "disconnected" if not present else "loading" if loading else "ready"
+  if not present_at_start:
+    return "disconnected"
+  if present and model_fresh and model_big:
+    return "active"
+  if model_fresh and not model_big:
+    return "failed"          # the small model is driving: the big one fell back
+  if not output_seen and loading:
+    return "loading"
+  if not present:
+    return "failed"          # gone from USB while driving
+  if not output_seen and (loading or not model_seen or active is not False):
+    return "loading"
+  return "failed"
+
+
 def nav_instruction_state(nav):
   """7.0's starpilotNavigation -> the old NavInstructionState JSON (what the tablet's turn card and turn signals read)."""
   try:
