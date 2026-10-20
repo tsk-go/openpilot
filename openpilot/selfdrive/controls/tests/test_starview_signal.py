@@ -117,3 +117,32 @@ def test_signal_file(tmp_path):
     tmp.write_text(junk)
     tmp.replace(tmp_path / "starview_signal")
     assert sig.read() == "", junk
+
+
+def test_nudge_strength_from_the_tablet():
+  from openpilot.selfdrive.controls.lib.desire_helper import NUDGE_HOLD_S
+  hold = round(NUDGE_HOLD_S / DT_MDL)
+  left = car(leftBlinker=True)
+  # lighter than the car's own threshold (60 of 100): a 70 push held 0.15 s starts it, without steeringPressed
+  h = DesireHelper()
+  run(h, left)
+  push = car(leftBlinker=True, steeringTorque=70.0)
+  assert run(h, push, hold - 1, nudge_torque=60.0) == LCS.preLaneChange
+  assert run(h, push, 1, nudge_torque=60.0) == LCS.laneChangeStarting
+  # a push the wrong way, or a short bump, does nothing
+  h = DesireHelper()
+  run(h, left)
+  assert run(h, car(leftBlinker=True, steeringTorque=-90.0), 10, nudge_torque=60.0) == LCS.preLaneChange
+  for _ in range(5):
+    run(h, push, hold - 1, nudge_torque=60.0)
+    run(h, left, 1, nudge_torque=60.0)
+  assert h.lane_change_state == LCS.preLaneChange
+  # firmer (130): the car's own steeringPressed at 110 is not enough any more
+  h = DesireHelper()
+  run(h, left)
+  assert run(h, car(leftBlinker=True, steeringPressed=True, steeringTorque=110.0), 10, nudge_torque=130.0) == LCS.preLaneChange
+  assert run(h, car(leftBlinker=True, steeringPressed=True, steeringTorque=140.0), hold, nudge_torque=130.0) == LCS.laneChangeStarting
+  # no setting: the stock rule, one frame of steeringPressed toward that side
+  h = DesireHelper()
+  run(h, left)
+  assert run(h, car(leftBlinker=True, steeringPressed=True, steeringTorque=110.0)) == LCS.laneChangeStarting

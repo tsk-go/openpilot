@@ -1638,6 +1638,12 @@ class Hub:
         return self.nav.category(req.get("category"), req.get("latitude"), req.get("longitude"), req.get("route"))
       if act == "nav_options":
         return self.nav.options(req.get("options"))
+      if act == "nudge_set":  # {"pct": 30-150}: steering nudge strength for lane changes, % of the car's own (nudge.py)
+        from openpilot.starpilot.system.starview import nudge
+        try:
+          return {"ok": True, "pct": nudge.write(req.get("pct")) or 100}
+        except (TypeError, ValueError) as e:
+          return {"ok": False, "error": str(e)}
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
