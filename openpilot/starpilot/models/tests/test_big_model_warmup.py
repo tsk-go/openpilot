@@ -8,7 +8,7 @@ def test_stays_loading_through_the_slow_first_passes():
   for exec_s, dropped in [(0.096, 1990), (0.06, 6), (0.992, 0), (0.047, 29), (0.045, 4)]:
     w.record(exec_s, dropped)
     assert not w.finished(3.)
-  for i in range(FAST_RUNS - 1):
+  for _ in range(FAST_RUNS - 1):
     w.record(0.042, 0)
   assert not w.finished(4.)
   w.record(0.042, 0)
