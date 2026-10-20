@@ -60,7 +60,7 @@ Paths are under `openpilot/` unless noted.
     modeld timeouts.
 13. Updates refused offroad + parked with the ignition on (patch 20): `starpilot/drive_state/park_marker.py`,
     `evidence.py` `parked_marker`, card's `ParkMarker`.
-14. "Driving Model Lagging" seconds after the big model loads (patch 22): `starpilot/models/warmup.py`; modeld keeps
+14. "Driving Model Lagging" seconds after the big model loads (patches 22, 24): `starpilot/models/warmup.py`; modeld keeps
     ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
 
 **No longer carried**

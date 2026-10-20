@@ -22,6 +22,8 @@ class BigModelWarmup:
 
   def record(self, exec_s: float, dropped_frames: int) -> None:
     self.runs += 1
+    if self.runs == 1:
+      dropped_frames = 0   # modeld's first pass counts every frame since the camera started (~2000), not a miss
     self.slowest = max(self.slowest, exec_s)
     self.missed += max(0, dropped_frames)
     self.streak = self.streak + 1 if exec_s < FAST_S and dropped_frames <= 0 else 0
