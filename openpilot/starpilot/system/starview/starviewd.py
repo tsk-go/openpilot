@@ -1097,7 +1097,7 @@ class Hub:
         self.cpu_pct = 100.0 * cpu / wall  # percent of ONE core
         self.cpu_mark = (now, time.process_time())
 
-  GPU_QUIET_MAX_S = 180.0
+  GPU_QUIET_MAX_S = 240.0  # covers a first big-model start, which compiles for up to 180 s
 
   def gpu_quiet_tick(self, now):
     """While the big model loads (the eGPU icon gray), StarView gives the comma's processor to it: no camera video to the
