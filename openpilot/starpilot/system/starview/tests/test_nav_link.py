@@ -389,3 +389,17 @@ def test_tablet_fetches_tiles_itself_and_reports_them(owner):
   assert owner.tile_budget.snapshot()['used'] == before + 40
   owner.tile_budget.used = owner.tile_budget.limit
   assert 'tileKey' not in link.state()                                      # the free map views are used up
+
+
+def test_favorites_save_label_remove(owner):
+  link = NavLink(owner=owner)
+  res = link.favorite('Gym', '5 Ocean Ave', 40.61, -73.96)
+  gym = res['favorites'][0]
+  assert gym['name'] == 'Gym' and gym['address'] == '5 Ocean Ave'
+  home = link.favorite('Home', '', 40.62, -73.97, 'home')['favorites']
+  assert [f.get('label') for f in home] == ['home', None]          # Home leads
+  assert link.label(gym['id'], 'work')['favorites'][1]['label'] == 'work'
+  assert link.unfavorite(gym['id'])['favorites'] == [home[0]]
+  with pytest.raises(ValidationError):
+    link.favorite('x', '', 'north', 1)
+  assert owner.read()['destination']['name'] == 'Library'            # the route is untouched

@@ -1554,6 +1554,12 @@ class Hub:
         return self.nav.select_route(req.get("index"))
       if act == "nav_search":
         return self.nav.search(req.get("query"), req.get("searchId"), req.get("clientId"), req.get("latitude"), req.get("longitude"))
+      if act == "nav_favorite":
+        return self.nav.favorite(req.get("name"), req.get("address"), req.get("latitude"), req.get("longitude"), req.get("label"))
+      if act == "nav_unfavorite":
+        return self.nav.unfavorite(req.get("id"))
+      if act == "nav_label":
+        return self.nav.label(req.get("id"), req.get("label"))
       if act == "nav_tiles":
         return self.nav.tiles_used(req.get("count"))
       if act == "nav_pick":
