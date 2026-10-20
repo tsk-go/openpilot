@@ -4,7 +4,8 @@ from openpilot.starpilot.models.warmup import FAST_RUNS, MAX_S, BigModelWarmup
 def test_stays_loading_through_the_slow_first_passes():
   # the drive that showed "Driving Model Lagging": a 96 ms pass, a 992 ms pass, then 29 missed frames at 47 ms
   w = BigModelWarmup(0.)
-  for exec_s, dropped in [(0.096, 6), (0.992, 0), (0.047, 29), (0.045, 4)]:
+  # the first pass's count is every frame since the camera started (logged 1990 on the car): not counted
+  for exec_s, dropped in [(0.096, 1990), (0.06, 6), (0.992, 0), (0.047, 29), (0.045, 4)]:
     w.record(exec_s, dropped)
     assert not w.finished(3.)
   for i in range(FAST_RUNS - 1):
@@ -12,7 +13,7 @@ def test_stays_loading_through_the_slow_first_passes():
   assert not w.finished(4.)
   w.record(0.042, 0)
   assert w.finished(4.)
-  assert w.summary(4.) == {"seconds": 4.0, "runs": 4 + FAST_RUNS, "slowest_ms": 992, "missed_frames": 39, "outcome": "steady"}
+  assert w.summary(4.) == {"seconds": 4.0, "runs": 5 + FAST_RUNS, "slowest_ms": 992, "missed_frames": 39, "outcome": "steady"}
 
 
 def test_a_missed_frame_restarts_the_count():
