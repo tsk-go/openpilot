@@ -8,6 +8,8 @@
          --control "nav_route" {index}                               drive another of the offered routes
          --control "nav_options" {avoidTolls: true, carpool: 2, ...} route options (upstream's three + StarView's)
          --control "nav_list"                                        favourites and recent destinations
+         --control "nav_favorite" {name, address?, latitude, longitude, label?}   save a place (label home / work)
+         --control "nav_unfavorite" {id} / "nav_label" {id, label}   remove a saved place / make it Home or Work
          --control "nav_search" {query, searchId, clientId, latitude?, longitude?}   places as you type (Mapbox Search
                                      Box, one billed session per search; near the car)
          --control "nav_pick" {id, searchId}                         drive to a place from those results
@@ -149,9 +151,36 @@ class NavLink:
       out["details"] = lines
     return out
 
+  def favorite(self, name, address, lat, lon, label=None) -> dict:
+    """Save a place in StarPilot's favourites (shared with Galaxy). Mapbox search results can't be saved (their terms):
+    the tablet saves those with the address from Android's own search."""
+    try:
+      lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+      raise ValidationError("latitude / longitude missing") from None
+    value = {"name": str(name or address or "Saved place")[:256], "latitude": lat, "longitude": lon}
+    if address and address != name:
+      value["address"] = str(address)[:512]
+    label = label if label in ("home", "work") else None
+    self._change(lambda rev: self.owner.favorite(value, rev, True, label))
+    return self.lists()
+
+  def unfavorite(self, identity) -> dict:
+    if not isinstance(identity, str) or not identity:
+      raise ValidationError("Choose a saved place")
+    self._change(lambda rev: self.owner.remove_favorite(identity, rev, True))
+    return self.lists()
+
+  def label(self, identity, label) -> dict:
+    self._change(lambda rev: self.owner.label_favorite(identity, label if label in ("home", "work") else None, rev, True))
+    return self.lists()
+
   def lists(self) -> dict:
     doc = self.owner.read()
-    return {"ok": True, "favorites": doc.get("favorites", []), "recents": doc.get("recents", [])}
+    # Home and Work lead, then places in the order they were saved (as Galaxy lists them)
+    order = {"home": 0, "work": 1}
+    favorites = sorted(doc.get("favorites", []), key=lambda row: order.get(row.get("label"), 2))
+    return {"ok": True, "favorites": favorites, "recents": doc.get("recents", [])}
 
   # ------------------------------------------------------------------ search
   def _near(self, lat, lon) -> None:
