@@ -1560,6 +1560,8 @@ class Hub:
         return self.nav.unfavorite(req.get("id"))
       if act == "nav_label":
         return self.nav.label(req.get("id"), req.get("label"))
+      if act == "nav_relay":  # {port}: the tablet relays Mapbox requests for a comma without internet (navigation/relay.py)
+        return self.nav.relay(req.get("_peer"), req.get("port"))
       if act == "nav_tiles":
         return self.nav.tiles_used(req.get("count"))
       if act == "nav_pick":
@@ -1671,13 +1673,15 @@ def hello(hub: Hub):
 
 
 async def _action(ws, hub, c, req):
+  if req.get("action") == "nav_relay":
+    req["_peer"] = c.peer        # the tablet's address on the link
   try:
     ack = await asyncio.get_running_loop().run_in_executor(None, hub.control, req)
     ack.update(type="ack", id=req.get("id"))
     await ws.send_str(json.dumps(ack))
   except Exception as e:
     cloudlog.warning(f"starview: action {req.get('action')}: {e}")
-  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles"):
+  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles", "nav_relay"):
     return   # reads only: no params resend (the map asks every 2 s, the search on every keystroke)
   hub.invalidate_params_snapshot()
   c.force_params = True

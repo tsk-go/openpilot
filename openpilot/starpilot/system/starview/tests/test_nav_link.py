@@ -1,5 +1,6 @@
 """The tablet's navigation map: route details from Mapbox, route options, traffic refresh, nav_link.NavLink."""
 import json
+import os
 import uuid
 from concurrent.futures import Future
 from types import SimpleNamespace
@@ -403,3 +404,36 @@ def test_favorites_save_label_remove(owner):
   with pytest.raises(ValidationError):
     link.favorite('x', '', 'north', 1)
   assert owner.read()['destination']['name'] == 'Library'            # the route is untouched
+
+
+def test_requests_go_through_the_tablet_when_the_comma_is_offline(tmp_path, monkeypatch):
+  import requests
+  from openpilot.starpilot.navigation import relay
+  path = tmp_path / 'relay'
+  monkeypatch.setattr(relay, 'RELAY_FILE', str(path))
+  link = NavLink(owner=None)
+  assert link.relay('::ffff:172.20.77.5', 8099) == {'ok': True, 'relay': '172.20.77.5:8099'}
+  assert relay.tablet_proxy(str(path)) == 'http://172.20.77.5:8099'
+  with pytest.raises(ValidationError):
+    link.relay('evil;host', 1)
+  calls, now = [], [100.]
+  def get(url, **kw):
+    calls.append(kw.get('proxies'))
+    if 'proxies' not in kw:
+      raise requests.ConnectionError('no route')
+    return 'ok'
+  session = relay.RelaySession(str(path), clock=lambda: now[0], get=get)
+  assert session.get('https://api.mapbox.com/x', timeout=3) == 'ok'
+  assert calls == [None, {'https': 'http://172.20.77.5:8099'}]
+  session.get('https://api.mapbox.com/y')                                 # for a minute: straight through the tablet
+  assert calls[-1] == {'https': 'http://172.20.77.5:8099'} and len(calls) == 3
+  now[0] += 61
+  session.get('https://api.mapbox.com/z')                                 # then straight out again first
+  assert calls[3] is None
+  link.relay('172.20.77.5', 0)
+  assert relay.tablet_proxy(str(path)) is None
+  with pytest.raises(requests.ConnectionError):                           # no tablet: the error is the comma's own
+    relay.RelaySession(str(path), get=get).get('https://api.mapbox.com/x')
+  path.write_text('172.20.77.5:8099')
+  os.utime(path, (1, 1))
+  assert relay.tablet_proxy(str(path)) is None                            # not renewed: not used
