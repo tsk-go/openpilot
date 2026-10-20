@@ -190,7 +190,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
   def verified(width, height, path, version, chestnut, model_id, sha):
     return state(width, height, chestnut), "prepared-" + model_id
 
-  params, receipt = Mock(), Mock()
+  params, receipt, profiler = Mock(), Mock(), Mock()
   from jetlink.openpilot.hooks import Hooks
   from openpilot.starpilot.models.jetlink_adapter import API
   bind = Mock(side_effect=AssertionError("a chestnut drive must not start jetlink"))
@@ -204,7 +204,8 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
          "CHESTNUT": True, "vipc_client_main": SimpleNamespace(width=1928, height=1208), "wait_for_chestnut": wait,
          "ModelState": state, "load_verified_model": verified, "modeld_pkl_path": lambda big: "bundled-big" if big else "bundled-small",
          "receipt_owner": receipt, "threading": SimpleNamespace(Thread=Thread), "BIG_MODEL_TIMEOUT": 30,
-         "BIG_MODEL_FIRST_TIMEOUT": 90, "program_cache": SimpleNamespace(preload=Mock(return_value=cached), save=Mock(), forget=Mock()),
+         "BIG_MODEL_FIRST_TIMEOUT": 90, "BIG_MODEL_CACHED_TIMEOUT": 45, "load_profile": SimpleNamespace(watch=lambda loader: profiler),
+         "program_cache": SimpleNamespace(preload=Mock(return_value=cached), save=Mock(), forget=Mock()),
          "report_load_timeout": Mock(),
          "params": params, "requested_model_id": "big", "ModelVariant": ModelVariant,
          "CP": SimpleNamespace(brand="mock"), "demo": False,
@@ -214,7 +215,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
   wrapper = ast.parse("def startup():\n  pass").body[0]
   wrapper.body = body[start:end] + [ast.Return(value=ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]))]
   execute([wrapper], env)
-  join = 30 if cached else 90
+  join = 45 if cached else 90
   cache = env["program_cache"]
   if timeout:
     cache.save.assert_not_called()   # still waiting for the GPU: nothing new to keep
@@ -223,6 +224,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
     with pytest.raises(SystemExit) as failed:
       env["startup"]()
     assert failed.value.code == STARTUP_FALLBACK_EXIT
+    profiler.report.assert_called_once_with("timeout" if worker_alive else "failed-wait")
     env["drop_chestnut"].assert_not_called()
     receipt.loaded.assert_not_called()
     env["release_compile_pool"].assert_not_called()
@@ -231,6 +233,7 @@ def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(c
     params.put_bool.assert_called_once_with("ChestnutActive", False)
     return
   env.update(env["startup"]())
+  profiler.report.assert_called_once_with("loaded")
   bind.assert_not_called()
   assert env["jetlink_model"] is None
   assert events[0] == ("small" if custom else "wait")
