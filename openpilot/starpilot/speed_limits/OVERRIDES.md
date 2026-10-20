@@ -23,6 +23,10 @@ Automatic, unresolved, consumed, foreign, replayed and completed effects never
 arm persistence. The action ledger supplies causal classification; the override
 reducer never guesses a physical button association or time window.
 
+A qualified selected-speed increase above the effective limit can start a
+persistent override. A decrease cannot start or raise one; it only lowers an existing
+override, clearing it at or below the effective limit.
+
 The reducer rotates context on accepted numeric target change, temporary
 inactivity and re-enable, mode or owner change, and each new consumed adoption.
 An accepted identity or provider change at the same numeric speed retains both

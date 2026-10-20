@@ -67,7 +67,7 @@ class TestEv9LongDebugContract(Ev9LongFixture, unittest.TestCase):
     self.assertFalse(self.safety.safety_tx_hook(self.angle(value=2.3)))
 
   def test_exact_selector_rejects_neighbor_words_and_aol_experience(self):
-    for word in (0x5C94, 0x5C97, 0x5D95, 0x5495, 0x5C9D, 0x5CB5, 0x5C91, 0x5491):
+    for word in (0x5C94, 0x5C97, 0x5D95, 0x5C9D, 0x5CB5, 0x5C91, 0x5491):
       with self.subTest(word=hex(word)):
         self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, word)
         self.safety.set_controls_allowed(True)

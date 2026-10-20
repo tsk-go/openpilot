@@ -100,14 +100,27 @@ class SpeedDomainTests(unittest.TestCase):
 
   def test_negative_offset_can_retain_raw_intent_below_raw_accepted_limit(self):
     lower = sd.OffsetSchedule((sd.OffsetBand(0.0, None, -5.0),))
-    first, _ = self.frame(0, schedule=lower)
+    first, _ = self.frame(0, selected_raw=16.0, schedule=lower)
     self.decision(1)
-    effect = self.intent(1, 20.0, 18.0, first.context)
+    effect = self.intent(1, 16.0, 18.0, first.context)
     armed, _ = self.frame(1, selected_raw=18.0, schedule=lower, change=effect)
     self.assertEqual(armed.state.persistent_selected_mps, 18.0)
     self.decision(2)
     retained, _ = self.frame(2, selected_raw=18.0, schedule=lower)
     self.assertEqual(retained.contribution_mps, 18.0)
+
+  def test_decrease_preserves_adjusted_ceiling_with_cluster_deltas(self):
+    for offset in (-5.0, 0.0, 2.0):
+      with self.subTest(offset=offset):
+        self.setUp()
+        schedule = sd.OffsetSchedule((sd.OffsetBand(0.0, None, offset),))
+        first, before = self.frame(0, selected_raw=30.0, selected_cluster=31.0, ego_cluster=20.5, schedule=schedule)
+        self.decision(1)
+        effect = self.intent(1, 30.0, 29.0, first.context)
+        result, after = self.frame(1, selected_raw=29.0, selected_cluster=30.0, ego_cluster=20.5, schedule=schedule, change=effect)
+        self.assertIsNone(result.contribution_mps)
+        self.assertIsNone(result.state.persistent_selected_mps)
+        self.assertEqual(after.cap_mps, before.cap_mps)
 
   def test_cluster_delta_jitter_does_not_rotate_causal_context(self):
     first, _ = self.frame(0, selected_raw=20.0, selected_cluster=20.5)

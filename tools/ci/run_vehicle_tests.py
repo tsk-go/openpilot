@@ -21,7 +21,13 @@ sys.path.insert(0, str(ROOT))
 from tools import test_runner
 from tools.ci import vehicle_pytest
 
+DEBUG_SAFETY_CLASS_TARGETS = {
+  "opendbc_repo/opendbc/safety/tests/test_ioniq5pe_paired_native.py": ("opendbc_repo/opendbc/safety/tests/test_ioniq5pe_paired_native.py::TestPELongDebug",),
+}
+
+
 RELEASE_TARGETS = (
+  "opendbc_repo/opendbc/safety/tests/test_ioniq5pe_paired_native.py::TestPELongReleaseDenied",
   "opendbc_repo/opendbc/safety/tests/test_tesla_preap_stock.py",
   "opendbc_repo/opendbc/car/tesla/tests/test_preap_startup.py",
   "opendbc_repo/opendbc/car/tesla/tests/test_preap_stock.py",
@@ -44,6 +50,11 @@ RELEASE_TARGETS = (
   "opendbc_repo/opendbc/safety/tests/test_hyundai_stock_angle_aol.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_stock_angle_aol.py",
   "opendbc_repo/opendbc/car/hyundai/tests/test_g90_startup.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_shared_session_recovery_contract.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_ev9_ready.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_dom_radar_vehicle_bindings.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_dom_radar_complete_paths.py",
+  "opendbc_repo/opendbc/car/hyundai/tests/test_dom_firmware_catalog.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_classic_long_aol.py",
   "openpilot/starpilot/aol/tests/test_classic_long_profiles.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_shared_canfd_stock_aol.py",
@@ -185,7 +196,8 @@ def targets_for(suite):
     return [str(path.relative_to(ROOT)) for path in sorted(car_root.rglob("test_*.py"))
             if path != car_root / "tests/test_models.py"]
   if suite == "safety-debug":
-    return [str(path.relative_to(ROOT)) for path in sorted((ROOT / "opendbc_repo/opendbc/safety/tests").glob("test_*.py"))]
+    paths = [str(path.relative_to(ROOT)) for path in sorted((ROOT / "opendbc_repo/opendbc/safety/tests").glob("test_*.py"))]
+    return [selected for path in paths for selected in DEBUG_SAFETY_CLASS_TARGETS.get(path, (path,))]
   if suite == "safety-release":
     return list(RELEASE_TARGETS)
   raise ValueError(f"Unknown vehicle test suite: {suite}")

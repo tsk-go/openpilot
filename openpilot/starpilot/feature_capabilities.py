@@ -30,3 +30,30 @@ def display_supported(cp) -> bool:
 def longitudinal_supported(cp) -> bool:
   return bool(display_supported(cp) and getattr(cp, 'openpilotLongitudinalControl', None) is True and
               _native_configuration_valid(cp, longitudinal=True))
+
+
+def lateral_supported(cp) -> bool:
+  """Generic curvature shaping follows steering capability, not cruise ownership.
+
+  Creating the optional preference host does not grant steering permission.
+  Controls retains its current axis, source, fault and final curvature checks.
+  GM additionally keeps its existing finalized physical-configuration checks.
+  """
+  from opendbc.car.structs import CarParams
+
+  try:
+    if (cp is None or not cp.carFingerprint or getattr(cp, 'passive', None) is not False or
+        getattr(cp, 'dashcamOnly', None) is not False or getattr(cp, 'notCar', None) is not False or
+        (getattr(cp, 'secOcRequired', False) and not getattr(cp, 'secOcKeyAvailable', False)) or
+        cp.steerControlType not in (CarParams.SteerControlType.torque, CarParams.SteerControlType.angle,
+                                    CarParams.SteerControlType.curvature) or
+        not any(config.safetyModel not in (CarParams.SafetyModel.silent, CarParams.SafetyModel.noOutput,
+                                          CarParams.SafetyModel.allOutput) for config in cp.safetyConfigs)):
+      return False
+    if cp.brand == 'gm':
+      from openpilot.starpilot.lateral.bolt_policy import supported_cp as bolt_supported_cp
+      from opendbc.car.gm.lateral import lane_centering_supported
+      return bool(bolt_supported_cp(cp) or lane_centering_supported(cp))
+    return True
+  except (AttributeError, IndexError, TypeError, ValueError):
+    return False

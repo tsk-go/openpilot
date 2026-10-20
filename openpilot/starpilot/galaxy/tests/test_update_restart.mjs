@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { UpdateRestart, UPDATE_RESTART_KEY } from "../web/js/update-restart.js"
+import { UpdateRestart, UPDATE_RESTART_KEY, UPDATE_RESTART_PREPARED_KEY } from "../web/js/update-restart.js"
 import { SoftwareStatusFeed } from "../web/js/software-status.js"
 
 const baseline = { commit: 'a'.repeat(40), branch: 'Dom', target: 'Dom', action: 'fast' }
@@ -22,8 +22,12 @@ function fixture(saved = null) {
 const normal = fixture()
 assert.deepEqual(normal.states, [false])
 assert.equal(normal.requests.length, 0)
+normal.recovery.prepare(baseline)
+assert.deepEqual(normal.states, [false], 'preparing must leave the update request page mounted')
+assert.equal(normal.values.has(UPDATE_RESTART_PREPARED_KEY), true)
 normal.recovery.start(baseline)
 assert.deepEqual(normal.states, [false, true])
+assert.equal(normal.values.has(UPDATE_RESTART_PREPARED_KEY), false)
 normal.recovery.start(baseline)
 assert.equal(normal.requests.length, 1)
 normal.requests[0].resolve(status(baseline.commit, pending))
@@ -49,6 +53,33 @@ installing.recovery.start(baseline)
 installing.requests[0].resolve(status('b'.repeat(40), { state: 'complete', outcome: 'restarting' }))
 await flush()
 assert.equal(installing.reloads, 0)
+const completedAfterReboot = fixture({ ...baseline, instance: 'one' })
+completedAfterReboot.requests[0].resolve({ ...status('b'.repeat(40), { state: 'complete', outcome: 'restarting' }), instance: 'two' })
+await flush()
+assert.equal(completedAfterReboot.reloads, 1)
+
+const canceled = fixture()
+canceled.recovery.prepare(baseline)
+canceled.recovery.cancelPreparation()
+assert.equal(canceled.values.has(UPDATE_RESTART_PREPARED_KEY), false)
+const abandoned = fixture()
+abandoned.recovery.prepare(baseline)
+abandoned.recovery.start(abandoned.recovery.prepared, { provisional: true })
+assert.equal(abandoned.values.has(UPDATE_RESTART_PREPARED_KEY), true)
+abandoned.recovery.now = () => Date.now() + 31000
+abandoned.requests[0].resolve(status())
+await flush()
+assert.equal(abandoned.reloads, 1)
+assert.equal(abandoned.values.has(UPDATE_RESTART_PREPARED_KEY), false)
+const recoveryAfterPageError = fixture()
+recoveryAfterPageError.recovery.prepare(baseline)
+const preparedValues = recoveryAfterPageError.values
+const preparedStorage = { getItem: key => preparedValues.get(key), setItem: (key, value) => preparedValues.set(key, value), removeItem: key => preparedValues.delete(key) }
+const resumedStates = []
+const resumedScreen = new UpdateRestart({ storage: preparedStorage, publish: value => resumedStates.push(value),
+  request: () => new Promise(() => {}), later: () => 1 })
+assert.equal(resumedScreen.baseline?.commit, baseline.commit)
+assert.equal(resumedStates.at(-1), true)
 
 // A same-revision return is ambiguous; keep waiting for explicit completion or a changed build.
 const resumed = fixture(baseline)
@@ -91,9 +122,9 @@ assert.equal(restarts.length, 0)
 feed.installBaseline = baseline
 feed.error = 'Server rejected request'
 feed.emit('ready')
-assert.equal(restarts.length, 0)
+assert.equal(restarts.length, 1)
 feed.data.operations.request = null
 feed.error = 'Connection lost'
 feed.connectionLost = true
 feed.emit('ready')
-assert.equal(restarts.length, 1)
+assert.equal(restarts.length, 2)

@@ -15,6 +15,11 @@ def modeld_pkl_path(chestnut: bool):
   return materialize_file_chunked(path) if path.is_file() or Path(f'{path}.chunkmanifest').exists() else path
 
 def load_oob(path, chestnut=False):
+  from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy, load_oob as protected_load
+  if AGNOS:
+    if not selected_legacy():
+      raise RuntimeError('Prepare the model runtime before loading a device artifact')
+    return protected_load(materialize_file_chunked(path), chestnut)
   from tinygrad import Context
   device = 'USB+AMD:LLVM' if chestnut else 'QCOM' if AGNOS else 'METAL' if sys.platform == 'darwin' else 'CPU:LLVM'
   with Context(DEV=device):

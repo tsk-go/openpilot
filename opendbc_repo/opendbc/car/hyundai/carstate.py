@@ -1,3 +1,5 @@
+from opendbc.car.hyundai.ioniq5pe_long_profile import qualified as pe_long_qualified
+from opendbc.car.hyundai.ioniq5pe_ready import PEReadySource
 from opendbc.car.hyundai.blended_stock_aol import qualified as qualified_blended_stock, qualified_alpha as qualified_blended_alpha, MixedStockLkasSources
 from opendbc.car.hyundai.classic_long_aol import qualified as qualified_classic_long
 from opendbc.car.hyundai.classic_scc_aol import qualified as qualified_classic_scc, ClassicSccLkasSources
@@ -62,8 +64,11 @@ class CarState(CarStateBase):
       self.forte_lkas_sources = ClassicSccLkasSources(CP.carFingerprint)
     if qualified_blended_stock(CP) or qualified_blended_alpha(CP):
       self.forte_lkas_sources = MixedStockLkasSources(CP)
-    self.ev9_long = ev9_long_qualified(CP)
-    self.ev9_camera_lead = EV9CameraLead(CP) if self.ev9_long else None
+    self.pe_long = pe_long_qualified(CP)
+    self.pe_ready = PEReadySource() if self.pe_long else None
+    self.ev9_long = ev9_long_qualified(CP) or self.pe_long
+    self.ev9_camera_lead = (CANFDCameraLead(CP, CanBus(CP).ECAN) if self.pe_long else
+                            EV9CameraLead(CP) if self.ev9_long else None)
     self.ioniq6_camera_lead = (CANFDCameraLead(CP, CanBus(CP).ECAN)
                                if CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and CP.openpilotLongitudinalControl else None)
     self.torque_ev_camera_lead = CANFDCameraLead(CP, CanBus(CP).ECAN) if torque_ev_scc_eligible(CP) else None
@@ -406,7 +411,7 @@ class CarState(CarStateBase):
       angle_fault = int(cp.vl["MDPS"]["MDPS_ADAS_AciFltSig_Lv2"])
       if self.ev9_long:
         self.angle_steering_angle = cp.vl["MDPS"]["MDPS_EstStrAnglVal"]
-        self.angle_steering_fault = bool(angle_fault & 2)
+        self.angle_steering_fault = bool(angle_fault) if self.pe_long else bool(angle_fault & 2)
         ret.steerFaultTemporary |= self.angle_steering_fault
       else:
         ret.steerFaultTemporary |= bool(angle_fault if self.CP.carFingerprint in (CAR.HYUNDAI_IONIQ_5_PE, CAR.KIA_EV9) else angle_fault & 2)
@@ -435,6 +440,15 @@ class CarState(CarStateBase):
           self.left_blindspot_from_radar, self.right_blindspot_from_radar = corner_left, corner_right
         ret.leftBlindspot |= corner_left
         ret.rightBlindspot |= corner_right
+      if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_5_PE:
+        self.left_blindspot_from_radar = self.right_blindspot_from_radar = False
+        front_ts = cp.ts_nanos["BLINDSPOTS_FRONT_CORNER_2"]["CHECKSUM"]
+        if ioniq_6_bsm_source_fresh(cp._last_update_nanos, front_ts):
+          corner_left, corner_right = decode_ioniq_6_corner_bsm(int(cp.vl["BLINDSPOTS_FRONT_CORNER_2"]["SIDE_DETECT_STATE"]))
+          if self.pe_long:
+            self.left_blindspot_from_radar, self.right_blindspot_from_radar = corner_left, corner_right
+          ret.leftBlindspot |= corner_left
+          ret.rightBlindspot |= corner_right
       if self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6:
         now_ns = cp._last_update_nanos
         rear_ts = cp.ts_nanos["ADAS_CMD_50_50ms"]["ADAS_CMD_Crc50Val"]
@@ -543,10 +557,10 @@ class CarState(CarStateBase):
 
   def get_can_parsers_canfd(self, CP):
     msgs = []
-    if ev9_long_qualified(CP):
+    if ev9_long_qualified(CP) or pe_long_qualified(CP):
       msgs.append(("FR_CMR_01_10ms", math.nan))
     cam_msgs: list[tuple[str | int, int | float]] = []
-    if CP.carFingerprint in (CAR.HYUNDAI_IONIQ_6, CAR.KIA_EV9) and CP.deprecated.enableBsm:
+    if CP.carFingerprint in (CAR.HYUNDAI_IONIQ_6, CAR.HYUNDAI_IONIQ_5_PE, CAR.KIA_EV9) and CP.deprecated.enableBsm:
       # Receive-only corner sources do not poison stock SCC CAN validity.
       # The separately gated exact-long controller may use a fresh source for
       # paired dashboard status; parsing alone never authorizes TX.
@@ -596,7 +610,7 @@ class CarState(CarStateBase):
         # update_canfd reads DISTANCE_UNIT from this alternate definition even
         # on standard-button cars; prevent the absent source gating CAN-valid.
         msgs.append(("CRUISE_BUTTONS_ALT", math.nan))
-      if not ev9_long_qualified(CP):
+      if not (ev9_long_qualified(CP) or pe_long_qualified(CP)):
         (cam_msgs if CP.flags & HyundaiFlags.CANFD_CAMERA_SCC else msgs).append(("SCC_CONTROL", 50))
     elif torque_ev_scc_eligible(CP):
       msgs.extend((("ACCELERATOR", 100), ("TCS", 50), ("WHEEL_SPEEDS", 100), ("MDPS", 100)))

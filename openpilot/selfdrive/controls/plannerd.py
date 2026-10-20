@@ -35,7 +35,7 @@ from openpilot.starpilot.conditional_mode.traffic import TrafficOwner, TrafficVe
 from openpilot.starpilot.controllers.coast import CoastRuntime
 from openpilot.starpilot.controllers.mode_actions import ModeActionOwner, KINDS as CONTROLLER_MODE_KINDS, publish_switchback, apply_switchback_gesture
 import secrets
-from openpilot.starpilot.conditional_mode.manual import ioniq6_media_eligible
+from openpilot.starpilot.feature_capabilities import longitudinal_supported
 from openpilot.starpilot.conditional_mode.projection import paired_clocks_ns
 from openpilot.starpilot.conditional_mode.ui_action import observation as ui_manual_observation
 from openpilot.starpilot.longitudinal.cruise_ceiling import CurveCeiling
@@ -120,8 +120,8 @@ def _profile_frame_valid(sm, now_ns: int) -> bool:
 
 
 def profile_host_needed(CP, *, profile_enabled: bool, conditional_enabled: bool) -> bool:
-  """Traffic defaults need a resolver only on the reviewed media topology."""
-  return profile_enabled or (conditional_enabled and ioniq6_media_eligible(CP))
+  """Conditional Traffic profiles follow acceleration ownership, not media buttons."""
+  return profile_enabled or (conditional_enabled and longitudinal_supported(CP))
 
 
 def traffic_observation(verdict, *, model_ns: int, owner_present: bool = True):
@@ -358,8 +358,7 @@ def starpilot_main():
   # A validated Traffic gesture uses its frozen default profile even when
   # CustomPersonalities is off; saved custom category values still require
   # that master switch in ProfileHost.
-  traffic_capable = (CP.openpilotLongitudinalControl and not CP.passive and not CP.dashcamOnly and not CP.notCar and
-                     feature_requested(params, 'conditional'))
+  traffic_capable = longitudinal_supported(CP) and feature_requested(params, 'conditional')
   traffic_settings = ConditionalSettingsOwner(params) if traffic_capable else None
   profile_request_ns = -1_000_000_000
   profile_host = ProfileHost(params) if profile_host_needed(CP, profile_enabled=profile_replay,

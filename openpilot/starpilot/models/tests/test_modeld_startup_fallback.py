@@ -104,6 +104,8 @@ def test_remote_inference_failure_does_not_change_chestnut_status():
 def execute(statements, env):
   env.setdefault("os", SimpleNamespace(getenv=lambda key: None))
   env.setdefault("recovery_small_only", False)
+  from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
+  env.setdefault("STARTUP_FALLBACK_EXIT", STARTUP_FALLBACK_EXIT)
   exec(compile(ast.fix_missing_locations(ast.Module(body=statements, type_ignores=[])), str(MODEL_SOURCE), "exec"), env)
 
 
@@ -148,9 +150,9 @@ def test_observed_availability_and_big_eligibility(monkeypatch, present, cable, 
   params.put_bool.assert_called_once_with("ChestnutLoading", expected)
 
 
-@pytest.mark.parametrize("timeout", [False, True])
+@pytest.mark.parametrize("timeout,worker_alive", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("custom", [False, True])
-def test_big_worker_waits_before_load_and_timeout_preserves_small_fallback(custom, timeout):
+def test_big_worker_waits_before_load_and_failure_requests_fresh_small_process(custom, timeout, worker_alive):
   body = main_body()
   start = next(i for i, node in enumerate(body) if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "st")
   end = next(i for i, node in enumerate(body) if ast.unparse(node).startswith("config_realtime_process("))
@@ -172,7 +174,7 @@ def test_big_worker_waits_before_load_and_timeout_preserves_small_fallback(custo
       events.append(("join", duration))
 
     def is_alive(self):
-      return False
+      return worker_alive
 
   def wait():
     assert worker
@@ -201,6 +203,7 @@ def test_big_worker_waits_before_load_and_timeout_preserves_small_fallback(custo
          "CHESTNUT": True, "vipc_client_main": SimpleNamespace(width=1928, height=1208), "wait_for_chestnut": wait,
          "ModelState": state, "load_verified_model": verified, "modeld_pkl_path": lambda big: "bundled-big" if big else "bundled-small",
          "receipt_owner": receipt, "threading": SimpleNamespace(Thread=Thread), "BIG_MODEL_TIMEOUT": 30,
+         "report_load_timeout": Mock(),
          "params": params, "requested_model_id": "big", "ModelVariant": ModelVariant,
          "CP": SimpleNamespace(brand="mock"), "demo": False,
          "wait_for_chestnut_power": lambda CP, timeout: events.append("power"),
@@ -209,6 +212,18 @@ def test_big_worker_waits_before_load_and_timeout_preserves_small_fallback(custo
   wrapper = ast.parse("def startup():\n  pass").body[0]
   wrapper.body = body[start:end] + [ast.Return(value=ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[]))]
   execute([wrapper], env)
+  if timeout:
+    from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
+    with pytest.raises(SystemExit) as failed:
+      env["startup"]()
+    assert failed.value.code == STARTUP_FALLBACK_EXIT
+    env["drop_chestnut"].assert_not_called()
+    receipt.loaded.assert_not_called()
+    env["release_compile_pool"].assert_not_called()
+    bind.assert_not_called()
+    assert events.count("small") == int(custom)
+    params.put_bool.assert_called_once_with("ChestnutActive", False)
+    return
   env.update(env["startup"]())
   bind.assert_not_called()
   assert env["jetlink_model"] is None

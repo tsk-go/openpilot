@@ -97,8 +97,8 @@ def _qualified(ctx: AuthorityContext, group: str) -> bool:
       from opendbc.car.toyota.interface import toyota_auto_hold_supported
       return toyota_auto_hold_supported(cp)
     if group == "switchback_wheel":
-      from openpilot.starpilot.conditional_mode.manual import ioniq6_media_eligible
-      return bool(ioniq6_media_eligible(cp) and not cp.notCar and not cp.passive and not cp.dashcamOnly)
+      from openpilot.starpilot.feature_capabilities import lateral_supported
+      return lateral_supported(cp)
     if group in ("conditional", "conditional_wheel", "long_output"):
       return bool((cp.openpilotLongitudinalControl or ctx.configuration_longitudinal) and not cp.notCar and not cp.dashcamOnly and not cp.passive)
     if group == "slc":
@@ -399,14 +399,10 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
     annotation = validated_annotation(request.value)
     if annotation is None:
       return "Invalid camera regions"
-    sides = ", ".join(f"camera {side} / vehicle {'left' if side == 'right' else 'right'} " +
-                      f"({len(getattr(annotation, f'camera_{side}') or ())} points)"
-                      for side in annotation.configured_sides)
-    return (f"Save {annotation.width} × {annotation.height} camera regions: {sides}? " +
-            "Existing saved enable choice stays as shown; development qualification remains separate.")
+    return "Save these camera window regions?"
   if key.startswith("vasm:"):
     value = f"{request.value} {row.unit}".rstrip()
-    return f"Save {row.label.lower()} as {value}? This is a saved visual choice; development qualification remains separate."
+    return f"Save {row.label.lower()} as {value}?"
   if key == SENTRY_RESET:
     return "Replace invalid saved motion settings with Off and the default sensitivity and warning time?"
   if key.startswith("sentry:"):
@@ -630,6 +626,7 @@ class SettingsGateway:
       self.views[view_id] = _View(_session_key(token), generation, page, state.rows, ctx.cp_raw, self.clock() + TTL)
     scope = hashlib.sha256(_session_key(token) + generation + (ctx.cp_raw or b"")).digest()
     result = {"page": page, "title": state.title, "subtitle": state.subtitle, "parked": state.parked,
+              "vehicleIdentified": bool(ctx.cp is not None and getattr(ctx.cp, "carFingerprint", None)),
               "rows": [{**_projection(row, page), "revision": hashlib.sha256(scope + repr(row).encode()).hexdigest()}
                        for row in state.rows], "view": view_id}
     if page == "vasm":

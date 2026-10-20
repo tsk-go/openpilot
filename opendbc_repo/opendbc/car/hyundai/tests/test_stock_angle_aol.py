@@ -123,7 +123,6 @@ def test_known_temporary_denial_retains_intent_but_not_permission(identity):
     ('gearShifter', structs.CarState.GearShifter.reverse),
     ('steerFaultTemporary', True),
     ('standstill', True),
-    ('gasPressed', True),
     ('brakePressed', True),
   ):
     restricted = state.as_reader().as_builder()
@@ -224,3 +223,21 @@ def test_actual_card_panda_ae0_health_cannot_admit_ae32(identity):
         assert card.startup_panda_configured() is expected
     del card, ci
     gc.collect()
+
+
+@pytest.mark.parametrize('identity', sorted(MODELS))
+def test_accelerator_keeps_qualified_independent_angle_command_while_brake_and_ordinary_mode_stay_gated(identity):
+  cp = source_profile(CAR(identity))
+  cp.alternativeExperience = 32
+  state = structs.CarState(canValid=True, gearShifter='drive', vEgoRaw=10, gasPressed=True)
+  assert command_allowed(cp, state)
+  assert not temporary_restriction(cp, state)
+  state.brakePressed = True
+  assert not command_allowed(cp, state)
+  assert temporary_restriction(cp, state)
+  state.brakePressed = False
+  state.canValid = False
+  assert not command_allowed(cp, state)
+  state.canValid = True
+  cp.alternativeExperience = 0
+  assert not command_allowed(cp, state)

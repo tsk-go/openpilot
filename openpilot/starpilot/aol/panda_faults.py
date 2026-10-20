@@ -11,9 +11,17 @@ def _diagnostic_mask(cp):
   try:
     from opendbc.car.gm.aol import qualified_gm
     from opendbc.car.gm.values import CAR, is_volt_sdgm_profile, is_bolt_present_no_acc_pedal_profile
-    if cp.brand != 'gm' or not qualified_gm(cp) or not aol_enabled(cp) or len(cp.safetyConfigs) != 1:
+    if cp.brand != 'gm' or len(cp.safetyConfigs) != 1:
       return 0
     word = int(cp.safetyConfigs[0].safetyParam)
+    # Only these two exact identities can use this diagnostic classification.
+    # Reject every other profile before the full GM admission walk. Current
+    # faults and all existing qualification checks remain authoritative.
+    if not ((cp.carFingerprint == CAR.CHEVROLET_VOLT_2019 and word == 0x1005) or
+            (cp.carFingerprint == CAR.CHEVROLET_BOLT_CC_2018_2021 and word == 0x9D)):
+      return 0
+    if not qualified_gm(cp) or not aol_enabled(cp):
+      return 0
     if (cp.carFingerprint == CAR.CHEVROLET_VOLT_2019 and word == 0x1005 and
         is_volt_sdgm_profile(cp, longitudinal=False) and cp.pcmCruise and not cp.openpilotLongitudinalControl):
       return 1 << 18
