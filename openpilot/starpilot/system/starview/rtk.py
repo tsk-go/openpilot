@@ -48,11 +48,12 @@ INIT = ("off", "initializing", "done", "done")
 CALIB = ("not calibrated", "calibrating", "calibrated", "calibrated")
 SENSOR = {5: "gyro z", 6: "wheel tick FL", 7: "wheel tick FR", 8: "wheel tick RL", 9: "wheel tick RR", 10: "wheel tick",
           11: "speed", 12: "gyro temperature", 13: "gyro y", 14: "gyro x", 16: "accel x", 17: "accel y", 18: "accel z"}
+ALG_ERRORS = ((1, "tilt"), (2, "yaw"), (4, "angle"))
 FAULTS = ((1, "bad measurements"), (2, "bad time tags"), (4, "missing measurements"), (8, "noisy measurements"))
 SETTINGS_PATH = Path("/data/starview/rtk.json")
 SPEED_HZ = 10.0
 SPEED_MAX_AGE_S = 0.1       # a speed older than this is dropped, never sent late
-SPEED_LATENCY_MS = 15       # carState's CAN sample to the receiver: reader tick (<= 10 ms) + USB; delayMs shows the real one
+SPEED_LATENCY_MS = 15       # CAN sample -> carState (~5 ms) + reader tick (<= 10 ms) + USB; delayMs shows carState -> USB
 ACK_WAIT_S = 3.0
 
 
@@ -104,8 +105,8 @@ SPEED_ON = valset_ram((
   (0x10070011, 0, 1),     # CFG-SFODO-DIS_AUTOSW: do use what comes over USB
   (0x2007000b, int(SPEED_HZ), 1),       # CFG-SFODO-FREQUENCY
   (0x3007000a, SPEED_LATENCY_MS, 2),    # CFG-SFODO-LATENCY (ms)
-  (0x40070008, 50_000, 4),              # CFG-SFODO-QUANT_ERROR: 0.05 m/s
-))
+)) + valset_ram(((0x40070008, 0, 4),))  # CFG-SFODO-QUANT_ERROR 0: the receiver learns the speed's noise itself (2.56's
+                                        # 0.05 m/s was too strict: "bad measurements"); its own VALSET in case it refuses
 SPEED_OFF = valset_ram(((0x10070003, 0, 1), (0x10070011, 1, 1)))
 FACTORY = ubx(0x06, 0x09, struct.pack("<IIIB", 0xFFFF, 0, 0xFFFF, 0x17))   # CFG-CFG: clear BBR/flash, load the defaults
 RESTART = {"hot": 0x0000, "warm": 0x0001, "cold": 0xFFFF}                  # CFG-RST navBbrMask
@@ -285,8 +286,109 @@ def parse_mon_ver(p: bytes) -> dict | None:
 def parse_esf_alg(p: bytes) -> dict | None:
   if len(p) < 16:
     return None
-  flags = p[5]
-  return {"mountAuto": bool(flags & 1), "mount": ALIGN[min((flags >> 1) & 7, 4)], "mountYawDeg": struct.unpack_from("<I", p, 8)[0] / 100}
+  flags, errors = p[5], p[6]
+  yaw = struct.unpack_from("<I", p, 8)[0] / 100
+  pitch, roll = struct.unpack_from("<hh", p, 12)
+  return {"mountAuto": bool(flags & 1), "mount": ALIGN[min((flags >> 1) & 7, 4)], "mountYawDeg": yaw,
+          "mountPitchDeg": pitch / 100, "mountRollDeg": roll / 100,
+          "mountErrors": [name for bit, name in ALG_ERRORS if errors & bit]}
+
+
+class Calibration:
+  """What the tablet's calibration view shows: every change in the fusion's start-up with the time it happened, and what
+  the drive so far gave the receiver to learn from (u-blox: a stop with the engine on, then about 10 left and right turns
+  of 90 degrees or more at 30 km/h or more). Fed from the receiver's own messages; nothing is guessed."""
+  KEYS = ("fusion", "imuInit", "insInit", "mountInit", "mount", "speedInit", "speedCalib", "fixType", "carHeading")
+  EVENTS = 20
+  TURN_MIN_MS = 3.0          # below this a heading is noise (and the car isn't turning on a road)
+  TURN_DEG = 80.0            # a corner of ~90 degrees
+  TURN_WINDOW_S = 20.0
+  FAST_MS = 30 / 3.6         # u-blox: 30 km/h
+  STILL_MS = 0.3
+
+  def __init__(self, clock=time.monotonic):
+    self.clock = clock   # monotonic: the comma's wall clock can be off in the car; the tablet gets ages instead
+    self.last = {}
+    self.events = []
+    self.reset_drive()
+    self.speed_checks = []   # recent ESF-STATUS reports (1 Hz): True = the speed sensor had bad measurements
+
+  def reset_drive(self) -> None:
+    self.since = self.clock()
+    self.turns = {"left": 0, "right": 0, "leftFast": 0, "rightFast": 0}
+    self.fast_s = self.still_s = self.longest_still_s = 0.0
+    self._acc = 0.0
+    self._acc_t = None
+    self._acc_speeds = []
+    self._prev = None        # (clock, heading deg, speed m/s)
+
+  def note(self, key: str, value) -> None:
+    if value is None:
+      return
+    old = self.last.get(key)
+    self.last[key] = value
+    if key in self.last and old is not None and old != value:
+      self.events.append({"t": self.clock(), "k": key, "from": old, "to": value})
+      del self.events[:-self.EVENTS]
+
+  def tool(self, op: str) -> None:
+    self.events.append({"t": self.clock(), "k": "tool", "from": None, "to": op})
+    del self.events[:-self.EVENTS]
+    if op in ("realign", "factory", "cold"):
+      self.reset_drive()
+
+  def esf(self, esf: dict) -> None:
+    for k in ("fusion", "imuInit", "insInit", "mountInit", "speedInit"):
+      self.note(k, esf.get(k))
+    speed = next((x for x in esf.get("sensors", ()) if x["type"] == "speed"), None)
+    if speed is not None:
+      self.note("speedCalib", speed["calib"])
+      self.speed_checks.append("bad measurements" in speed["faults"])
+      del self.speed_checks[:-60]
+
+  def pvt(self, pvt: dict, now: float) -> None:
+    self.note("fixType", pvt.get("fixType"))
+    self.note("carHeading", "valid" if pvt.get("carHeadingDeg") is not None else "not valid")
+    v = pvt.get("speedMs", 0.0)
+    heading = pvt.get("headingDeg")
+    prev, self._prev = self._prev, (now, heading, v)
+    if prev is None or not 0 < now - prev[0] < 1.0:
+      self._acc, self._acc_t, self._acc_speeds = 0.0, None, []
+      return
+    dt = now - prev[0]
+    if v >= self.FAST_MS:
+      self.fast_s += dt
+    if v < self.STILL_MS:
+      self.still_s += dt
+      self.longest_still_s = max(self.longest_still_s, self.still_s)
+    else:
+      self.still_s = 0.0
+    if v < self.TURN_MIN_MS or prev[2] < self.TURN_MIN_MS or heading is None or prev[1] is None:
+      self._acc, self._acc_t, self._acc_speeds = 0.0, None, []
+      return
+    d = (heading - prev[1] + 180.0) % 360.0 - 180.0
+    if self._acc_t is None or now - self._acc_t > self.TURN_WINDOW_S or (self._acc and d * self._acc < 0 and abs(d) > 0.5):
+      self._acc, self._acc_t, self._acc_speeds = 0.0, now, []
+    self._acc += d
+    self._acc_speeds.append(v)
+    if abs(self._acc) >= self.TURN_DEG:
+      side = "right" if self._acc > 0 else "left"   # heading grows clockwise
+      self.turns[side] += 1
+      if sum(self._acc_speeds) / len(self._acc_speeds) >= self.FAST_MS:
+        self.turns[side + "Fast"] += 1
+      self._acc, self._acc_t, self._acc_speeds = 0.0, None, []
+
+  def alg(self, alg: dict) -> None:
+    self.note("mount", alg.get("mount"))
+
+  def status(self) -> dict:
+    now = self.clock()
+    out = {"events": [{"agoS": round(now - e["t"], 1), "k": e["k"], "from": e["from"], "to": e["to"]} for e in self.events],
+           "drive": {"sinceAgoS": round(now - self.since), **self.turns, "fastS": round(self.fast_s),
+                     "longestStillS": round(self.longest_still_s), "stillNowS": round(self.still_s)}}
+    if self.speed_checks:
+      out["speedBadPct"] = round(100 * sum(self.speed_checks) / len(self.speed_checks))
+    return out
 
 
 OPS = ("hot", "warm", "cold", "realign", "factory", "save", "speed_on", "speed_off")
@@ -322,6 +424,7 @@ class Rtk:
     self._sent_win = [0.0, 0]
     self.speed_hz = 0.0
     self.delay_ms = None
+    self.cal = Calibration(clock)
 
   # ---- tablet side ----
   def _settings(self) -> dict:
@@ -388,6 +491,7 @@ class Rtk:
         self.speed_hz, self.delay_ms, self.sample = 0.0, None, None
       self.cmds += frames
       self.act = {"op": op, "state": "sent", "t": self.clock(), "acks": acks}
+      self.cal.tool(op)
     if op in ("speed_on", "speed_off"):
       self._save_settings()
     self._poke()
@@ -399,12 +503,14 @@ class Rtk:
     if not self.speed_on or self.fd is None:
       return False
     t = self._sample_t
-    return t is None or not 0 <= self.clock() - t < 1 / SPEED_HZ - 0.005
+    return t is None or self.clock() >= t
 
   def speed(self, speed_ms: float, reverse: bool, log_mono_ns: int) -> None:
+    """One speed every 0.1 s on a fixed grid (not 0.1 s after the last one), so the gaps the receiver sees stay even."""
     now = self.clock()
     with self.lock:
-      self._sample_t = now
+      t = self._sample_t
+      self._sample_t = now + 1 / SPEED_HZ if t is None or now - t > 0.3 else t + 1 / SPEED_HZ
       self.sample = (-abs(speed_ms) if reverse else speed_ms, log_mono_ns, now)
     self._poke()
 
@@ -428,6 +534,7 @@ class Rtk:
         if self.delay_ms is not None:
           feed["delayMs"] = round(self.delay_ms)
       out["speedFeed"] = feed
+      out["calibration"] = self.cal.status()
       act = self.act
       if act is not None:
         state = act["state"]
@@ -495,12 +602,17 @@ class Rtk:
         pvt = parse_pvt(payload)
         if pvt:
           self.pvt, self.pvt_t = pvt, now
+          self.cal.pvt(pvt, now)
       elif (cls, msg) == (0x01, 0x35):
         self.sat = parse_sat(payload)
       elif (cls, msg) == (0x10, 0x10):
         self.esf = parse_esf_status(payload)
+        if self.esf:
+          self.cal.esf(self.esf)
       elif (cls, msg) == (0x10, 0x14):
         self.alg = parse_esf_alg(payload)
+        if self.alg:
+          self.cal.alg(self.alg)
       elif (cls, msg) == (0x0A, 0x04):
         self.ver = parse_mon_ver(payload)
       elif cls == 0x05 and msg in (0x00, 0x01) and len(payload) >= 2:   # ACK-NAK / ACK-ACK

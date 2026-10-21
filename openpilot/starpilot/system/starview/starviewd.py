@@ -1230,7 +1230,7 @@ class Hub:
     try:
       ev = messaging.log_from_bytes(raw)
       cs = ev.carState
-      rtk.speed(cs.vEgo, str(cs.gearShifter) == "reverse", ev.logMonoTime)
+      rtk.speed(cs.vEgoRaw, str(cs.gearShifter) == "reverse", ev.logMonoTime)   # wheel speeds as they are, not filtered
     except Exception as e:
       cloudlog.warning(f"starview: rtk speed: {e}")
 

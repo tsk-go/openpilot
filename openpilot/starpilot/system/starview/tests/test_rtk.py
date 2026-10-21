@@ -349,3 +349,51 @@ def test_tablet_rtk_tools_action(monkeypatch):
   hub.last_raw = {}
   assert hub.control({"action": "rtk_action", "op": "realign"}) == {"ok": True}
   assert got == [("realign", False)]
+
+
+def test_calibration_timeline_and_what_the_drive_gave_it():
+  clock = [1000.0]
+  cal = rtk.Calibration(clock=lambda: clock[0])
+  t = 0.0
+  heading = 0.0
+
+  def drive(seconds, speed, turn_rate=0.0):
+    nonlocal t, heading
+    for _ in range(int(seconds * 10)):
+      t += 0.1
+      clock[0] += 0.1
+      heading = (heading + turn_rate * 0.1) % 360
+      cal.pvt({"fixType": "3D", "speedMs": speed, "headingDeg": heading, "carHeadingDeg": None}, t)
+
+  cal.esf({"fusion": "initializing", "imuInit": "initializing", "insInit": "off", "mountInit": "off", "speedInit": "off", "sensors": []})
+  drive(25, 0.0)                                   # the stop with the engine on
+  cal.esf({"fusion": "initializing", "imuInit": "done", "insInit": "off", "mountInit": "initializing", "speedInit": "off", "sensors": []})
+  drive(30, 12.0)                                  # straight at 27 mph
+  drive(9, 9.0, turn_rate=10.0)                    # a 90 degree right at 20 mph
+  drive(10, 12.0)
+  drive(9, 5.0, turn_rate=-10.0)                   # a 90 degree left at 11 mph
+  drive(5, 1.0, turn_rate=40.0)                    # crawling in a lot: not a road turn
+  cal.alg({"mount": "learning heading"})
+  cal.alg({"mount": "coarse"})
+  st = cal.status()
+  d = st["drive"]
+  assert (d["right"], d["left"], d["rightFast"], d["leftFast"]) == (1, 1, 1, 0)
+  assert d["longestStillS"] == 25 and 45 <= d["fastS"] <= 51 and d["stillNowS"] == 0
+  assert [(e["k"], e["from"], e["to"]) for e in st["events"]] == [
+    ("imuInit", "initializing", "done"), ("mountInit", "off", "initializing"), ("mount", "learning heading", "coarse")]
+  assert abs(st["events"][0]["agoS"] - 63.0) < 0.05 and abs(d["sinceAgoS"] - 88) <= 1   # 25 s stop, then 63 s more
+  # the speed sensor's health over the last minute; recalibrating starts the drive counters over
+  for bad in (True, False, False, False):
+    cal.esf({"sensors": [{"type": "speed", "calib": "calibrating", "faults": ["bad measurements"] if bad else []}]})
+  assert cal.status()["speedBadPct"] == 25
+  cal.tool("realign")
+  assert cal.status()["drive"]["right"] == 0 and cal.status()["events"][-1]["to"] == "realign"
+
+
+def test_mount_angles_and_errors():
+  p = bytearray(16)
+  p[5], p[6] = 1 | (2 << 1), 2
+  struct.pack_into("<Ihh", p, 8, 27760, 200, -2660)
+  alg = rtk.parse_esf_alg(bytes(p))
+  assert alg == {"mountAuto": True, "mount": "learning heading", "mountYawDeg": 277.6, "mountPitchDeg": 2.0, "mountRollDeg": -26.6,
+                 "mountErrors": ["yaw"]}

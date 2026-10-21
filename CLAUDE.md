@@ -93,6 +93,10 @@ Paths are under `openpilot/` unless noted.
     in /data/starview/rtk.json and its CFG-SFODO settings go to the receiver's RAM only. RTCM goes out in whole frames
     so a UBX message never lands inside one. Output on UART1 / UART2 / I2C is switched off (nothing is wired there;
     UART1's backlog filled the receiver's send memory and it dropped ESF-STATUS on USB).
+19. RTK calibration view (patch 32): `starview/rtk.py` `Calibration` (status "calibration": timeline of every change in
+    the fusion's start-up with its time, turns left/right counted from NAV-PVT heading at >= 3 m/s and how many at
+    >= 30 km/h, longest stop, time above 30 km/h, share of ESF-STATUS reports with "bad measurements" on the speed),
+    ESF-ALG pitch/roll/errors. Speed feed: vEgoRaw on a fixed 0.1 s grid, CFG-SFODO-QUANT_ERROR left to the receiver.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
