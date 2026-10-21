@@ -509,7 +509,7 @@ class Updater:
     admitted()
     self.params.put_bool("UpdateAvailable", True, block=True)
     self.params.put("UpdaterState", "updating...", block=True)
-    progress("rebooting", "Update installed. Restarting device.")
+    progress("rebooting", FULL_UPDATE_REBOOT)
     self.params.put_bool("DoReboot", True, block=True)
     return "reboot-requested"
 
@@ -565,8 +565,17 @@ class Updater:
     return True
 
 
+FULL_UPDATE_REBOOT = "Update installed. Restarting device."
+
+
 def recover_fast_state(params):
   previous = params.get("UpdaterFastState")
+  # fork fix (CLAUDE.md "Fork fixes"): a full update's last stage is "rebooting" (normal_update), and that reboot is how
+  # it installs, so after it the update finished; only an update cut off before its own end is reported as failed
+  if isinstance(previous, dict) and previous.get("stage") == "rebooting" and previous.get("detail") == FULL_UPDATE_REBOOT:
+    params.put("UpdaterFastState", {"version": 1, "stage": "complete", "detail": "Update installed.",
+                                    **({"branch": previous["branch"]} if isinstance(previous.get("branch"), str) else {})}, block=True)
+    return
   if isinstance(previous, dict) and previous.get("stage") not in ("complete", "error"):
     params.put("UpdaterFastState", {
       "version": 1, "stage": "error",

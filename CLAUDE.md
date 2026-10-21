@@ -43,6 +43,11 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `openpilot/selfdrive/modeld/modeld.py` `big_warmup` (ChestnutLoading stays on until the big model runs steady).
    Upstream fixed = modeld itself waits for the big model's first real passes before clearing ChestnutLoading, or those
    first passes are no longer slow (no `chestnut.warmup` with slow passes / missed frames in the logs).
+3. **A full update shows "failed" after its own reboot** (patch 29): in `openpilot/system/updated/updated.py`
+   `FULL_UPDATE_REBOOT` and the first lines of `recover_fast_state`, plus `system/updated/tests/test_full_update_reboot.py`.
+   normal_update's last stage is "rebooting" and the reboot installs it, but recover_fast_state turns every unfinished
+   stage into "Update process restarted before completion". Upstream fixed = normal_update ends with stage "complete"
+   (like fast_update does) or recover_fast_state accepts a full update's reboot.
 
 # Fork history
 
@@ -87,6 +92,7 @@ Paths are under `openpilot/` unless noted.
     modeld timeouts.
 14. "Driving Model Lagging" seconds after the big model loads (patches 22, 24): `starpilot/models/warmup.py`; modeld keeps
     ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
+18. A full update shows "failed" after its own reboot (patch 29): `system/updated/updated.py` `recover_fast_state`.
 
 **No longer carried**
 - AOL on the SecOC Sienna (patch 6): merged upstream (firestar `79fdeb4`, rebuilt panda/pandad `337bb0754`).
