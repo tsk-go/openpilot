@@ -6,10 +6,16 @@ them). RTK corrections (RTCM3) come from the tablet, which reaches the caster ov
 the car), and are written to the receiver as they are. The tablet gets status() once a second in the params snapshot
 ("k"); it also builds the GGA sentence network RTK casters ask for from it.
 
-Only a u-blox (USB vendor 1546) is ever opened: the blinker's Pico is another ttyACM on the same hub. Nothing here
-reaches openpilot: the comma's own GPS still drives localization.
+Only a u-blox (USB vendor 1546) is ever opened: the blinker's Pico is another ttyACM on the same hub. Localization
+never sees it: the comma's own GPS still drives locationd. Its fix is also handed, at most 5x a second, to the same
+/dev/shm file a companion phone's fix goes through (starpilot/gps/phone.py), so navigation, the comma's map, map speed
+limits and place search can use it. With Galaxy's default GPS source ("backup") that only happens while neither the
+comma's GPS nor the car's has a fix of its own, and only a fresh 3D fix within 25 m passes (the same checks as theirs).
 """
+import calendar
 import glob
+import json
+import math
 import os
 import select
 import struct
@@ -22,6 +28,9 @@ from openpilot.common.swaglog import cloudlog
 PORT_GLOB = "/dev/serial/by-id/*u-blox*"
 FRESH_S = 2.0
 POLL_S = 1.0
+HANDOFF_S = 0.2             # navigationd forwards a new fix at once (5 Hz loop); more often buys nothing
+HANDOFF_FIXES = ("3D", "GNSS + dead reckoning")
+HANDOFF_MAX_ACC_M = 25.0    # what starpilot/gps/source.py accepts from any receiver
 RTCM_MAX = 64 * 1024        # never queue more than this for the receiver (old corrections are useless)
 # NAV-PVT flags3 lastCorrectionAge -> upper bound in seconds
 CORRECTION_AGE = (None, 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 999)
@@ -104,6 +113,15 @@ def parse_pvt(p: bytes) -> dict | None:
   pdop = struct.unpack_from("<H", p, 76)[0]
   flags3 = struct.unpack_from("<H", p, 78)[0]
   headveh = struct.unpack_from("<i", p, 84)[0]
+  sacc, headacc = struct.unpack_from("<II", p, 68)
+  year, month, day, hour, minute, second, valid = struct.unpack_from("<HBBBBBB", p, 4)
+  nano = struct.unpack_from("<i", p, 16)[0]
+  unix_ms = None
+  if valid & 0x03 == 0x03:   # validDate and validTime
+    try:
+      unix_ms = calendar.timegm((year, month, day, hour, minute, second)) * 1000 + nano // 1_000_000
+    except (ValueError, OverflowError):
+      unix_ms = None
   carr = (flags >> 6) & 3
   age = CORRECTION_AGE[min((flags3 >> 1) & 0xF, len(CORRECTION_AGE) - 1)]
   return {
@@ -112,7 +130,33 @@ def parse_pvt(p: bytes) -> dict | None:
     "hAccM": hacc / 1000, "vAccM": vacc / 1000, "speedMs": gspeed / 1000, "headingDeg": round(headmot * 1e-5, 5),
     "carHeadingDeg": round(headveh * 1e-5, 5) if flags & 0x20 else None, "pdop": pdop / 100, "correctionAgeS": age,
     "invalid": bool(flags3 & 1), "timeOk": bool(flags2 & 0x80),
+    "speedAccMs": sacc / 1000, "headingAccDeg": headacc * 1e-5, "unixMs": unix_ms,
   }
+
+
+def handoff_fix(pvt: dict, now_ns: int) -> dict | None:
+  """The receiver's fix in the phone handoff's format (starpilot/gps/phone.py), or None when it isn't a usable fix."""
+  from openpilot.starpilot.gps.phone import phone_gps
+  if (not pvt.get("fixOk") or pvt.get("invalid") or pvt.get("fixType") not in HANDOFF_FIXES or
+      not 0 < pvt.get("hAccM", 0) <= HANDOFF_MAX_ACC_M):
+    return None
+  heading_acc = pvt.get("headingAccDeg", 180.)
+  known = 0 < heading_acc < 180
+  unix_ms = pvt.get("unixMs")
+  payload = {
+    "latitude": pvt["lat"], "longitude": pvt["lon"], "altitude": min(max(pvt["altM"], -999.), 9999.),
+    "speed": min(max(pvt["speedMs"], 0.), 99.9), "bearing": pvt["headingDeg"] % 360,
+    "horizontalAccuracy": pvt["hAccM"], "verticalAccuracy": pvt["vAccM"],
+    "speedAccuracy": min(max(pvt["speedAccMs"], 0.), 99.9), "bearingAccuracy": heading_acc if known else 179.,
+    "timestamp": unix_ms if type(unix_ms) is int and 0 <= unix_ms < 2 ** 53 else 0, "ageMs": 0,
+  }
+  try:
+    gps = phone_gps(payload, now_ns)
+  except ValueError:
+    return None
+  if not known:
+    gps["bearingAccuracyDeg"] = math.nan   # no heading yet (standing still, fusion not aligned): navigation ignores it
+  return gps
 
 
 def parse_sat(p: bytes) -> dict | None:
@@ -143,8 +187,10 @@ def parse_esf_alg(p: bytes) -> dict | None:
 
 
 class Rtk:
-  def __init__(self, port_glob: str = PORT_GLOB, clock=time.monotonic):
+  def __init__(self, port_glob: str = PORT_GLOB, clock=time.monotonic, handoff_path=None, mono_ns=time.monotonic_ns):
     self.port_glob, self.clock = port_glob, clock
+    self.handoff_path, self.mono_ns = handoff_path, mono_ns
+    self._handoff_t = None
     self.lock = threading.Lock()
     self.parser = UbxParser()
     self.fd = None
@@ -234,6 +280,7 @@ class Rtk:
 
   def handle(self, cls: int, msg: int, payload: bytes) -> None:
     now = self.clock()
+    pvt = None
     with self.lock:
       if (cls, msg) == (0x01, 0x07):
         pvt = parse_pvt(payload)
@@ -245,6 +292,22 @@ class Rtk:
         self.esf = parse_esf_status(payload)
       elif (cls, msg) == (0x10, 0x14):
         self.alg = parse_esf_alg(payload)
+    if pvt and (self._handoff_t is None or not 0 <= now - self._handoff_t < HANDOFF_S):
+      self._handoff_t = now
+      self._hand_off(pvt)
+
+  def _hand_off(self, pvt: dict) -> None:
+    gps = handoff_fix(pvt, self.mono_ns())
+    if gps is None:
+      return
+    try:
+      from openpilot.starpilot.gps.phone import handoff_path
+      path = self.handoff_path or handoff_path()
+      temporary = path.with_name(path.name + ".rtk.tmp")
+      temporary.write_text(json.dumps(gps))
+      temporary.replace(path)
+    except OSError as e:
+      cloudlog.warning(f"starview: rtk handoff: {e}")
 
   def step(self, timeout: float = 0.1) -> None:
     """One pass: open if needed, read what's there, poll once a second, write pending corrections."""

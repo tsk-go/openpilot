@@ -70,7 +70,12 @@ Paths are under `openpilot/` unless noted.
 11. Update from the tablet on 7.0 (patches 19, 23): starviewd `software_status` / `software_fast` (7.0's software owner;
     action "update" like Galaxy's Update button: fast when allowed, else the full update).
 15. RTK receiver on the hub (patch 25): `starview/rtk.py` reads a u-blox (ZED-F9R) for the tablet's GPS card (params "k")
-    and writes the RTCM corrections the tablet fetches from an NTRIP caster (`rtk_rtcm`). Not used by openpilot.
+    and writes the RTCM corrections the tablet fetches from an NTRIP caster (`rtk_rtcm`). Not used for localization.
+16. RTK position for navigation (patch 27): `starview/rtk.py` `handoff_fix` / `_hand_off` write the receiver's fix (5 Hz,
+    3D fix within 25 m only) to upstream's phone GPS handoff file (`starpilot/gps/phone.py`, /dev/shm). With Galaxy's
+    default GPS source "backup", navigation, the comma's map, map speed limits and place search use it only while the
+    comma's GPS and the car's have no fix (the comma's GPS can take minutes after a reboot with no internet). Galaxy
+    then shows the source as "phone". If upstream's companion phone uplink is ever used too, both write the same file.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
