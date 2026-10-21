@@ -1687,7 +1687,10 @@ class Hub:
       if act == "nav_pick":
         return self.nav.pick(req.get("id"), req.get("searchId"))
       if act == "nav_preview":  # the routes to a place before it becomes the destination (nav_link.preview)
-        place = {k: req.get(k) for k in ("name", "address", "latitude", "longitude", "id", "searchId") if req.get(k) is not None}
+        # "id" is the tablet's request number: a Mapbox place comes as "placeId"
+        place = {k: req.get(k) for k in ("name", "address", "latitude", "longitude", "searchId") if req.get(k) is not None}
+        if isinstance(req.get("placeId"), str) and req["placeId"]:
+          place["id"] = req["placeId"]
         return self.nav.preview(place, req.get("origin"))
       if act == "nav_go":
         return self.nav.go(req.get("previewId"), req.get("index", 0))

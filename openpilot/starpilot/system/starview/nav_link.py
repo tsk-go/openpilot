@@ -13,7 +13,7 @@
          --control "nav_search" {query, searchId, clientId, latitude?, longitude?}   places as you type (Mapbox Search
                                      Box, one billed session per search; near the car)
          --control "nav_pick" {id, searchId}                         drive to a place from those results
-         --control "nav_preview" {name, address?, latitude, longitude | id, searchId; origin?}   the routes to a place
+         --control "nav_preview" {name, address?, latitude, longitude | placeId, searchId; origin?}   the routes to a place
                                      BEFORE it becomes the destination (StarView 2.55: look at them and their
                                      directions first); nothing changes on the comma
          --control "nav_go" {previewId, index}                       drive it: the destination is set now, and once

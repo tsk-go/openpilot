@@ -362,3 +362,14 @@ def test_while_loading_no_video_and_data_at_5_hz():
   for i in range(100):
     hub._fanout_data("carState", [b"x"], 3.0 + i / 100)
   assert c.sent == 100
+
+
+def test_nav_preview_never_takes_the_request_number_for_a_mapbox_place():
+  hub = make_hub()
+  got = []
+  hub.nav = SimpleNamespace(preview=lambda place, origin: got.append((place, origin)) or {"ok": True})
+  # the tablet's DataClient sends its request number as "id" with every action
+  hub.control({"action": "nav_preview", "id": "r12", "name": "Work", "latitude": 40.6, "longitude": -73.8, "origin": {"latitude": 40.5, "longitude": -73.9}})
+  assert got[-1] == ({"name": "Work", "latitude": 40.6, "longitude": -73.8}, {"latitude": 40.5, "longitude": -73.9})
+  hub.control({"action": "nav_preview", "id": "r13", "placeId": "poi/1", "searchId": "s1", "name": "Starbucks"})
+  assert got[-1][0] == {"name": "Starbucks", "searchId": "s1", "id": "poi/1"}
