@@ -100,6 +100,11 @@ Paths are under `openpilot/` unless noted.
 20. RTK fix to the tablet 10x a second (patch 33): starviewd's data socket sends `rtk.Rtk.fast()` as a text frame
     {"type": "rtk", seq, lat, lon, hAccM, headingDeg, fixType, rtk, fusion...} on every new NAV-PVT (the params
     snapshot carries it once a second). For the tablet's lane locator and map arrow.
+21. Tablet battery saver (patch 34): `starview/tablet_saver.py`, control action "tablet_saver" {"on", "force"} /
+    {"status"}. Over the auto-tether adb pairing: other apps force-stopped, RUN_ANY_IN_BACKGROUND=ignore and the
+    "restricted" standby bucket (user apps + a list of heavy preinstalled ones; never StarView, the keyboard, home,
+    speech/voice services, Termius, /data/starview/saver_keep), Wi-Fi/BLE scanning off, StarView on the deviceidle
+    allow list. The old values in /data/starview/tablet_saver.json are put back on "off". StarView itself is unchanged.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

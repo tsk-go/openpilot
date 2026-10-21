@@ -838,6 +838,8 @@ class Hub:
     self.ops = DeviceOps(self.params, self.params_mem)
     self.tablet_mode = True   # tablet asks to turn the comma screen off while connected (control action "tablet_mode")
     self.blinker = PicoBlinker()
+    from openpilot.starpilot.system.starview.tablet_saver import TabletSaver
+    self.saver = TabletSaver(lambda *a, timeout=10: _adb(*a, timeout=timeout))
     # the RTK receiver on the hub (rtk.py): its fix goes to the tablet ("k"), the tablet's NTRIP corrections come back
     from openpilot.starpilot.system.starview.rtk import Rtk
     self.rtk = Rtk()
@@ -1739,6 +1741,10 @@ class Hub:
         return self.rtk.feed_rtcm(data)
       if act == "rtk_action":  # {"op": hot|warm|cold|realign|factory|save|speed_on|speed_off}: the tablet's RTK tools
         return self.rtk.action(req.get("op"), moving=self._car_moving())
+      if act == "tablet_saver":  # {"on": bool, "force"?: bool} / {"status": true}: quiet the tablet over adb (tablet_saver.py)
+        if req.get("status"):
+          return self.saver.status()
+        return self.saver.set(bool(req.get("on", False)), force=bool(req.get("force", False)))
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
