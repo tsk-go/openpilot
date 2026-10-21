@@ -97,6 +97,9 @@ Paths are under `openpilot/` unless noted.
     the fusion's start-up with its time, turns left/right counted from NAV-PVT heading at >= 3 m/s and how many at
     >= 30 km/h, longest stop, time above 30 km/h, share of ESF-STATUS reports with "bad measurements" on the speed),
     ESF-ALG pitch/roll/errors. Speed feed: vEgoRaw on a fixed 0.1 s grid, CFG-SFODO-QUANT_ERROR left to the receiver.
+20. RTK fix to the tablet 10x a second (patch 33): starviewd's data socket sends `rtk.Rtk.fast()` as a text frame
+    {"type": "rtk", seq, lat, lon, hAccM, headingDeg, fixType, rtk, fusion...} on every new NAV-PVT (the params
+    snapshot carries it once a second). For the tablet's lane locator and map arrow.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

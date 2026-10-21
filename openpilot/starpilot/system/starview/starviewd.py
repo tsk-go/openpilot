@@ -1886,8 +1886,26 @@ async def ws_data(request):
         cloudlog.warning(f"starview: params push: {e}")
       await asyncio.sleep(1.0)
 
+  async def rtk_pusher():
+    """The RTK receiver's fix 10x a second (the params snapshot has it once a second): the tablet's lane position."""
+    rtk = getattr(hub, "rtk", None)
+    if rtk is None:
+      return
+    last = None
+    while True:
+      try:
+        fix = rtk.fast()
+        if fix is not None and fix["seq"] != last:
+          last = fix["seq"]
+          await ws.send_str(json.dumps(fix))
+      except Exception as e:
+        cloudlog.warning(f"starview: rtk push: {e}")
+        await asyncio.sleep(1.0)
+      await asyncio.sleep(0.1)
+
   task = asyncio.create_task(sender())
   ptask = asyncio.create_task(params_pusher())
+  rtask = asyncio.create_task(rtk_pusher())
   try:
     async for msg in ws:
       if msg.type == web.WSMsgType.TEXT:
@@ -1920,6 +1938,7 @@ async def ws_data(request):
   finally:
     task.cancel()
     ptask.cancel()
+    rtask.cancel()
     hub.remove_data(c)
     cloudlog.info(f"starview: data client {c.peer} gone (sent={c.sent} dropped={c.dropped})")
   return ws

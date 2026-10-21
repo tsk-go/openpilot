@@ -408,6 +408,7 @@ class Rtk:
     self.port = None
     self.pvt = self.sat = self.esf = self.alg = self.ver = None
     self.pvt_t = None
+    self.pvt_seq = 0
     self.rtcm = bytearray()
     self.rtcm_bytes = 0
     self.rtcm_t = None
@@ -514,6 +515,19 @@ class Rtk:
       self.sample = (-abs(speed_ms) if reverse else speed_ms, log_mono_ns, now)
     self._poke()
 
+  def fast(self) -> dict | None:
+    """The newest fix for the tablet's 10 Hz RTK stream (lane position, map arrow), or None when there is no fresh one."""
+    with self.lock:
+      pvt, t = self.pvt, self.pvt_t
+      if pvt is None or t is None or self.clock() - t >= FRESH_S or pvt.get("fixType") in ("none", "time only"):
+        return None
+      out = {"type": "rtk", "seq": self.pvt_seq, "ageMs": round((self.clock() - t) * 1000)}
+      for k in ("lat", "lon", "hAccM", "speedMs", "headingDeg", "headingAccDeg", "carHeadingDeg", "fixType", "rtk", "fixOk"):
+        out[k] = pvt.get(k)
+      if self.esf:
+        out["fusion"] = self.esf.get("fusion")
+      return out
+
   def status(self) -> dict | None:
     """None: no RTK receiver has been seen on this comma (the tablet hides the RTK part)."""
     with self.lock:
@@ -602,6 +616,7 @@ class Rtk:
         pvt = parse_pvt(payload)
         if pvt:
           self.pvt, self.pvt_t = pvt, now
+          self.pvt_seq += 1
           self.cal.pvt(pvt, now)
       elif (cls, msg) == (0x01, 0x35):
         self.sat = parse_sat(payload)

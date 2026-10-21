@@ -397,3 +397,19 @@ def test_mount_angles_and_errors():
   alg = rtk.parse_esf_alg(bytes(p))
   assert alg == {"mountAuto": True, "mount": "learning heading", "mountYawDeg": 277.6, "mountPitchDeg": 2.0, "mountRollDeg": -26.6,
                  "mountErrors": ["yaw"]}
+
+
+def test_fast_fix_for_the_tablet():
+  now = [100.0]
+  r = rtk.Rtk(port_glob="/nonexistent/*", clock=lambda: now[0])
+  assert r.fast() is None
+  r.handle(0x01, 0x07, pvt_payload(carr=2, hacc_mm=20))
+  f = r.fast()
+  assert f["type"] == "rtk" and f["seq"] == 1 and f["rtk"] == "fixed" and f["hAccM"] == 0.02 and f["ageMs"] == 0
+  now[0] += 0.05
+  r.handle(0x01, 0x07, pvt_payload())
+  assert r.fast()["seq"] == 2 and r.fast()["ageMs"] == 0
+  now[0] += 2.5
+  assert r.fast() is None                                  # stale: nothing sent
+  r.handle(0x01, 0x07, pvt_payload(fix=0, ok=False))
+  assert r.fast() is None                                  # no fix
