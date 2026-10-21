@@ -1686,6 +1686,11 @@ class Hub:
         return self.nav.tiles_used(req.get("count"))
       if act == "nav_pick":
         return self.nav.pick(req.get("id"), req.get("searchId"))
+      if act == "nav_preview":  # the routes to a place before it becomes the destination (nav_link.preview)
+        place = {k: req.get(k) for k in ("name", "address", "latitude", "longitude", "id", "searchId") if req.get(k) is not None}
+        return self.nav.preview(place, req.get("origin"))
+      if act == "nav_go":
+        return self.nav.go(req.get("previewId"), req.get("index", 0))
       if act == "nav_category":
         return self.nav.category(req.get("category"), req.get("latitude"), req.get("longitude"), req.get("route"))
       if act == "nav_options":

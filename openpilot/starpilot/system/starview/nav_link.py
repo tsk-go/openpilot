@@ -13,6 +13,11 @@
          --control "nav_search" {query, searchId, clientId, latitude?, longitude?}   places as you type (Mapbox Search
                                      Box, one billed session per search; near the car)
          --control "nav_pick" {id, searchId}                         drive to a place from those results
+         --control "nav_preview" {name, address?, latitude, longitude | id, searchId; origin?}   the routes to a place
+                                     BEFORE it becomes the destination (StarView 2.55: look at them and their
+                                     directions first); nothing changes on the comma
+         --control "nav_go" {previewId, index}                       drive it: the destination is set now, and once
+                                     navigationd offers its routes the one looked at (index) is chosen
          --control "nav_category" {category, latitude, longitude, route?}   gas, EV charging, coffee, food ... near the car,
                                      or along the route (route: encoded polyline of the road ahead)
          --GET /nav/tile/{style}/{z}/{x}/{y}.png-->                  Mapbox map tiles through owner.map_tile (cached,
@@ -33,12 +38,15 @@ import os
 import shutil
 import threading
 import time
+import uuid
 
 from openpilot.starpilot.navigation.owner import (ConflictError, NavigationOwner, ROUTE_AVOIDANCES, ROUTE_MORE_KEYS,
                                                   ValidationError, response_json, route_more)
 from openpilot.starpilot.navigation.wire import navigation_state
 
 CALLER = "starview"
+PREVIEW_TTL = 600.0     # a preview's routes (and a Mapbox place's coordinates) are kept this long for nav_go
+WANTED_TTL = 120.0      # after nav_go, how long the route looked at is waited for in navigationd's offer
 SEARCH_URL = "https://api.mapbox.com/search/searchbox/v1"
 # the tablet's quick searches -> Mapbox canonical categories (the first one Mapbox lists is used)
 CATEGORIES = {
@@ -102,6 +110,9 @@ class NavLink:
     self._lock = threading.Lock()
     self._source = _HubNavigation(self._newest)
     self._category_ids = None   # Mapbox's category list (asked once)
+    self._previews = {}         # previewId -> (expires, destination, temporary, route rows)
+    self._wanted = None         # after nav_go: the previewed route to choose once navigationd offers its routes
+    self._engine = None
 
   @property
   def owner(self) -> NavigationOwner:
@@ -133,6 +144,8 @@ class NavLink:
     # like navigationd: a choice past the routes offered now means the first one is driven
     selected = snap.get("selectedRoute", 0)
     selected = selected if type(selected) is int and 0 <= selected < max(len(routes), 1) else 0
+    if self._wanted is not None and routes and self._choose_wanted(snap.get("revision"), routes, selected):
+      return self.state(route_key, detail_key)
     out = {"ok": True, "revision": snap.get("revision"), "status": snap.get("status"), "enabled": snap.get("enabled"),
            "hasKey": snap.get("hasKey"), "destination": snap.get("destination"), "selectedRoute": selected,
            "isMetric": snap.get("isMetric"), "routes": routes,
@@ -291,6 +304,129 @@ class NavLink:
       except ConflictError:
         continue
     raise RuntimeError("navigation kept changing")
+
+  # ------------------------------------------------------------------ route preview (StarView; Galaxy sets the destination at once)
+  def _route_engine(self):
+    if self._engine is None:
+      from openpilot.starpilot.navigation.mapbox_budget import MonthlyBudget
+      from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine
+      self._engine = MapboxRouteEngine(self.owner.session, MonthlyBudget("directions", self.owner.root / "mapbox-usage"))
+    return self._engine
+
+  def _origin(self, origin):
+    """(lon, lat, bearing) to plan from: what the tablet sent, else the GPS navigationd uses (incl. the RTK receiver's
+    handoff), else the last position navigationd saved."""
+    def number(v):
+      return float(v) if type(v) in (int, float) and math.isfinite(v) else None
+    if isinstance(origin, dict):
+      lat, lon, bearing = number(origin.get("latitude")), number(origin.get("longitude")), number(origin.get("bearing"))
+      if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180 and (lat, lon) != (0., 0.):
+        return lon, lat, bearing % 360 if bearing is not None else None
+    try:
+      from openpilot.starpilot.gps.phone import read_phone_gps
+      from openpilot.starpilot.gps.source import bearing as gps_bearing
+      fix = read_phone_gps(time.monotonic_ns())
+      if fix is not None:
+        return fix[1].longitude, fix[1].latitude, gps_bearing(fix[1])
+    except Exception:
+      pass
+    saved = self.owner.position_store.read()
+    if saved:
+      return saved["longitude"], saved["latitude"], saved.get("bearing")
+    return None
+
+  def preview(self, place: dict, origin=None) -> dict:
+    """The routes to a place, with their directions, before it becomes the destination. Asks Mapbox once (counted
+    with the routes); nothing on the comma changes until nav_go."""
+    from openpilot.starpilot.navigation.owner import destination, route_exclusions
+    if not isinstance(place, dict):
+      raise ValidationError("Choose a destination")
+    owner = self.owner
+    settings = owner.read_routing()
+    if not settings.get("enabled"):
+      raise ValidationError("Navigation is off on the comma (Galaxy › Navigation)")
+    token = settings.get("token")
+    if not token:
+      raise ValidationError("Add your Mapbox access token first")
+    if place.get("id"):
+      # a Mapbox search result: its coordinates come from Mapbox and it stays a temporary destination (their terms)
+      selected, temporary = owner._retrieve(place.get("id"), place.get("searchId"), CALLER, owner.read()["revision"], True), True
+    else:
+      value = {"name": str(place.get("name") or place.get("address") or "Destination")[:256],
+               "latitude": place.get("latitude"), "longitude": place.get("longitude")}
+      if isinstance(place.get("address"), str) and place["address"]:
+        value["address"] = place["address"][:512]
+      selected, temporary = destination(value), False
+    start = self._origin(origin)
+    if start is None:
+      raise ValidationError("The car's position isn't known yet")
+    first = self._route_engine().fetch(token, (start[0], start[1]), selected, start[2], route_exclusions(settings))
+    rows, lines = [], []
+    for index, route in enumerate(getattr(first, "alternatives", None) or [first]):
+      d = getattr(route, "details", None) or {}
+      incidents = d.get("incidents") or []
+      rows.append({"index": index, "durationSeconds": route.total_duration, "distanceMeters": route.total_distance,
+                   "typicalSeconds": d.get("typicalSeconds"), "via": d.get("via", ""), "classes": d.get("classes", []),
+                   "incidents": len(incidents), "closed": any(i.get("closed") for i in incidents) or
+                   any(run[2] == 5 for run in d.get("traffic") or [])})
+      lines.append({key: d.get(key) for key in ("polyline", "traffic", "incidents", "steps")} if d else None)
+    preview_id = uuid.uuid4().hex[:16]
+    now = time.monotonic()
+    with self._lock:
+      self._previews = {k: v for k, v in self._previews.items() if v[0] > now}
+      while len(self._previews) >= 8:
+        self._previews.pop(min(self._previews, key=lambda k: self._previews[k][0]))
+      self._previews[preview_id] = (now + PREVIEW_TTL, selected, temporary, rows)
+    return {"ok": True, "previewId": preview_id, "destination": dict(selected, temporary=temporary),
+            "origin": {"longitude": start[0], "latitude": start[1]}, "routes": rows, "details": lines}
+
+  def go(self, preview_id, index=0) -> dict:
+    """The previewed place becomes StarPilot's destination; navigationd plans it as always (from where the car is
+    now) and the route looked at is chosen among the ones it offers (same roads: same "via", closest length)."""
+    with self._lock:
+      entry = self._previews.pop(preview_id, None) if isinstance(preview_id, str) else None
+    if entry is None or entry[0] <= time.monotonic():
+      raise ValidationError("These routes are too old: choose the place again")
+    _, selected, temporary, rows = entry
+    if temporary:
+      self._change(lambda rev: self.owner._change(lambda doc: doc.update(destination=None, routeChoice=0), rev, True,
+                                                  active_destination=selected))
+    else:
+      self._change(lambda rev: self.owner.select(selected, rev, True))
+    row = next((r for r in rows if r["index"] == index), None) if type(index) is int else None
+    owner = self.owner           # (takes self._lock itself)
+    wanted = None if row is None else {"revision": owner.read()["revision"], "via": row["via"], "distance": row["distanceMeters"],
+                                       "duration": row["durationSeconds"], "expires": time.monotonic() + WANTED_TTL}
+    with self._lock:
+      self._wanted = wanted
+    return {"ok": True, "destination": owner.read_routing().get("destination")}
+
+  @staticmethod
+  def closest(wanted: dict, routes: list) -> int:
+    """The offered route most like the one looked at: the same roads ("via") first, then the closest length / time."""
+    def cost(r):
+      return ((0 if r.get("via") == wanted["via"] else 1e9) + abs((r.get("distanceMeters") or 0) - wanted["distance"]) +
+              10 * abs((r.get("durationSeconds") or 0) - wanted["duration"]))
+    return min(routes, key=cost)["index"]
+
+  def _choose_wanted(self, revision, routes, selected) -> bool:
+    """True when the route looked at was just chosen (the state is read again)."""
+    with self._lock:
+      wanted = self._wanted
+      if wanted is None:
+        return False
+      if wanted["expires"] <= time.monotonic() or revision != wanted["revision"]:
+        self._wanted = None
+        return False
+      self._wanted = None
+    best = self.closest(wanted, routes)
+    if best == selected:
+      return False
+    try:
+      self.owner.select_route(best, revision, True)
+      return True
+    except (ConflictError, ValidationError):
+      return False
 
   def set_destination(self, name: str, address: str, lat: float, lon: float) -> dict:
     value = {"name": (name or address or "Destination")[:256], "latitude": lat, "longitude": lon}

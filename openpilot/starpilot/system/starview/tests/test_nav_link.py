@@ -437,3 +437,59 @@ def test_requests_go_through_the_tablet_when_the_comma_is_offline(tmp_path, monk
   path.write_text('172.20.77.5:8099')
   os.utime(path, (1, 1))
   assert relay.tablet_proxy(str(path)) is None                            # not renewed: not used
+
+
+def test_preview_shows_routes_and_directions_without_setting_the_destination(owner, monkeypatch):
+  link = NavLink(owner=owner)
+  link.cancel()
+  sent = []
+  monkeypatch.setattr(ENGINE, lambda session, url, params: sent.append((url, params)) or
+                      {'code': 'Ok', 'routes': [mapbox_route(), mapbox_route(lat=.001, duration=420., incidents=False)]})
+  before = owner.read()['revision']
+  p = link.preview({'name': 'Work', 'address': '5 Main St', 'latitude': 0., 'longitude': .03}, {'latitude': 0., 'longitude': .001, 'bearing': 450.})
+  assert owner.read()['revision'] == before and owner.read()['destination'] is None        # nothing changed on the comma
+  assert sent[0][0].endswith('/0.001,0.0;0.03,0.0') and sent[0][1]['bearings'] == '90,90;'
+  assert [r['durationSeconds'] for r in p['routes']] == [300., 420.] and p['routes'][0]['incidents'] == 1
+  assert [s['text'] for s in p['details'][1]['steps']] == ['Head east on Main Street', 'Turn right onto Ocean Parkway', 'You have arrived']
+  assert p['destination']['name'] == 'Work' and p['destination']['temporary'] is False
+  with pytest.raises(ValidationError):
+    link.go('nope', 0)
+  assert link.go(p['previewId'], 1)['destination']['name'] == 'Work'
+  with pytest.raises(ValidationError):
+    link.go(p['previewId'], 1)                     # used once
+  # navigationd offers its own routes for the new destination (same roads, other order): the one looked at is chosen
+  offered = [NavigationRoute(mapbox_route(lat=.001, duration=430., incidents=False)), NavigationRoute(mapbox_route(duration=310.))]
+  offered[0].details['via'] = 'Ocean Parkway'
+  offered[1].details['via'] = 'Main Street, Ocean Parkway'
+  owner.record_routes(owner.read()['revision'], offered)
+  # the second route looked at was "Main Street, Ocean Parkway" (mapbox_route's summary) -> index 1 here
+  assert link.state()['selectedRoute'] == 1
+  assert link.state()['selectedRoute'] == 1        # once: the driver can still change it after
+
+
+def test_preview_plans_from_the_saved_position_and_needs_one(owner, monkeypatch):
+  link = NavLink(owner=owner)
+  monkeypatch.setattr('openpilot.starpilot.gps.phone.read_phone_gps', lambda now, path=None: None)
+  monkeypatch.setattr(ENGINE, lambda session, url, params: {'code': 'Ok', 'routes': [mapbox_route()]})
+  with pytest.raises(ValidationError, match="position"):
+    link.preview(PLACE)
+  owner.position_store.record({'longitude': .002, 'latitude': 0., 'bearing': 10.})
+  assert link.preview(PLACE)['origin'] == {'longitude': .002, 'latitude': 0.}
+  owner.configure({'enabled': False}, owner.read()['revision'], True)
+  with pytest.raises(ValidationError, match="off"):
+    link.preview(PLACE, {'latitude': 0., 'longitude': 0.001})
+
+
+def test_preview_of_a_search_result_goes_as_a_temporary_destination(owner, monkeypatch):
+  link = NavLink(owner=owner)
+  owner.runtime_source = link._source
+  link.cancel()
+  sid, cid = str(uuid.uuid4()), str(uuid.uuid4())
+  monkeypatch.setattr(OWNER_JSON, lambda session, url, params: {'suggestions': [{'mapbox_id': 'poi/1', 'name': 'Starbucks', 'feature_type': 'poi'}]})
+  link.search('starb', sid, cid, 0., 0.)
+  monkeypatch.setattr(OWNER_JSON, lambda *a: {'features': [{'properties': {'mapbox_id': 'poi/1', 'name': 'Starbucks', 'full_address': '1 Kings Hwy'},
+                                                            'geometry': {'coordinates': [.03, 0.]}}]})
+  monkeypatch.setattr(ENGINE, lambda session, url, params: {'code': 'Ok', 'routes': [mapbox_route()]})
+  p = link.preview({'id': 'poi/1', 'searchId': sid}, {'latitude': 0., 'longitude': .001})
+  assert p['destination']['temporary'] is True and owner.read_routing()['destination'] is None
+  assert link.go(p['previewId'], 0)['destination'] == dict(p['destination'], temporary=True)

@@ -76,6 +76,11 @@ Paths are under `openpilot/` unless noted.
     default GPS source "backup", navigation, the comma's map, map speed limits and place search use it only while the
     comma's GPS and the car's have no fix (the comma's GPS can take minutes after a reboot with no internet). Galaxy
     then shows the source as "phone". If upstream's companion phone uplink is ever used too, both write the same file.
+17. Route preview before the destination is set (patch 28): `starview/nav_link.py` `preview` / `go` (starviewd actions
+    `nav_preview`, `nav_go`). Galaxy sets a destination at once; StarView 2.55 shows the routes and each one's directions
+    first. preview asks Mapbox once from the tablet's origin, else the RTK/phone handoff fix, else the saved position;
+    go sets the destination (a Mapbox search place stays temporary) and `state()` then chooses the offered route most
+    like the one looked at (same "via", closest length/time), once.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
