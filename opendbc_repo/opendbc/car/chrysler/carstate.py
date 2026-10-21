@@ -27,6 +27,10 @@ class CarState(CarStateBase):
     self.aol_pause_longitudinal = False
     self.aol_pause_longitudinal_stamp_ns = 0
     self.aol_buttons = {ButtonType.mainCruise: 0, ButtonType.cancel: 0}
+    self.brake_hold = False
+    self.das_3 = {}
+    self.das_3_timestamp = 0
+    self.jeep_driver_cancel = False
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -84,6 +88,11 @@ class CarState(CarStateBase):
     ret.cruiseState.nonAdaptive = cp_cruise.vl["DAS_4"]["ACC_STATE"] in (1, 2)  # 1 NormalCCOn and 2 NormalCCSet
     ret.cruiseState.standstill = cp_cruise.vl["DAS_3"]["ACC_STANDSTILL"] == 1
     ret.accFaulted = cp_cruise.vl["DAS_3"]["ACC_FAULTED"] != 0
+    if self.CP.flags & ChryslerFlags.JEEP_BRAKE_HOLD_AVAILABLE:
+      self.das_3 = dict(cp_cruise.vl["DAS_3"])
+      self.jeep_driver_cancel = bool(cp.vl["CRUISE_BUTTONS"]["ACC_Cancel"])
+      self.das_3_timestamp = cp_cruise.ts_nanos["DAS_3"]["COUNTER"]
+      ret.brakeHoldActive = self.brake_hold
 
     if self.CP.carFingerprint in RAM_CARS:
       # Auto High Beam isn't Located in this message on chrysler or jeep currently located in 729 message

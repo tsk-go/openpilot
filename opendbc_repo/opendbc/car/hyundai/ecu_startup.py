@@ -110,6 +110,7 @@ class HyundaiECUStartup:
       session_payload = session.get_data(.1).get((self.address, None))
       if session_payload is None or len(session_payload) not in (0, 4):
         return False
+      time.sleep(.05)
       restore = self._query(send, recv, self.bus, [(self.address, None)], [b'\x28\x00\x01'], [b'\x68\x00'])
       if restore.get_data(.1).get((self.address, None)) != b'':
         return False

@@ -42,7 +42,8 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.hyundai.torque_ev_startup import required as torque_ev_required
     from opendbc.car.hyundai.blended_longitudinal import startup_required as blended_required
     from opendbc.car.hyundai.legacy_long_startup import required as legacy_required
-    return (pe_long_required(cp) or legacy_required(cp) or blended_required(cp) or required(cp) or
+    from opendbc.car.hyundai.ordinary_classic_startup import required as ordinary_classic_required
+    return (ordinary_classic_required(cp) or pe_long_required(cp) or legacy_required(cp) or blended_required(cp) or required(cp) or
             ev6_required(cp) or gv70_required(cp) or ev9_required(cp) or torque_ev_required(cp))
 
   @staticmethod
@@ -59,6 +60,9 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.hyundai.g90_startup import G90Startup, required
     if required(cp):
       return G90Startup(cp, callbacks) if requested else None
+    from opendbc.car.hyundai.ordinary_classic_startup import OrdinaryClassicStartup, required as ordinary_classic_required
+    if ordinary_classic_required(cp):
+      return OrdinaryClassicStartup(cp, callbacks) if requested else None
     from opendbc.car.hyundai.ev6_startup import EV6Startup, required as ev6_required
     if ev6_required(cp):
       return EV6Startup(cp, callbacks) if requested else None

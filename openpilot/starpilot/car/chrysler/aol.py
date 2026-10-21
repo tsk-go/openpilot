@@ -19,7 +19,7 @@ def policy_for(cp):
 
 
 def native_profile_supported(model, param):
-  return model == int(structs.CarParams.SafetyModel.chrysler) and param in (0, 1, 8)
+  return model == int(structs.CarParams.SafetyModel.chrysler) and param in (0, 1, 4, 8)
 
 
 def native_accepts_cp(cp, model, param):

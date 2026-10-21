@@ -19,6 +19,7 @@ def bolt_disable_supported(cp) -> bool:
 @dataclass(frozen=True)
 class VehicleStartupPreferences:
   toyota_auto_hold: bool = False
+  jeep_brake_hold: bool = False
   turn_assist: bool = False
   gm_long_pitch: bool = True
   disable_bolt_long: bool = False
@@ -65,6 +66,8 @@ class VehicleStartupPreferences:
       requested = read_saved(params, "ToyotaAutoHold", 8) == (b"1", True)
       safe, readable = read_saved(params, "SafeMode", 8)
       toyota = bool(enabled and requested and readable and safe in (None, b"0"))
+      jeep_hold = bool(enabled and read_saved(params, "JeepBrakeHold", 8) == (b"1", True) and
+                       readable and safe in (None, b"0"))
       volt_sng = bool(enabled and read_saved(params, "VoltSNG", 8) == (b"1", True) and
                       readable and safe in (None, b"0"))
       gm_auto_hold = bool(enabled and not disable_bolt and read_saved(params, "GMAutoHold", 8) == (b"1", True) and
@@ -91,7 +94,7 @@ class VehicleStartupPreferences:
     screen_brake = read_saved(params, 'TeslaAOLDisengageOnBrake', 8) == (b'1', True)
     return cls(toyota_radar_mode=toyota_radar_mode(params, enabled=enabled),
                ford_lateral_mode=ford_mode(params, enabled=enabled), tesla_screen=screen,
-               tesla_screen_brake=screen_brake, toyota_auto_hold=toyota,
+               tesla_screen_brake=screen_brake, toyota_auto_hold=toyota, jeep_brake_hold=jeep_hold,
                gm_longitudinal_tune=selected_tune(params, enabled=enabled),
                toyota_lock_doors=bool(enabled and readable and safe in (None, b"0") and
                                      read_saved(params, "LockDoors", 8) == (b"1", True)),
@@ -159,9 +162,15 @@ class VehicleStartupPreferences:
     from opendbc.car.tesla.screen_button import apply_screen_button
     apply_screen_button(cp, self.tesla_screen, self.tesla_screen_brake)
     self._prepare_honda_radar(cp)
+    from opendbc.car.chrysler.brake_hold import apply_brake_hold
+    apply_brake_hold(cp, self.jeep_brake_hold)
     if not self.toyota_filter:
       from opendbc.car.toyota.prius_longitudinal import prepare_stock as prepare_prius_stock
       prepare_prius_stock(cp)
+      from opendbc.car.toyota.rav4h_filter import prepare_stock as prepare_rav4h_stock
+      prepare_rav4h_stock(cp)
+      from opendbc.car.toyota.pedal import prepare_stock as prepare_pedal_stock
+      prepare_pedal_stock(cp)
     self._prepare_bolt(cp, fingerprints)
     prepare_disable_longitudinal(cp, self.disable_bolt_long)
     self._prepare_camera_pedal(cp)
@@ -186,9 +195,15 @@ class VehicleStartupPreferences:
     from opendbc.car.tesla.screen_button import apply_screen_button
     apply_screen_button(cp, self.tesla_screen, self.tesla_screen_brake)
     self._prepare_honda_radar(cp)
+    from opendbc.car.chrysler.brake_hold import apply_brake_hold
+    apply_brake_hold(cp, self.jeep_brake_hold)
     if not self.toyota_filter:
       from opendbc.car.toyota.prius_longitudinal import prepare_stock as prepare_prius_stock
       prepare_prius_stock(cp)
+      from opendbc.car.toyota.rav4h_filter import prepare_stock as prepare_rav4h_stock
+      prepare_rav4h_stock(cp)
+      from opendbc.car.toyota.pedal import prepare_stock as prepare_pedal_stock
+      prepare_pedal_stock(cp)
     self._prepare_bolt(cp)
     prepare_disable_longitudinal(cp, self.disable_bolt_long)
     self._prepare_camera_pedal(cp)

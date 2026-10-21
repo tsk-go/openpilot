@@ -156,6 +156,22 @@ def configure_controller(CI, params):
   if controller is not None and 1 in tune_options(cp):
     from openpilot.starpilot.car.gm.tune_preferences import AccTunePreference
     controller.gm_acc_tune_input = AccTunePreference(cp, params)
+  from opendbc.car.toyota import pedal
+  if pedal.configured(cp):
+    from openpilot.starpilot.car.toyota.pedal_preferences import PedalPreference
+    from openpilot.starpilot.car.toyota.prius_preferences import filter_preference_enabled
+    if not filter_preference_enabled(params):
+      pedal.prepare_stock(cp)
+    if controller is not None:
+      controller.pedal_input = PedalPreference(cp, params)
+  from opendbc.car.toyota.rav4h_filter import enabled as rav4h_filter_enabled, prepare_stock as prepare_rav4h_stock
+  if rav4h_filter_enabled(cp):
+    from openpilot.starpilot.car.toyota.rav4h_preferences import Rav4hFilterPreference
+    from openpilot.starpilot.car.toyota.prius_preferences import filter_preference_enabled
+    if not filter_preference_enabled(params):
+      prepare_rav4h_stock(cp)
+    elif controller is not None:
+      controller.rav4h_filter_input = Rav4hFilterPreference(cp, params)
   from opendbc.car.toyota.prius_longitudinal import enabled as prius_filter_enabled, prepare_stock as prepare_prius_stock
   if prius_filter_enabled(cp):
     from openpilot.starpilot.car.toyota.prius_preferences import PriusFilterPreference, filter_preference_enabled

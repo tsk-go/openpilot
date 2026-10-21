@@ -20,11 +20,14 @@ def qualified(cp, *, marked_only=False):
       cp.alternativeExperience not in ((CHRYSLER_AOL_EXPERIENCE,) if marked_only else (0, CHRYSLER_AOL_EXPERIENCE))):
     return False
   flags = ChryslerFlags.HIGHER_MIN_STEERING_SPEED | ChryslerFlags.HAS_BSM | ChryslerFlags.STEERING_SPEED_BYPASS
+  jeep = cp.carFingerprint in (CAR.JEEP_GRAND_CHEROKEE, CAR.JEEP_GRAND_CHEROKEE_2019)
+  if jeep:
+    flags |= ChryslerFlags.JEEP_BRAKE_HOLD_AVAILABLE
   expected = (1 if cp.carFingerprint == CAR.RAM_1500_5TH_GEN else
               8 if cp.carFingerprint == CAR.CHRYSLER_PACIFICA_2019_HYBRID and cp.alternativeExperience == 32 else 0)
   return bool(not int(cp.flags) & ~int(flags) and
               cp.safetyConfigs[0].safetyModel == structs.CarParams.SafetyModel.chrysler and
-              int(cp.safetyConfigs[0].safetyParam) == expected and
+              int(cp.safetyConfigs[0].safetyParam) in ((0, 4) if jeep else (expected,)) and
               cp.lateralTuning.which() in (('torque',) if cp.carFingerprint == CAR.RAM_1500_5TH_GEN else ('pid', 'torque')))
 
 

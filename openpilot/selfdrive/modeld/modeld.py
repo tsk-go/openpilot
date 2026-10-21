@@ -66,7 +66,7 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
-BIG_MODEL_TIMEOUT = 60
+BIG_MODEL_TIMEOUT = 120
 # the first start of a model compiles its GPU programs on the comma's CPU; later starts read them back
 BIG_MODEL_FIRST_TIMEOUT = 180
 # with the programs read back a load still took ~53 s on Oct 20 (USB copies, setup): room for a busy CPU
@@ -380,7 +380,7 @@ def main(demo=False):
       try:
         wait_for_chestnut()
         if not demo:
-          wait_for_chestnut_power(CP, timeout=BIG_MODEL_TIMEOUT / 2)
+          wait_for_chestnut_power(CP, timeout=min(30., BIG_MODEL_TIMEOUT / 2))
         big_stage = "load"
         if selection.big_path is not None:
           m, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,

@@ -173,7 +173,7 @@ static void chrysler_aol_optional_rx(const CANPacket_t *msg) {
 static void chrysler_aol_configure(uint16_t param) {
   chrysler_aol_reset();
   chrysler_aol_set_guard = param == 8U;
-  chrysler_aol_enabled = (alternative_experience == 32) && ((param == 0U) || (param == 1U) || (param == 8U));
+  chrysler_aol_enabled = (alternative_experience == 32) && ((param == 0U) || (param == 1U) || (param == 4U) || (param == 8U));
   if (chrysler_aol_enabled) {
     static const AolSafetyPolicy policy = {
       .reset = chrysler_aol_reset,

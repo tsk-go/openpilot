@@ -28,7 +28,8 @@ from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.vehicle_preferences import VehicleStartupPreferences
 from openpilot.starpilot.lateral.pause import LateralPause, read_settings as read_lateral_pause
 from openpilot.starpilot.lateral.model_turn_assist import ModelTurnAssist, update_twitch_guard
-from openpilot.starpilot.aol.runtime import current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged
+from openpilot.starpilot.aol.runtime import (current_axis, current_native, ordinary_lateral_requested, ordinary_axis_acknowledged,
+                                            refresh_expired_lateral_snapshot)
 from openpilot.starpilot.aol.vehicle import policy_for as axis_policy_for, ordinary_axis_request_allowed, allow_lateral_onset
 from openpilot.starpilot.lateral.lane_centering import (
   LaneCenteringController, LaneCenteringInput, LaneCenteringRequest, LaneCenteringResult,
@@ -158,6 +159,10 @@ class Controls:
       self.LaC.__dict__.pop(name, None)
 
   def state_control(self, *, lane_centering: LaneCenteringRequest | None = None):
+    lateral_inputs_refreshed = False
+    if (self.aol_replay and os.getenv('REPLAY') != '1' and
+        getattr(self, 'aol_previous_lateral_active', False)):
+      lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=time.monotonic_ns())
     CS = self.sm['carState']
     self.flm_native_witness = None
     if self.lateral_gain_owner is not None:
@@ -220,6 +225,12 @@ class Controls:
                           ordinary_axis_request_allowed(self.CP, CS) and
                           ordinary_axis_acknowledged(self.sm, self.CP, now_ns=now_ns,
                             on_validated_native=lambda native: setattr(self, 'flm_native_witness', native)))
+
+    if lateral_inputs_refreshed:
+      # A newly received physical veto wins over an older admitted axis. This
+      # LAT-only refresh cannot enable ordinary LONG; its next normal cycle owns that transition.
+      CC.latActive = bool(CC.latActive and CS.canValid and not CS.canTimeout)
+      CC.longActive = False
 
     fault_latch = getattr(self, 'hyundai_lateral_fault', None)
     if fault_latch is not None:

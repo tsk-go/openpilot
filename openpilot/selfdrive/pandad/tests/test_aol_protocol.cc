@@ -91,13 +91,13 @@ int main() {
     auto chrysler = status();
     chrysler.safety_mode = 9U;
     chrysler.safety_param = static_cast<uint16_t>(word);
-    assert(aol_capable(chrysler, 9U, VEHICLE_REGISTRY) == ((word == 0U) || (word == 1U) || (word == 8U)));
+    assert(aol_capable(chrysler, 9U, VEHICLE_REGISTRY) == ((word == 0U) || (word == 1U) || (word == 4U) || (word == 8U)));
     chrysler.capability_flags = 0U;
     assert(!aol_capable(chrysler, 9U, VEHICLE_REGISTRY));
   }
 
   for (uint32_t word = 0U; word <= 65535U; ++word) {
-    const bool expected = (word == 73U) || (word == 585U) || (word == 4169U) || (word == 4681U) || (word == 2121U);
+    const bool expected = (word == 73U) || (word == 585U) || (word == 4169U) || (word == 4681U) || (word == 2121U) || (word == 0x9049U) || (word == 0x9249U) || (word == 0x2049U) || (word == 0x2249U);
     auto toyota = status();
     toyota.safety_mode = 2U;
     toyota.safety_param = static_cast<uint16_t>(word);

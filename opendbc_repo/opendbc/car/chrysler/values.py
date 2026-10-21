@@ -13,6 +13,7 @@ class ChryslerSafetyFlags(IntFlag):
   RAM_DT = 1
   RAM_HD = 2
   AOL_PACIFICA_HYBRID_SET_GUARD = 8
+  JEEP_BRAKE_HOLD = 4
 
 
 class ChryslerFlags(IntFlag):
@@ -20,6 +21,7 @@ class ChryslerFlags(IntFlag):
   HIGHER_MIN_STEERING_SPEED = 1
   HAS_BSM = 2  # blind spot monitoring
   STEERING_SPEED_BYPASS = 4
+  JEEP_BRAKE_HOLD_AVAILABLE = 8
 
 
 @dataclass

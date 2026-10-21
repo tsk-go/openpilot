@@ -6,7 +6,8 @@ from opendbc.car import Bus
 from opendbc.car.hyundai.values import CAR, HyundaiFlags
 from opendbc.car.isotp_parallel_query import IsoTpParallelQuery
 from opendbc.can.parser import MAX_BAD_COUNTER
-from opendbc.car.hyundai.ecu_startup import HyundaiECUStartup, Outcome, stock_copy as stock_copy
+from opendbc.car.hyundai.ecu_continuity import ContinuousECUStartup, StartupKeeper
+from opendbc.car.hyundai.ecu_startup import Outcome, stock_copy as stock_copy
 
 
 def required(cp):
@@ -15,9 +16,12 @@ def required(cp):
           not cp.flags & (HyundaiFlags.CANFD | HyundaiFlags.CAMERA_SCC | HyundaiFlags.CANFD_CAMERA_SCC))
 
 
-class G90Startup(HyundaiECUStartup):
-  def __init__(self, cp, callbacks):
-    super().__init__(cp, callbacks, address=0x7d0, bus=0, label='G90')
+class G90Startup(ContinuousECUStartup):
+  def __init__(self, cp, callbacks, *, clock=time.monotonic, keeper_factory=StartupKeeper):
+    super().__init__(cp, callbacks, address=0x7d0, bus=0, label='G90', clock=clock, keeper_factory=keeper_factory)
+
+  def continuity_required(self):
+    return required(self.cp)
 
   def _query(self, *args, **kwargs):
     return IsoTpParallelQuery(*args, **kwargs)
