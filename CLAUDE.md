@@ -3,6 +3,23 @@
 - Every commit (including merges) is authored and committed as `tsk-go <cmc686@gmail.com>`. Before committing, run
   `git config user.name tsk-go && git config user.email cmc686@gmail.com`.
 - Never mention Claude or Anthropic in commits: no `Co-Authored-By` trailer, no session links, no attribution lines.
+- Every commit is signed with the owner's SSH signing key so GitHub shows it as Verified. The private key is in the
+  environment variable `GIT_SIGNING_KEY_B64` (base64 of the OpenSSH private key file); its public key is on the tsk-go
+  account as a Signing Key, fingerprint `SHA256:ituxS1NO/VJowXXhvOv/nUdnZQYSQkHbkSL4fQIDC2E`. Set it up once per session:
+  ```
+  mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  printf '%s' "$GIT_SIGNING_KEY_B64" | base64 -d > ~/.ssh/claude_signing && chmod 600 ~/.ssh/claude_signing
+  ssh-keygen -y -f ~/.ssh/claude_signing > ~/.ssh/claude_signing.pub
+  echo "cmc686@gmail.com $(cut -d' ' -f1,2 ~/.ssh/claude_signing.pub)" > ~/.ssh/allowed_signers
+  git config gpg.format ssh && git config gpg.ssh.program ssh-keygen
+  git config user.signingkey ~/.ssh/claude_signing.pub && git config gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+  git config commit.gpgsign true && git config tag.gpgsign true
+  ```
+  `gpg.ssh.program ssh-keygen` matters: the cloud environment's global git config signs with its own key
+  (`/tmp/code-sign`), which GitHub shows as Unverified. Before every commit, check `ssh-keygen -lf
+  ~/.ssh/claude_signing.pub` prints that fingerprint; after it, check `git log -1 --format=%GK` shows it too. If the
+  key is missing or doesn't match, don't commit or push: stop and tell the owner (`ssh-keygen` comes from
+  `apt-get install -y openssh-client` if it isn't installed).
 
 # Syncing upstream
 
