@@ -37,11 +37,9 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `load_profile.py`, and in `openpilot/selfdrive/modeld/modeld.py` `program_cache.*`, `load_profile.watch`,
    `BIG_MODEL_FIRST_TIMEOUT`, `BIG_MODEL_CACHED_TIMEOUT`. Upstream fixed = the big model's compiled programs survive a
    reboot by themselves (no `do_to_program` codegen at every start), or modeld's load timeout no longer cuts it off.
-2. **Galaxy updates refused with the ignition on, offroad and parked**: `openpilot/starpilot/drive_state/park_marker.py`,
-   `status(parked_marker=...)` in `openpilot/starpilot/drive_state/evidence.py`, and the `ParkMarker` lines in
-   `openpilot/selfdrive/car/card.py`. Upstream fixed = `PhysicalSource.update_status` can allow an update offroad with
-   the ignition on (it no longer needs live carState/selfdriveState, which stop offroad).
-3. **"Driving Model Lagging" right after the big model loads** (patch 22): `openpilot/starpilot/models/warmup.py` and in
+   Oct 21: upstream `ba6eac26` ("Fix Big Model Cold Startup") keeps its runtime cache on /data and waits 120 s; kept
+   until a cold start's log shows that alone loads the big model in time.
+2. **"Driving Model Lagging" right after the big model loads** (patch 22): `openpilot/starpilot/models/warmup.py` and in
    `openpilot/selfdrive/modeld/modeld.py` `big_warmup` (ChestnutLoading stays on until the big model runs steady).
    Upstream fixed = modeld itself waits for the big model's first real passes before clearing ChestnutLoading, or those
    first passes are no longer slow (no `chestnut.warmup` with slow passes / missed frames in the logs).
@@ -77,8 +75,6 @@ Paths are under `openpilot/` unless noted.
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
     modeld timeouts.
-13. Updates refused offroad + parked with the ignition on (patch 20): `starpilot/drive_state/park_marker.py`,
-    `evidence.py` `parked_marker`, card's `ParkMarker`.
 14. "Driving Model Lagging" seconds after the big model loads (patches 22, 24): `starpilot/models/warmup.py`; modeld keeps
     ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
 
@@ -86,3 +82,7 @@ Paths are under `openpilot/` unless noted.
 - AOL on the SecOC Sienna (patch 6): merged upstream (firestar `79fdeb4`, rebuilt panda/pandad `337bb0754`).
 - Waze bridge and split screen (patch 3): replaced by the in-app map (patch 9).
 - Hash the big model file while modeld waits (patch 17): written, then skipped by the owner.
+- Updates refused offroad + parked with the ignition on (patch 20): fixed upstream ("Allow Forced Offroad Updates",
+  firestar `defaf64c`: an update forced offroad no longer needs live carState/selfdriveState); `park_marker.py` removed.
+- steerlearnerd memory on long drives (patch 26, never pushed): fixed upstream ("Bound FLM replay memory", firestar
+  `0b01007a`, which also restarts steerlearnerd when it exits).
