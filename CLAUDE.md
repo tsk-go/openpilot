@@ -86,6 +86,13 @@ Paths are under `openpilot/` unless noted.
     first. preview asks Mapbox once from the tablet's origin, else the RTK/phone handoff fix, else the saved position;
     go sets the destination (a Mapbox search place stays temporary) and `state()` then chooses the offered route most
     like the one looked at (same "via", closest length/time), once.
+18. RTK tools and the car's speed for the receiver (patch 31): `starview/rtk.py` `action` (starviewd action `rtk_action`:
+    hot/warm/cold restart, reset the mount alignment, factory reset then our settings back to flash, save to flash,
+    speed feed on/off), full ESF-STATUS and MON-VER in the status. The speed feed sends starviewd's carState vEgo as
+    UBX-ESF-MEAS 10x a second (only while the tablet's carState stream is open: no new carState reader); its choice is
+    in /data/starview/rtk.json and its CFG-SFODO settings go to the receiver's RAM only. RTCM goes out in whole frames
+    so a UBX message never lands inside one. Output on UART1 / UART2 / I2C is switched off (nothing is wired there;
+    UART1's backlog filled the receiver's send memory and it dropped ESF-STATUS on USB).
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

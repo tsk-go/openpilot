@@ -11,9 +11,16 @@ never sees it: the comma's own GPS still drives locationd. Its fix is also hande
 /dev/shm file a companion phone's fix goes through (starpilot/gps/phone.py), so navigation, the comma's map, map speed
 limits and place search can use it. With Galaxy's default GPS source ("backup") that only happens while neither the
 comma's GPS nor the car's has a fix of its own, and only a fresh 3D fix within 25 m passes (the same checks as theirs).
+
+The tablet's RTK tools (action()): restart the receiver (hot / warm / cold), reset the learned mount alignment, factory
+reset (our settings are written back right after), save our settings to its flash, and the car's speed feed: starviewd's
+carState speed sent as UBX-ESF-MEAS (type 11) 10x a second, so the F9R's fusion has a speed sensor like a built-in
+navigation's (the F9R has no wheel-tick wire here). The feed choice lives in /data/starview/rtk.json; the receiver only
+gets the speed settings in RAM, so unplugged from the comma it is back to its own.
 """
 import calendar
 import glob
+from pathlib import Path
 import json
 import math
 import os
@@ -37,6 +44,16 @@ CORRECTION_AGE = (None, 1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 999)
 FIX = ("none", "dead reckoning", "2D", "3D", "GNSS + dead reckoning", "time only")
 FUSION = ("initializing", "on", "suspended", "disabled")
 ALIGN = ("fixed angles", "learning roll/pitch", "learning heading", "coarse", "fine")
+INIT = ("off", "initializing", "done", "done")
+CALIB = ("not calibrated", "calibrating", "calibrated", "calibrated")
+SENSOR = {5: "gyro z", 6: "wheel tick FL", 7: "wheel tick FR", 8: "wheel tick RL", 9: "wheel tick RR", 10: "wheel tick",
+          11: "speed", 12: "gyro temperature", 13: "gyro y", 14: "gyro x", 16: "accel x", 17: "accel y", 18: "accel z"}
+FAULTS = ((1, "bad measurements"), (2, "bad time tags"), (4, "missing measurements"), (8, "noisy measurements"))
+SETTINGS_PATH = Path("/data/starview/rtk.json")
+SPEED_HZ = 10.0
+SPEED_MAX_AGE_S = 0.1       # a speed older than this is dropped, never sent late
+SPEED_LATENCY_MS = 15       # carState's CAN sample to the receiver: reader tick (<= 10 ms) + USB; delayMs shows the real one
+ACK_WAIT_S = 3.0
 
 
 def ubx(cls: int, msg: int, payload: bytes = b"") -> bytes:
@@ -48,20 +65,65 @@ def ubx(cls: int, msg: int, payload: bytes = b"") -> bytes:
   return b"\xb5\x62" + body + bytes((a, b))
 
 
-def valset_ram(items) -> bytes:
-  """CFG-VALSET to RAM only (the flash already holds them; this just makes sure, without wearing it)."""
-  payload = struct.pack("<BBH", 0, 0x01, 0) + b"".join(struct.pack("<I", k) + v.to_bytes(n, "little") for k, v, n in items)
+RAM, BBR, FLASH = 0x01, 0x02, 0x04
+
+
+def valset(items, layers: int = RAM) -> bytes:
+  payload = struct.pack("<BBH", 0, layers, 0) + b"".join(struct.pack("<I", k) + v.to_bytes(n, "little") for k, v, n in items)
   return ubx(0x06, 0x8A, payload)
 
 
-SETUP = valset_ram((
+def valset_ram(items) -> bytes:
+  """CFG-VALSET to RAM only (the flash already holds them; this just makes sure, without wearing it)."""
+  return valset(items, RAM)
+
+
+BASE = (
   (0x30210001, 100, 2),   # CFG-RATE-MEAS: 10 Hz
   (0x20110021, 4, 1),     # CFG-NAVSPG-DYNMODEL: automotive
   (0x20910009, 1, 1),     # CFG-MSGOUT-UBX_NAV_PVT_USB: every epoch
   (0x10770004, 1, 1),     # CFG-USBINPROT-RTCM3X: corrections in
   (0x10780002, 0, 1),     # CFG-USBOUTPROT-NMEA: off
+  (0x10080001, 1, 1),     # CFG-SFCORE-USE_SF: sensor fusion on
+  (0x10060027, 1, 1),     # CFG-SFIMU-AUTO_MNTALG_ENA: learn how the board sits in the car
+)
+# Nothing is wired to UART1, UART2 or I2C: output there only fills the receiver's shared send memory (UART1's NMEA at
+# 10 Hz outruns its 38400 baud), and then it drops USB messages too (MON-COMMS txErrors mem+alloc: ESF-STATUS never
+# arrived, fusion never started). One VALSET per key: a key this firmware doesn't know refuses only itself.
+PORTS_OFF = (
+  0x10740001, 0x10740002,   # CFG-UART1OUTPROT-UBX / NMEA
+  0x10760001, 0x10760002,   # CFG-UART2OUTPROT-UBX / NMEA
+  0x10720001, 0x10720002,   # CFG-I2COUTPROT-UBX / NMEA
+)
+SETUP = valset_ram(BASE) + b"".join(valset_ram(((k, 0, 1),)) for k in PORTS_OFF)
+SAVE_FRAMES = [valset(BASE, RAM | BBR | FLASH)] + [valset(((k, 0, 1),), RAM | BBR | FLASH) for k in PORTS_OFF]
+SAVE = b"".join(SAVE_FRAMES)
+SPEED_ON = valset_ram((
+  (0x1007000f, 0, 1),     # CFG-SFODO-USE_WT_PIN: no wheel-tick wire
+  (0x10070003, 1, 1),     # CFG-SFODO-USE_SPEED: speed instead of wheel ticks
+  (0x10070011, 0, 1),     # CFG-SFODO-DIS_AUTOSW: do use what comes over USB
+  (0x2007000b, int(SPEED_HZ), 1),       # CFG-SFODO-FREQUENCY
+  (0x3007000a, SPEED_LATENCY_MS, 2),    # CFG-SFODO-LATENCY (ms)
+  (0x40070008, 50_000, 4),              # CFG-SFODO-QUANT_ERROR: 0.05 m/s
 ))
+SPEED_OFF = valset_ram(((0x10070003, 0, 1), (0x10070011, 1, 1)))
+FACTORY = ubx(0x06, 0x09, struct.pack("<IIIB", 0xFFFF, 0, 0xFFFF, 0x17))   # CFG-CFG: clear BBR/flash, load the defaults
+RESTART = {"hot": 0x0000, "warm": 0x0001, "cold": 0xFFFF}                  # CFG-RST navBbrMask
+REALIGN = ubx(0x10, 0x13)                                                   # ESF-RESETALG: learn the mount again
+MON_VER = ubx(0x0A, 0x04)
 POLLS = ubx(0x01, 0x35) + ubx(0x10, 0x10) + ubx(0x10, 0x14)   # NAV-SAT, ESF-STATUS, ESF-ALG
+
+
+def restart(kind: str) -> bytes:
+  """CFG-RST, GNSS only (resetMode 2): the USB link stays up."""
+  return ubx(0x06, 0x04, struct.pack("<HBB", RESTART[kind], 2, 0))
+
+
+def esf_speed(speed_ms: float, time_tag_ms: int) -> bytes:
+  """UBX-ESF-MEAS with one speed (data type 11, signed, mm/s; negative backing up), time-tagged in ms."""
+  mm = max(-(1 << 23), min((1 << 23) - 1, round(speed_ms * 1000)))
+  data = (mm & 0xFFFFFF) | (11 << 24)
+  return ubx(0x10, 0x02, struct.pack("<IHHI", time_tag_ms & 0xFFFFFFFF, 1 << 11, 0, data))
 
 
 def _write_some(fd: int, data: bytes) -> int:
@@ -102,6 +164,23 @@ class UbxParser:
         del self.buf[:8 + n]
       else:
         del self.buf[:2]
+
+
+def rtcm_whole(buf) -> int:
+  """How many leading bytes of buf are whole RTCM3 frames (or junk between them). The rest waits for the tablet's next
+  chunk, so the receiver only ever sees whole frames and a UBX message from us can go between any two writes."""
+  i, n = 0, len(buf)
+  while i < n:
+    if buf[i] != 0xD3:
+      i += 1
+      continue
+    if n - i < 3:
+      break
+    size = 6 + (((buf[i + 1] & 3) << 8) | buf[i + 2])   # preamble + 10-bit length, the message, 3-byte CRC
+    if n - i < size:
+      break
+    i += size
+  return i
 
 
 def parse_pvt(p: bytes) -> dict | None:
@@ -174,9 +253,33 @@ def parse_sat(p: bytes) -> dict | None:
 
 
 def parse_esf_status(p: bytes) -> dict | None:
+  """Fusion mode, each step of its start (IMU, INS, mount alignment, speed/wheel ticks) and every sensor it sees."""
   if len(p) < 16:
     return None
-  return {"fusion": FUSION[min(p[12], 3)]}
+  i1, i2 = p[5], p[6]
+  sensors = []
+  for k in range(min(p[15], (len(p) - 16) // 4)):
+    s1, s2, freq, faults = p[16 + 4 * k:20 + 4 * k]
+    sensors.append({"type": SENSOR.get(s1 & 0x3F, f"type {s1 & 0x3F}"), "used": bool(s1 & 0x40), "ready": bool(s1 & 0x80),
+                    "calib": CALIB[s2 & 3], "hz": freq, "faults": [name for bit, name in FAULTS if faults & bit]})
+  return {"fusion": FUSION[min(p[12], 3)], "imuInit": INIT[i2 & 3], "insInit": INIT[(i1 >> 5) & 3],
+          "mountInit": INIT[min((i1 >> 2) & 7, 3)], "speedInit": INIT[i1 & 3], "sensors": sensors}
+
+
+def parse_mon_ver(p: bytes) -> dict | None:
+  """Firmware ("HPS 1.30") and module ("ZED-F9R") from UBX-MON-VER."""
+  if len(p) < 40:
+    return None
+  out = {}
+  for k in range(40, len(p) - 29, 30):
+    ext = p[k:k + 30].split(b"\0", 1)[0].decode("ascii", "replace")
+    if ext.startswith("FWVER="):
+      out["firmware"] = ext[6:]
+    elif ext.startswith("MOD="):
+      out["module"] = ext[4:]
+  if "firmware" not in out:
+    out["firmware"] = p[:30].split(b"\0", 1)[0].decode("ascii", "replace")
+  return out
 
 
 def parse_esf_alg(p: bytes) -> dict | None:
@@ -186,16 +289,22 @@ def parse_esf_alg(p: bytes) -> dict | None:
   return {"mountAuto": bool(flags & 1), "mount": ALIGN[min((flags >> 1) & 7, 4)], "mountYawDeg": struct.unpack_from("<I", p, 8)[0] / 100}
 
 
+OPS = ("hot", "warm", "cold", "realign", "factory", "save", "speed_on", "speed_off")
+STOPPED_ONLY = ("cold", "factory")   # the fix is gone for a while: not while driving
+
+
 class Rtk:
-  def __init__(self, port_glob: str = PORT_GLOB, clock=time.monotonic, handoff_path=None, mono_ns=time.monotonic_ns):
+  def __init__(self, port_glob: str = PORT_GLOB, clock=time.monotonic, handoff_path=None, mono_ns=time.monotonic_ns,
+               settings_path=SETTINGS_PATH):
     self.port_glob, self.clock = port_glob, clock
     self.handoff_path, self.mono_ns = handoff_path, mono_ns
+    self.settings_path = Path(settings_path)
     self._handoff_t = None
     self.lock = threading.Lock()
     self.parser = UbxParser()
     self.fd = None
     self.port = None
-    self.pvt = self.sat = self.esf = self.alg = None
+    self.pvt = self.sat = self.esf = self.alg = self.ver = None
     self.pvt_t = None
     self.rtcm = bytearray()
     self.rtcm_bytes = 0
@@ -203,8 +312,42 @@ class Rtk:
     self.dropped = 0
     self._poll_t = 0.0
     self.thread = None
+    self._wake = None
+    self.partial = b""          # the end of a write the USB side didn't take: goes out before anything else
+    self.cmds = []              # the tablet's RTK tools, written between two RTCM frames
+    self.act = None             # the last tool used: {"op", "state", "t", "acks": [(cls, id) still to be confirmed]}
+    self.speed_on = self._settings().get("speedFeed") is True
+    self.sample = None          # (signed speed m/s, carState logMonoTime ns, clock time)
+    self._sample_t = None
+    self._sent_win = [0.0, 0]
+    self.speed_hz = 0.0
+    self.delay_ms = None
 
   # ---- tablet side ----
+  def _settings(self) -> dict:
+    try:
+      got = json.loads(self.settings_path.read_text())
+      return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+      return {}
+
+  def _save_settings(self) -> None:
+    try:
+      self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+      tmp = self.settings_path.with_name(self.settings_path.name + ".tmp")
+      tmp.write_text(json.dumps({**self._settings(), "speedFeed": self.speed_on}))
+      tmp.replace(self.settings_path)
+    except OSError as e:
+      cloudlog.warning(f"starview: rtk settings: {e}")
+
+  def _poke(self) -> None:
+    w = self._wake
+    if w is not None:
+      try:
+        os.write(w[1], b"x")
+      except OSError:
+        pass
+
   def feed_rtcm(self, data: bytes) -> dict:
     with self.lock:
       if self.fd is None:
@@ -217,6 +360,54 @@ class Rtk:
       self.rtcm_t = self.clock()
     return {"ok": True}
 
+  def action(self, op, moving: bool = False) -> dict:
+    """One of the tablet's RTK tools. The receiver's answer (ACK / NAK) shows up in status()["action"]."""
+    if op not in OPS:
+      return {"ok": False, "error": "Unknown RTK tool"}
+    if op in STOPPED_ONLY and moving:
+      return {"ok": False, "error": "Stop the car first"}
+    with self.lock:
+      if self.fd is None:
+        return {"ok": False, "error": "RTK receiver not connected"}
+      valset = (0x06, 0x8A)
+      if op in RESTART:
+        frames, acks = [restart(op)], []          # CFG-RST is never acknowledged
+      elif op == "realign":
+        frames, acks = [REALIGN], [(0x10, 0x13)]
+      elif op == "factory":
+        frames, acks = [FACTORY, SAVE], [(0x06, 0x09)] + [valset] * len(SAVE_FRAMES)
+        if self.speed_on:
+          frames.append(SPEED_ON)
+          acks.append(valset)
+        frames.append(MON_VER)
+      elif op == "save":
+        frames, acks = [SAVE], [valset] * len(SAVE_FRAMES)
+      else:
+        self.speed_on = op == "speed_on"
+        frames, acks = [SPEED_ON if self.speed_on else SPEED_OFF], [valset]
+        self.speed_hz, self.delay_ms, self.sample = 0.0, None, None
+      self.cmds += frames
+      self.act = {"op": op, "state": "sent", "t": self.clock(), "acks": acks}
+    if op in ("speed_on", "speed_off"):
+      self._save_settings()
+    self._poke()
+    cloudlog.warning(f"starview: rtk tool {op}")
+    return {"ok": True}
+
+  def wants_speed(self) -> bool:
+    """The hub's reader asks before decoding a carState: the feed is on, the receiver is there, 0.1 s since the last."""
+    if not self.speed_on or self.fd is None:
+      return False
+    t = self._sample_t
+    return t is None or not 0 <= self.clock() - t < 1 / SPEED_HZ - 0.005
+
+  def speed(self, speed_ms: float, reverse: bool, log_mono_ns: int) -> None:
+    now = self.clock()
+    with self.lock:
+      self._sample_t = now
+      self.sample = (-abs(speed_ms) if reverse else speed_ms, log_mono_ns, now)
+    self._poke()
+
   def status(self) -> dict | None:
     """None: no RTK receiver has been seen on this comma (the tablet hides the RTK part)."""
     with self.lock:
@@ -228,9 +419,23 @@ class Rtk:
              "rtcmBytes": self.rtcm_bytes, "rtcmAgeS": round(now - self.rtcm_t, 1) if self.rtcm_t is not None else None}
       if fresh:
         out.update(self.pvt)
-      for part in (self.sat, self.esf, self.alg):
+      for part in (self.sat, self.esf, self.alg, self.ver):
         if part:
           out.update(part)
+      feed = {"on": self.speed_on}
+      if self.speed_on:
+        feed["hz"] = round(self.speed_hz, 1) if self._sent_win[0] and now - self._sent_win[0] < 3.0 else 0.0
+        if self.delay_ms is not None:
+          feed["delayMs"] = round(self.delay_ms)
+      out["speedFeed"] = feed
+      act = self.act
+      if act is not None:
+        state = act["state"]
+        if state == "sent" and act["acks"] and now - act["t"] > ACK_WAIT_S:
+          state = "no answer"
+        elif state == "sent" and not act["acks"]:
+          state = "done"
+        out["action"] = {"op": act["op"], "state": state, "ageS": round(now - act["t"], 1)}
       return out
 
   # ---- receiver side ----
@@ -264,13 +469,17 @@ class Rtk:
       pass   # not a tty (tests use a pipe pair)
     with self.lock:
       self.fd, self.port = fd, path
-    os.write(fd, SETUP)
+      self.partial = b""
+      self.cmds = [SPEED_ON] if self.speed_on else []
+    os.write(fd, SETUP + MON_VER)
     cloudlog.warning(f"starview: rtk receiver connected on {path}")
 
   def _close(self, why: str) -> None:
     with self.lock:
       fd, self.fd = self.fd, None
       self.rtcm.clear()
+      self.partial = b""
+      self.sample = None
     if fd is not None:
       try:
         os.close(fd)
@@ -292,6 +501,18 @@ class Rtk:
         self.esf = parse_esf_status(payload)
       elif (cls, msg) == (0x10, 0x14):
         self.alg = parse_esf_alg(payload)
+      elif (cls, msg) == (0x0A, 0x04):
+        self.ver = parse_mon_ver(payload)
+      elif cls == 0x05 and msg in (0x00, 0x01) and len(payload) >= 2:   # ACK-NAK / ACK-ACK
+        act = self.act
+        what = (payload[0], payload[1])
+        if act is not None and act["state"] == "sent" and what in act["acks"]:
+          if msg == 0x00:
+            act["state"] = "refused"
+          else:
+            act["acks"].remove(what)
+            if not act["acks"]:
+              act["state"] = "done"
     if pvt and (self._handoff_t is None or not 0 <= now - self._handoff_t < HANDOFF_S):
       self._handoff_t = now
       self._hand_off(pvt)
@@ -309,8 +530,53 @@ class Rtk:
     except OSError as e:
       cloudlog.warning(f"starview: rtk handoff: {e}")
 
+  def _out(self, fd: int, data: bytes) -> bool:
+    """Write, keeping what the USB side didn't take for next time. False: it's full, nothing more this pass."""
+    data = self.partial + data
+    n = _write_some(fd, data) if data else 0
+    self.partial = data[n:]
+    return not self.partial
+
+  def _write(self, fd: int) -> None:
+    now = self.clock()
+    if self.partial and not self._out(fd, b""):
+      return
+    ubx_out = b""
+    with self.lock:
+      cmds, self.cmds = self.cmds, []
+      sample, self.sample = self.sample, None
+    ubx_out += b"".join(cmds)
+    if sample is not None and 0 <= now - sample[2] <= SPEED_MAX_AGE_S:
+      ubx_out += esf_speed(sample[0], sample[1] // 1_000_000)
+      delay = (self.mono_ns() - sample[1]) / 1e6
+      self.delay_ms = delay if self.delay_ms is None else 0.9 * self.delay_ms + 0.1 * delay
+      win = self._sent_win
+      if not win[0] or now - win[0] > 3.0:
+        self._sent_win = win = [now, 0]
+      win[1] += 1
+      if now - win[0] >= 2.0:
+        self.speed_hz = win[1] / (now - win[0])
+        self._sent_win = [now, 0]
+    if now - self._poll_t >= POLL_S:
+      self._poll_t = now
+      ubx_out += POLLS
+    if ubx_out and not self._out(fd, ubx_out):
+      return
+    with self.lock:
+      whole = rtcm_whole(self.rtcm)
+      if len(self.rtcm) - whole > 1100:   # longer than any RTCM3 frame: not one, let the receiver sort it out
+        whole = len(self.rtcm)
+      pending = bytes(self.rtcm[:whole])
+      del self.rtcm[:whole]
+    if pending:
+      self._out(fd, pending)
+
   def step(self, timeout: float = 0.1) -> None:
-    """One pass: open if needed, read what's there, poll once a second, write pending corrections."""
+    """One pass: open if needed, read what's there, then write (tools, speed, the 1 Hz polls, whole RTCM frames)."""
+    if self._wake is None:
+      self._wake = os.pipe()
+      for end in self._wake:
+        os.set_blocking(end, False)
     if self.fd is None:
       path = self._find()
       if path is None:
@@ -325,24 +591,19 @@ class Rtk:
       self._poll_t = 0.0
     fd = self.fd
     try:
-      ready, _, _ = select.select([fd], [], [], timeout)
-      if ready:
+      ready, _, _ = select.select([fd, self._wake[0]], [], [], timeout)
+      if self._wake[0] in ready:
+        try:
+          os.read(self._wake[0], 512)
+        except BlockingIOError:
+          pass
+      if fd in ready:
         data = os.read(fd, 8192)
         if not data:
           raise OSError("receiver closed")
         for frame in self.parser.feed(data):
           self.handle(*frame)
-      now = self.clock()
-      if now - self._poll_t >= POLL_S:
-        self._poll_t = now
-        _write_some(fd, POLLS)
-      with self.lock:
-        pending, self.rtcm = bytes(self.rtcm), bytearray()
-      if pending:
-        rest = pending[_write_some(fd, pending):]
-        if rest:
-          with self.lock:
-            self.rtcm[:0] = rest   # the USB side is full: the rest goes first next time
+      self._write(fd)
     except OSError as e:
       self._close(str(e))
 

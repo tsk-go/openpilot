@@ -1107,6 +1107,8 @@ class Hub:
         if not msgs:
           continue
         self.last_raw[name] = (now, msgs[-1])
+        if name == "carState":
+          self._rtk_speed(msgs[-1])
         st = self.stats[name]
         st["msgs"] += len(msgs)
         st["bytes"] += sum(len(m) for m in msgs)
@@ -1219,6 +1221,27 @@ class Hub:
         self._ign = (now, any(p.ignitionLine or p.ignitionCan for p in pss))
     except Exception as e:
       cloudlog.warning(f"starview: pandaStates read failed: {e}")
+
+  def _rtk_speed(self, raw: bytes) -> None:
+    """The car's speed for the RTK receiver's sensor fusion (rtk.py), 10x a second while its speed feed is on."""
+    rtk = getattr(self, "rtk", None)
+    if rtk is None or not rtk.wants_speed():
+      return
+    try:
+      ev = messaging.log_from_bytes(raw)
+      cs = ev.carState
+      rtk.speed(cs.vEgo, str(cs.gearShifter) == "reverse", ev.logMonoTime)
+    except Exception as e:
+      cloudlog.warning(f"starview: rtk speed: {e}")
+
+  def _car_moving(self) -> bool:
+    got = self.last_raw.get("carState")
+    if got is None or time.monotonic() - got[0] > 1.0:
+      return False
+    try:
+      return abs(messaging.log_from_bytes(got[1]).carState.vEgo) > 1.0
+    except Exception:
+      return False
 
   def _parked_for_replay(self) -> bool:
     """Ignition off, or on with the live carState in P and standing still. No fresh pandaStates (pandad not running,
@@ -1714,6 +1737,8 @@ class Hub:
         except ValueError:
           return {"ok": False, "error": "bad corrections"}
         return self.rtk.feed_rtcm(data)
+      if act == "rtk_action":  # {"op": hot|warm|cold|realign|factory|save|speed_on|speed_off}: the tablet's RTK tools
+        return self.rtk.action(req.get("op"), moving=self._car_moving())
       if act == "tablet_mode":  # {"on": bool} -- comma screen off while this tablet shows the road view
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0

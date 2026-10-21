@@ -148,11 +148,11 @@ def test_end_to_end_over_a_serial_line(tmp_path):
   assert st["connected"] and st["fresh"] and st["rtk"] == "float" and st["hAccM"] == 0.12
   assert st["usedSats"] == 1 and st["fusion"] == "on" and st["mount"] == "fine" and st["mountAuto"]
   assert json.loads((tmp_path / "handoff.json").read_text())["horizontalAccuracy"] == 0.12   # handed to navigation
-  assert r.feed_rtcm(b"\xd3\x00\x04RTCM")["ok"]
+  assert r.feed_rtcm(b"\xd3\x00\x04RTCMcrc")["ok"]
   r.step(timeout=0.01)
   time.sleep(0.05)
-  assert b"\xd3\x00\x04RTCM" in os.read(master, 4096)
-  assert r.status()["rtcmBytes"] == 7 and r.status()["rtcmAgeS"] == 0.0
+  assert b"\xd3\x00\x04RTCMcrc" in os.read(master, 4096)
+  assert r.status()["rtcmBytes"] == 10 and r.status()["rtcmAgeS"] == 0.0
   now[0] += 3.0
   assert r.status()["fresh"] is False and "lat" not in r.status()   # an old fix is never shown as current
   os.close(master)
@@ -170,3 +170,182 @@ def test_tablet_corrections_action(monkeypatch):
   assert got == [b"\xd3abc"]
   assert hub.control({"action": "rtk_rtcm", "b64": "not base64!"})["ok"] is False
   assert hub.control({"action": "rtk_rtcm"})["ok"] is False
+
+
+def esf_status_payload(i1=0, i2=0, mode=0, sensors=()):
+  p = bytearray(16 + 4 * len(sensors))
+  p[4], p[5], p[6], p[12], p[15] = 2, i1, i2, mode, len(sensors)
+  for k, sens in enumerate(sensors):
+    p[16 + 4 * k:20 + 4 * k] = bytes(sens)
+  return bytes(p)
+
+
+def mon_ver_payload(sw="EXT CORE 1.00 (a1c2e4)", exts=("ROM BASE 0x118B2060", "FWVER=HPS 1.30", "PROTVER=33.30", "MOD=ZED-F9R")):
+  p = sw.encode().ljust(30, b"\0") + b"00190000".ljust(10, b"\0")
+  return p + b"".join(e.encode().ljust(30, b"\0") for e in exts)
+
+
+def test_fusion_steps_and_sensors_in_plain_words():
+  st = rtk.parse_esf_status(esf_status_payload(
+    i1=2 | (1 << 2) | (2 << 5), i2=2, mode=1,
+    sensors=[(5 | 0x40 | 0x80, 3, 50, 0), (16 | 0x80, 1, 50, 0), (11 | 0x40 | 0x80, 2 | (3 << 2), 10, 4 | 8)]))
+  assert st["fusion"] == "on" and st["imuInit"] == "done" and st["insInit"] == "done"
+  assert st["mountInit"] == "initializing" and st["speedInit"] == "done"
+  assert st["sensors"][0] == {"type": "gyro z", "used": True, "ready": True, "calib": "calibrated", "hz": 50, "faults": []}
+  assert st["sensors"][1]["type"] == "accel x" and st["sensors"][1]["calib"] == "calibrating" and not st["sensors"][1]["used"]
+  assert st["sensors"][2]["type"] == "speed" and st["sensors"][2]["faults"] == ["missing measurements", "noisy measurements"]
+  # the IMU at 0 Hz, nothing started: what HPS 1.00 on an F9R-03B looked like
+  bare = rtk.parse_esf_status(esf_status_payload(i2=1))
+  assert bare["fusion"] == "initializing" and bare["imuInit"] == "initializing" and bare["sensors"] == []
+
+
+def test_firmware_and_module():
+  assert rtk.parse_mon_ver(mon_ver_payload()) == {"firmware": "HPS 1.30", "module": "ZED-F9R"}
+  assert rtk.parse_mon_ver(mon_ver_payload(exts=()))["firmware"] == "EXT CORE 1.00 (a1c2e4)"
+  assert rtk.parse_mon_ver(b"short") is None
+
+
+def test_speed_message_layout():
+  frame = rtk.esf_speed(13.456, 1_234_567)
+  assert frame[:6] == b"\xb5\x62\x10\x02\x0c\x00"
+  tag, flags, ident, data = struct.unpack_from("<IHHI", frame, 6)
+  assert tag == 1_234_567 and flags >> 11 == 1 and ident == 0
+  assert data >> 24 == 11 and data & 0xFFFFFF == 13_456
+  back = struct.unpack_from("<I", rtk.esf_speed(-1.5, 0), 6 + 8)[0]
+  assert back >> 24 == 11 and (back & 0xFFFFFF) - (1 << 24) == -1500    # backing up: negative, 24-bit two's complement
+  assert rtk.restart("cold")[6:10] == b"\xff\xff\x02\x00" and rtk.restart("hot")[6:10] == b"\x00\x00\x02\x00"
+  assert rtk.FACTORY[6:19] == struct.pack("<IIIB", 0xFFFF, 0, 0xFFFF, 0x17)
+  assert rtk.SAVE[6:10] == b"\x00\x07\x00\x00" and rtk.SETUP[6:10] == b"\x00\x01\x00\x00"
+  assert len(rtk.SAVE_FRAMES) == 1 + len(rtk.PORTS_OFF) and rtk.valset_ram(((0x10740002, 0, 1),)) in rtk.SETUP   # UART1 NMEA off
+  assert rtk.REALIGN == b"\xb5\x62\x10\x13\x00\x00\x23\x79"
+
+
+def test_only_whole_rtcm_frames_go_out():
+  one = b"\xd3\x00\x02ab123"
+  assert rtk.rtcm_whole(one + one) == 16
+  assert rtk.rtcm_whole(one + one[:4]) == 8                # half a frame waits for the next chunk
+  assert rtk.rtcm_whole(b"zz" + one + b"\xd3\x00") == 10   # junk passes, a frame head waits
+  assert rtk.rtcm_whole(b"") == 0
+
+
+def _reads(master):
+  time.sleep(0.03)
+  try:
+    return os.read(master, 65536)
+  except BlockingIOError:
+    return b""
+
+
+def _receiver(tmp_path, now, **kw):
+  master, slave = os.openpty()
+  os.set_blocking(master, False)
+  link = tmp_path / "usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"
+  link.symlink_to(os.ttyname(slave))
+  r = rtk.Rtk(port_glob=str(tmp_path / "*u-blox*"), clock=lambda: now[0], handoff_path=tmp_path / "handoff.json",
+              settings_path=tmp_path / "rtk.json", **kw)
+  r.step(timeout=0.01)
+  sent = _reads(master)
+  assert sent.startswith(rtk.SETUP + rtk.MON_VER)
+  return master, r, sent
+
+
+def test_tablet_tools_wait_for_the_receivers_answer(tmp_path):
+  now = [100.0]
+  master, r, _ = _receiver(tmp_path, now)
+  assert r.action("bogus")["ok"] is False
+  assert r.action("cold", moving=True) == {"ok": False, "error": "Stop the car first"}
+  assert r.action("factory", moving=True)["ok"] is False
+  # a tool waits for the RTCM frame being written to finish
+  r.feed_rtcm(b"\xd3\x00\x02ab1")                       # the tablet's chunk ends mid-frame
+  assert r.action("realign") == {"ok": True}
+  r.step(timeout=0.01)
+  sent = _reads(master)
+  assert rtk.REALIGN in sent and b"\xd3" not in sent
+  assert r.status()["action"] == {"op": "realign", "state": "sent", "ageS": 0.0}
+  r.feed_rtcm(b"23\xd3\x00\x01z")
+  r.step(timeout=0.01)
+  assert _reads(master) == b"\xd3\x00\x02ab123"           # only the whole frame; the next one waits too
+  os.write(master, rtk.ubx(0x05, 0x01, b"\x10\x13"))
+  r.step(timeout=0.05)
+  assert r.status()["action"]["state"] == "done"
+  # factory: cleared, ours written back to RAM + BBR + flash, firmware asked again
+  r.action("factory")
+  r.step(timeout=0.01)
+  sent = _reads(master)
+  assert sent.startswith(rtk.FACTORY + rtk.SAVE + rtk.MON_VER)
+  os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x09") + rtk.ubx(0x0A, 0x04, mon_ver_payload()))
+  r.step(timeout=0.05)
+  st = r.status()
+  assert st["action"]["state"] == "sent" and st["firmware"] == "HPS 1.30" and st["module"] == "ZED-F9R"
+  os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x8a") * len(rtk.SAVE_FRAMES))   # each VALSET answers on its own
+  r.step(timeout=0.05)
+  assert r.status()["action"]["state"] == "done"
+  r.action("save")
+  r.step(timeout=0.01)
+  assert rtk.SAVE in _reads(master)
+  os.write(master, rtk.ubx(0x05, 0x00, b"\x06\x8a"))
+  r.step(timeout=0.05)
+  assert r.status()["action"]["state"] == "refused"
+  r.action("warm")
+  r.step(timeout=0.01)
+  assert rtk.restart("warm") in _reads(master)
+  assert r.status()["action"]["state"] == "done"          # a restart has no answer to wait for
+  r.action("save")
+  now[0] += 3.5
+  assert r.status()["action"]["state"] == "no answer"
+  os.close(master)
+
+
+def test_speed_feed(tmp_path):
+  now = [100.0]
+  mono = [50_000_000_000]
+  master, r, sent = _receiver(tmp_path, now, mono_ns=lambda: mono[0])
+  assert rtk.SPEED_ON not in sent
+  assert r.status()["speedFeed"] == {"on": False} and not r.wants_speed()
+  assert r.action("speed_on") == {"ok": True}
+  assert json.loads((tmp_path / "rtk.json").read_text()) == {"speedFeed": True}
+  r.step(timeout=0.01)
+  assert rtk.SPEED_ON in _reads(master)
+  for _ in range(25):                                     # 2.5 s of carState at 10 Hz, sent as it comes
+    assert r.wants_speed()
+    r.speed(20.0, False, mono[0] - 12_000_000)
+    assert not r.wants_speed()                            # at most 10 a second
+    r.step(timeout=0.01)
+    sent = _reads(master)
+    assert rtk.esf_speed(20.0, (mono[0] - 12_000_000) // 1_000_000) in sent
+    now[0] += 0.1
+    mono[0] += 100_000_000
+  feed = r.status()["speedFeed"]
+  assert feed["on"] and 9.5 <= feed["hz"] <= 10.5 and feed["delayMs"] == 12
+  r.speed(1.2, True, mono[0])                             # reverse: negative
+  r.step(timeout=0.01)
+  assert rtk.esf_speed(-1.2, mono[0] // 1_000_000) in _reads(master)
+  r.speed(3.0, False, mono[0])
+  now[0] += 0.2                                           # stale by the time it could go out: dropped, never late
+  r.step(timeout=0.01)
+  assert b"\x10\x02" not in _reads(master)
+  now[0] += 3.1
+  assert r.status()["speedFeed"]["hz"] == 0.0             # the tablet (and its carState) went away
+  assert rtk.Rtk(port_glob="/nonexistent/*", settings_path=tmp_path / "rtk.json").speed_on   # kept across restarts
+  assert r.action("speed_off")["ok"] and json.loads((tmp_path / "rtk.json").read_text()) == {"speedFeed": False}
+  r.step(timeout=0.01)
+  assert rtk.SPEED_OFF in _reads(master) and not r.wants_speed()
+  os.close(master)
+
+
+def test_reconnect_sends_the_speed_settings_again(tmp_path):
+  (tmp_path / "rtk.json").write_text('{"speedFeed": true}')
+  now = [100.0]
+  master, r, sent = _receiver(tmp_path, now)
+  assert sent == rtk.SETUP + rtk.MON_VER + rtk.SPEED_ON + rtk.POLLS
+  os.close(master)
+
+
+def test_tablet_rtk_tools_action(monkeypatch):
+  from openpilot.starpilot.system.starview import starviewd
+  hub = starviewd.Hub.__new__(starviewd.Hub)
+  got = []
+  hub.rtk = type("R", (), {"action": lambda self, op, moving=False: got.append((op, moving)) or {"ok": True}})()
+  hub.last_raw = {}
+  assert hub.control({"action": "rtk_action", "op": "realign"}) == {"ok": True}
+  assert got == [("realign", False)]
