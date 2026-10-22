@@ -105,6 +105,10 @@ Paths are under `openpilot/` unless noted.
     "restricted" standby bucket (user apps + a list of heavy preinstalled ones; never StarView, the keyboard, home,
     speech/voice services, Termius, /data/starview/saver_keep), Wi-Fi/BLE scanning off, StarView on the deviceidle
     allow list. The old values in /data/starview/tablet_saver.json are put back on "off". StarView itself is unchanged.
+22. RTK mount kept (patch 35): `starview/rtk.py`. The fusion settings (CFG-SFCORE-USE_SF, CFG-SFIMU-AUTO_MNTALG_ENA,
+    IMU_MNTALG_YAW/PITCH/ROLL) are no longer written at every connect: VALGET at connect, only what differs is written
+    (RAM+BBR+flash). Once ESF-ALG says "fine" with steady angles for 2 min they go into flash with learning off and into
+    /data/starview/rtk.json "mount"; realign / factory turn learning back on and forget them. status() "mountKept".
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

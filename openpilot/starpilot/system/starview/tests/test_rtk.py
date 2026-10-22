@@ -216,7 +216,7 @@ def test_speed_message_layout():
   assert rtk.restart("cold")[6:10] == b"\xff\xff\x02\x00" and rtk.restart("hot")[6:10] == b"\x00\x00\x02\x00"
   assert rtk.FACTORY[6:19] == struct.pack("<IIIB", 0xFFFF, 0, 0xFFFF, 0x17)
   assert rtk.SAVE[6:10] == b"\x00\x07\x00\x00" and rtk.SETUP[6:10] == b"\x00\x01\x00\x00"
-  assert len(rtk.SAVE_FRAMES) == 1 + len(rtk.PORTS_OFF) and rtk.valset_ram(((0x10740002, 0, 1),)) in rtk.SETUP   # UART1 NMEA off
+  assert len(rtk.SAVE_FRAMES) == 2 + len(rtk.PORTS_OFF) and rtk.valset_ram(((0x10740002, 0, 1),)) in rtk.SETUP   # UART1 NMEA off
   assert rtk.REALIGN == b"\xb5\x62\x10\x13\x00\x00\x23\x79"
 
 
@@ -245,7 +245,7 @@ def _receiver(tmp_path, now, **kw):
               settings_path=tmp_path / "rtk.json", **kw)
   r.step(timeout=0.01)
   sent = _reads(master)
-  assert sent.startswith(rtk.SETUP + rtk.MON_VER)
+  assert sent.startswith(rtk.SETUP + rtk.MON_VER + rtk.valget(rtk.FUSION_KEYS))
   return master, r, sent
 
 
@@ -265,19 +265,20 @@ def test_tablet_tools_wait_for_the_receivers_answer(tmp_path):
   r.feed_rtcm(b"23\xd3\x00\x01z")
   r.step(timeout=0.01)
   assert _reads(master) == b"\xd3\x00\x02ab123"           # only the whole frame; the next one waits too
-  os.write(master, rtk.ubx(0x05, 0x01, b"\x10\x13"))
+  assert rtk.mount_frames(None)[0] in sent                # learning back on (it may have been off: kept angles)
+  os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x8a") + rtk.ubx(0x05, 0x01, b"\x10\x13"))
   r.step(timeout=0.05)
   assert r.status()["action"]["state"] == "done"
   # factory: cleared, ours written back to RAM + BBR + flash, firmware asked again
   r.action("factory")
   r.step(timeout=0.01)
   sent = _reads(master)
-  assert sent.startswith(rtk.FACTORY + rtk.SAVE + rtk.MON_VER)
+  assert sent.startswith(rtk.FACTORY + rtk.SAVE + rtk.mount_frames(None)[0] + rtk.MON_VER)
   os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x09") + rtk.ubx(0x0A, 0x04, mon_ver_payload()))
   r.step(timeout=0.05)
   st = r.status()
   assert st["action"]["state"] == "sent" and st["firmware"] == "HPS 1.30" and st["module"] == "ZED-F9R"
-  os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x8a") * len(rtk.SAVE_FRAMES))   # each VALSET answers on its own
+  os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x8a") * (len(rtk.SAVE_FRAMES) + 1))   # each VALSET answers on its own
   r.step(timeout=0.05)
   assert r.status()["action"]["state"] == "done"
   r.action("save")
@@ -303,7 +304,7 @@ def test_speed_feed(tmp_path):
   assert rtk.SPEED_ON not in sent
   assert r.status()["speedFeed"] == {"on": False} and not r.wants_speed()
   assert r.action("speed_on") == {"ok": True}
-  assert json.loads((tmp_path / "rtk.json").read_text()) == {"speedFeed": True}
+  assert json.loads((tmp_path / "rtk.json").read_text()) == {"speedFeed": True, "mount": None}
   r.step(timeout=0.01)
   assert rtk.SPEED_ON in _reads(master)
   for _ in range(25):                                     # 2.5 s of carState at 10 Hz, sent as it comes
@@ -327,7 +328,7 @@ def test_speed_feed(tmp_path):
   now[0] += 3.1
   assert r.status()["speedFeed"]["hz"] == 0.0             # the tablet (and its carState) went away
   assert rtk.Rtk(port_glob="/nonexistent/*", settings_path=tmp_path / "rtk.json").speed_on   # kept across restarts
-  assert r.action("speed_off")["ok"] and json.loads((tmp_path / "rtk.json").read_text()) == {"speedFeed": False}
+  assert r.action("speed_off")["ok"] and json.loads((tmp_path / "rtk.json").read_text()) == {"speedFeed": False, "mount": None}
   r.step(timeout=0.01)
   assert rtk.SPEED_OFF in _reads(master) and not r.wants_speed()
   os.close(master)
@@ -337,7 +338,7 @@ def test_reconnect_sends_the_speed_settings_again(tmp_path):
   (tmp_path / "rtk.json").write_text('{"speedFeed": true}')
   now = [100.0]
   master, r, sent = _receiver(tmp_path, now)
-  assert sent == rtk.SETUP + rtk.MON_VER + rtk.SPEED_ON + rtk.POLLS
+  assert sent == rtk.SETUP + rtk.MON_VER + rtk.valget(rtk.FUSION_KEYS) + rtk.SPEED_ON + rtk.POLLS
   os.close(master)
 
 
@@ -413,3 +414,84 @@ def test_fast_fix_for_the_tablet():
   assert r.fast() is None                                  # stale: nothing sent
   r.handle(0x01, 0x07, pvt_payload(fix=0, ok=False))
   assert r.fast() is None                                  # no fix
+
+
+def valget_answer(values: dict) -> bytes:
+  body = struct.pack("<BBH", 1, 0, 0) + b"".join(struct.pack("<I", k) + v.to_bytes(rtk.KEY_BYTES[(k >> 28) & 7], "little")
+                                                 for k, v in values.items())
+  return rtk.ubx(0x06, 0x8B, body)
+
+
+def alg_payload(yaw, pitch, roll, status=4, auto=True):
+  p = bytearray(16)
+  p[5] = (1 if auto else 0) | (status << 1)
+  struct.pack_into("<Ihh", p, 8, round(yaw * 100), round(pitch * 100), round(roll * 100))
+  return rtk.ubx(0x10, 0x14, bytes(p))
+
+
+def test_fusion_settings_are_only_written_when_they_differ(tmp_path):
+  now = [100.0]
+  master, r, _ = _receiver(tmp_path, now)
+  assert rtk.valset_ram(((rtk.USE_SF, 1, 1),)) not in rtk.SETUP           # never rewritten at every connect
+  os.write(master, valget_answer({rtk.USE_SF: 1, rtk.AUTO_MNTALG: 1, rtk.MNT_YAW: 0, rtk.MNT_PITCH: 0, rtk.MNT_ROLL: 0}))
+  r.step(timeout=0.05)
+  r.step(timeout=0.01)
+  assert _reads(master).count(b"\xb5\x62\x06\x8a") == 0                   # all as wanted: nothing written
+  os.write(master, valget_answer({rtk.USE_SF: 1, rtk.AUTO_MNTALG: 0}))
+  r.step(timeout=0.05)
+  r.step(timeout=0.01)
+  assert rtk.valset(((rtk.AUTO_MNTALG, 1, 1),), rtk.RAM | rtk.BBR | rtk.FLASH) in _reads(master)
+  os.close(master)
+
+
+def test_learned_mount_is_kept_in_flash_and_used_after_a_restart(tmp_path):
+  now = [100.0]
+  master, r, _ = _receiver(tmp_path, now)
+  for _ in range(5):                                     # fine for 2 minutes, the same angles
+    os.write(master, alg_payload(271.3, 1.2, -0.8))
+    r.step(timeout=0.05)
+    now[0] += 31
+  r.step(timeout=0.01)
+  sent = _reads(master)
+  frames = rtk.mount_frames({"yaw": 271.3, "pitch": 1.2, "roll": -0.8})
+  assert len(frames) == 4 and all(f in sent for f in frames)
+  assert r.status()["mountKeeping"] and r.status()["action"]["op"] == "keepmount"
+  os.write(master, rtk.ubx(0x05, 0x01, b"\x06\x8a") * 4)
+  r.step(timeout=0.05)
+  assert r.status()["mountKept"] == {"yaw": 271.3, "pitch": 1.2, "roll": -0.8}
+  assert json.loads((tmp_path / "rtk.json").read_text())["mount"]["yaw"] == 271.3
+  # the next start: a receiver that lost them (no backup power) gets them back; one that kept them gets nothing
+  r2 = rtk.Rtk(port_glob="/nonexistent/*", settings_path=tmp_path / "rtk.json")
+  assert r2.kept == {"yaw": 271.3, "pitch": 1.2, "roll": -0.8}
+  r2.cfg = {rtk.USE_SF: 1, rtk.AUTO_MNTALG: 1, rtk.MNT_YAW: 0, rtk.MNT_PITCH: 0, rtk.MNT_ROLL: 0}
+  r2._fix_fusion_cfg()
+  assert len(r2.cmds) == 4
+  r2.cmds = []
+  r2.cfg = rtk.mount_wanted(r2.kept)
+  r2._fix_fusion_cfg()
+  assert r2.cmds == []
+  # realign: learning again, nothing kept
+  r.action("realign")
+  assert r.kept is None and "mount" in json.loads((tmp_path / "rtk.json").read_text())
+  assert json.loads((tmp_path / "rtk.json").read_text())["mount"] is None
+  os.close(master)
+
+
+def test_a_refused_keep_is_not_tried_again(tmp_path):
+  now = [100.0]
+  master, r, _ = _receiver(tmp_path, now)
+  for _ in range(5):
+    os.write(master, alg_payload(10.0, 0.0, 0.0))
+    r.step(timeout=0.05)
+    now[0] += 31
+  r.step(timeout=0.01)
+  _reads(master)
+  os.write(master, rtk.ubx(0x05, 0x00, b"\x06\x8a"))
+  r.step(timeout=0.05)
+  assert r.status()["action"]["state"] == "refused" and r.kept is None
+  for _ in range(5):
+    os.write(master, alg_payload(10.0, 0.0, 0.0))
+    r.step(timeout=0.05)
+    now[0] += 31
+  assert r.status()["action"]["state"] == "refused"
+  os.close(master)

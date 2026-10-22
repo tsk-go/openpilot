@@ -85,9 +85,15 @@ BASE = (
   (0x20910009, 1, 1),     # CFG-MSGOUT-UBX_NAV_PVT_USB: every epoch
   (0x10770004, 1, 1),     # CFG-USBINPROT-RTCM3X: corrections in
   (0x10780002, 0, 1),     # CFG-USBOUTPROT-NMEA: off
-  (0x10080001, 1, 1),     # CFG-SFCORE-USE_SF: sensor fusion on
-  (0x10060027, 1, 1),     # CFG-SFIMU-AUTO_MNTALG_ENA: learn how the board sits in the car
 )
+# The fusion's own settings are never rewritten at every connect (Oct 22: "sensors initializing" and the mount learned
+# all over again after a night parked - a write of these may restart what the fusion learned): read back at connect
+# (VALGET) and only what differs from what we want is written, to RAM, BBR and flash.
+USE_SF, AUTO_MNTALG = 0x10080001, 0x10060027          # CFG-SFCORE-USE_SF, CFG-SFIMU-AUTO_MNTALG_ENA
+MNT_YAW, MNT_PITCH, MNT_ROLL = 0x4006002d, 0x3006002e, 0x3006002f   # CFG-SFIMU-IMU_MNTALG_YAW (U4) / PITCH, ROLL (I2), 0.01 deg
+KEY_BYTES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8}            # key bits 28-30: the value's size
+FUSION_KEYS = (USE_SF, AUTO_MNTALG, MNT_YAW, MNT_PITCH, MNT_ROLL)
+KEEP_FINE_S = 120.0       # the mount alignment "fine" this long (same angles within 0.5 deg): kept for good
 # Nothing is wired to UART1, UART2 or I2C: output there only fills the receiver's shared send memory (UART1's NMEA at
 # 10 Hz outruns its 38400 baud), and then it drops USB messages too (MON-COMMS txErrors mem+alloc: ESF-STATUS never
 # arrived, fusion never started). One VALSET per key: a key this firmware doesn't know refuses only itself.
@@ -97,8 +103,40 @@ PORTS_OFF = (
   0x10720001, 0x10720002,   # CFG-I2COUTPROT-UBX / NMEA
 )
 SETUP = valset_ram(BASE) + b"".join(valset_ram(((k, 0, 1),)) for k in PORTS_OFF)
-SAVE_FRAMES = [valset(BASE, RAM | BBR | FLASH)] + [valset(((k, 0, 1),), RAM | BBR | FLASH) for k in PORTS_OFF]
+SAVE_FRAMES = [valset(BASE, RAM | BBR | FLASH)] + [valset(((k, 0, 1),), RAM | BBR | FLASH) for k in PORTS_OFF] + \
+  [valset(((USE_SF, 1, 1),), RAM | BBR | FLASH)]
 SAVE = b"".join(SAVE_FRAMES)
+
+
+def valget(keys) -> bytes:
+  """CFG-VALGET from RAM (what the receiver uses now)."""
+  return ubx(0x06, 0x8B, struct.pack("<BBH", 0, 0, 0) + b"".join(struct.pack("<I", k) for k in keys))
+
+
+def parse_valget(p: bytes) -> dict:
+  out, i = {}, 4
+  while i + 4 <= len(p):
+    k = struct.unpack_from("<I", p, i)[0]
+    n = KEY_BYTES.get((k >> 28) & 7)
+    if n is None or i + 4 + n > len(p):
+      break
+    out[k] = int.from_bytes(p[i + 4:i + 4 + n], "little")
+    i += 4 + n
+  return out
+
+
+def mount_wanted(kept: dict | None) -> dict:
+  """The fusion settings we want: sensor fusion on; the kept mount angles with learning off, or learning on."""
+  if kept is None:
+    return {USE_SF: 1, AUTO_MNTALG: 1}
+  return {USE_SF: 1, MNT_YAW: round(kept["yaw"] * 100) % 36000,
+          MNT_PITCH: max(-9000, min(9000, round(kept["pitch"] * 100))) & 0xFFFF,
+          MNT_ROLL: max(-18000, min(18000, round(kept["roll"] * 100))) & 0xFFFF, AUTO_MNTALG: 0}
+
+
+def mount_frames(kept: dict | None) -> list:
+  """mount_wanted() without sensor fusion, one VALSET per key (to RAM, BBR and flash: a key refused refuses only itself)."""
+  return [valset(((k, v, KEY_BYTES[(k >> 28) & 7]),), RAM | BBR | FLASH) for k, v in mount_wanted(kept).items() if k != USE_SF]
 SPEED_ON = valset_ram((
   (0x1007000f, 0, 1),     # CFG-SFODO-USE_WT_PIN: no wheel-tick wire
   (0x10070003, 1, 1),     # CFG-SFODO-USE_SPEED: speed instead of wheel ticks
@@ -392,6 +430,8 @@ class Calibration:
 
 
 OPS = ("hot", "warm", "cold", "realign", "factory", "save", "speed_on", "speed_off")
+# not a tool: the learned mount angles written to the receiver's flash (its ACK / NAK show like a tool's)
+KEEPMOUNT = "keepmount"
 STOPPED_ONLY = ("cold", "factory")   # the fix is gone for a while: not while driving
 
 
@@ -426,6 +466,15 @@ class Rtk:
     self.speed_hz = 0.0
     self.delay_ms = None
     self.cal = Calibration(clock)
+    kept = self._settings().get("mount")   # {"yaw", "pitch", "roll"}: the learned mount kept in the receiver's flash
+    ok = isinstance(kept, dict) and all(isinstance(kept.get(k), (int, float)) for k in ("yaw", "pitch", "roll"))
+    self.kept = kept if ok else None
+    self._fine_t = None         # since when ESF-ALG says "fine" with the same angles
+    self._fine_angles = None
+    self._keeping = None        # angles being written (until the receiver ACKs every key)
+    self._no_keep = False       # the receiver refused them: not again this run
+    self._dirty = False         # settings to write (outside the lock)
+    self.cfg = {}               # what VALGET read back at the last connect
 
   # ---- tablet side ----
   def _settings(self) -> dict:
@@ -439,7 +488,7 @@ class Rtk:
     try:
       self.settings_path.parent.mkdir(parents=True, exist_ok=True)
       tmp = self.settings_path.with_name(self.settings_path.name + ".tmp")
-      tmp.write_text(json.dumps({**self._settings(), "speedFeed": self.speed_on}))
+      tmp.write_text(json.dumps({**self._settings(), "speedFeed": self.speed_on, "mount": self.kept}))
       tmp.replace(self.settings_path)
     except OSError as e:
       cloudlog.warning(f"starview: rtk settings: {e}")
@@ -477,15 +526,19 @@ class Rtk:
       if op in RESTART:
         frames, acks = [restart(op)], []          # CFG-RST is never acknowledged
       elif op == "realign":
-        frames, acks = [REALIGN], [(0x10, 0x13)]
+        # learn again: learning back on (in flash too), then ESF-RESETALG; the kept angles are forgotten
+        self.kept, self._keeping, self._fine_t, self._no_keep = None, None, None, False
+        frames, acks = mount_frames(None) + [REALIGN], [valset, (0x10, 0x13)]
       elif op == "factory":
-        frames, acks = [FACTORY, SAVE], [(0x06, 0x09)] + [valset] * len(SAVE_FRAMES)
+        self.kept, self._keeping, self._fine_t, self._no_keep = None, None, None, False
+        frames, acks = [FACTORY, SAVE] + mount_frames(None), [(0x06, 0x09)] + [valset] * (len(SAVE_FRAMES) + 1)
         if self.speed_on:
           frames.append(SPEED_ON)
           acks.append(valset)
         frames.append(MON_VER)
       elif op == "save":
-        frames, acks = [SAVE], [valset] * len(SAVE_FRAMES)
+        mf = mount_frames(self.kept)
+        frames, acks = [SAVE] + mf, [valset] * (len(SAVE_FRAMES) + len(mf))
       else:
         self.speed_on = op == "speed_on"
         frames, acks = [SPEED_ON if self.speed_on else SPEED_OFF], [valset]
@@ -493,7 +546,7 @@ class Rtk:
       self.cmds += frames
       self.act = {"op": op, "state": "sent", "t": self.clock(), "acks": acks}
       self.cal.tool(op)
-    if op in ("speed_on", "speed_off"):
+    if op in ("speed_on", "speed_off", "realign", "factory"):
       self._save_settings()
     self._poke()
     cloudlog.warning(f"starview: rtk tool {op}")
@@ -548,6 +601,10 @@ class Rtk:
         if self.delay_ms is not None:
           feed["delayMs"] = round(self.delay_ms)
       out["speedFeed"] = feed
+      if self.kept is not None:
+        out["mountKept"] = self.kept                   # the learned mount, in the receiver's flash (learning off)
+      elif self._keeping is not None:
+        out["mountKeeping"] = True
       out["calibration"] = self.cal.status()
       act = self.act
       if act is not None:
@@ -592,7 +649,7 @@ class Rtk:
       self.fd, self.port = fd, path
       self.partial = b""
       self.cmds = [SPEED_ON] if self.speed_on else []
-    os.write(fd, SETUP + MON_VER)
+    os.write(fd, SETUP + MON_VER + valget(FUSION_KEYS))
     cloudlog.warning(f"starview: rtk receiver connected on {path}")
 
   def _close(self, why: str) -> None:
@@ -628,21 +685,65 @@ class Rtk:
         self.alg = parse_esf_alg(payload)
         if self.alg:
           self.cal.alg(self.alg)
+          self._maybe_keep(self.alg, now)
+      elif (cls, msg) == (0x06, 0x8B):                 # CFG-VALGET: the fusion settings as the receiver has them
+        self.cfg = parse_valget(payload)
+        self._fix_fusion_cfg()
       elif (cls, msg) == (0x0A, 0x04):
         self.ver = parse_mon_ver(payload)
       elif cls == 0x05 and msg in (0x00, 0x01) and len(payload) >= 2:   # ACK-NAK / ACK-ACK
         act = self.act
         what = (payload[0], payload[1])
+        if msg == 0x00 and what == (0x06, 0x8B) and not self.cfg:   # VALGET refused (a key unknown): the two sure ones
+          self.cmds.append(valget((USE_SF, AUTO_MNTALG)))
         if act is not None and act["state"] == "sent" and what in act["acks"]:
           if msg == 0x00:
             act["state"] = "refused"
+            if act["op"] == KEEPMOUNT:
+              self._keeping, self._no_keep = None, True  # this firmware won't take them: not again this run
           else:
             act["acks"].remove(what)
             if not act["acks"]:
               act["state"] = "done"
+              if act["op"] == KEEPMOUNT and self._keeping is not None:
+                self.kept, self._keeping, self._dirty = self._keeping, None, True
+    if self._dirty:
+      self._dirty = False
+      self._save_settings()
     if pvt and (self._handoff_t is None or not 0 <= now - self._handoff_t < HANDOFF_S):
       self._handoff_t = now
       self._hand_off(pvt)
+
+  def _fix_fusion_cfg(self) -> None:
+    """After a connect: write only the fusion settings that differ from what we want (lock held)."""
+    diff = [(k, v) for k, v in mount_wanted(self.kept).items() if self.cfg.get(k) != v]
+    if diff:
+      self.cmds += [valset(((k, v, KEY_BYTES[(k >> 28) & 7]),), RAM | BBR | FLASH) for k, v in diff]
+      cloudlog.warning(f"starview: rtk fusion settings differed, written: {[hex(k) for k, _ in diff]}")
+
+  def _maybe_keep(self, alg: dict, now: float) -> None:
+    """The learned mount angles, once "fine" and steady for KEEP_FINE_S, go into the receiver's flash with learning off:
+    after a power cut (the hub is off with the car) the fusion starts from them instead of learning again (lock held)."""
+    if self.kept is not None or self._keeping is not None or self._no_keep:
+      return
+    if self.act is not None and self.act.get("state") == "sent":
+      return
+    if not (alg.get("mountAuto") and alg.get("mount") == "fine" and not alg.get("mountErrors")):
+      self._fine_t, self._fine_angles = None, None
+      return
+    a = (alg["mountYawDeg"], alg["mountPitchDeg"], alg["mountRollDeg"])
+    f = self._fine_angles
+    if f is None or max(abs((a[0] - f[0] + 180) % 360 - 180), abs(a[1] - f[1]), abs(a[2] - f[2])) > 0.5:
+      self._fine_t, self._fine_angles = now, a
+      return
+    if now - self._fine_t < KEEP_FINE_S:
+      return
+    self._keeping = {"yaw": round(a[0], 2), "pitch": round(a[1], 2), "roll": round(a[2], 2)}
+    frames = mount_frames(self._keeping)
+    self.cmds += frames
+    self.act = {"op": KEEPMOUNT, "state": "sent", "t": now, "acks": [(0x06, 0x8A)] * len(frames)}
+    self.cal.tool(KEEPMOUNT)
+    cloudlog.warning(f"starview: rtk mount kept in flash: {self._keeping}")
 
   def _hand_off(self, pvt: dict) -> None:
     gps = handoff_fix(pvt, self.mono_ns())
