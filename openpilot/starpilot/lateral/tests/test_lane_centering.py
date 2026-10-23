@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 from openpilot.cereal import messaging
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
-from openpilot.starpilot.lateral.lane_centering import (ControlMode, LaneCenteringController, LaneCenteringInput,
-                                                       LaneCenteringSettings, MAX_CORRECTION, raw_correction)
+from openpilot.starpilot.lateral.lane_centering import (ControlMode, DEFAULT_LANE_WIDTH, LaneCenteringController,
+                                                       LaneCenteringInput, LaneCenteringSettings, MAX_CORRECTION,
+                                                       one_line_correction, raw_correction)
 
 
 XS = [float(i) for i in range(51)]
@@ -27,6 +28,23 @@ def model(*, left=-1.5, right=2.1, path=0.0, path_std=0.1, prob=0.9, std=0.1):
   m.position.x = XS
   m.position.y = [path] * len(XS)
   m.position.yStd = [path_std] * len(XS)
+  return m
+
+
+def one_line(*, keep="left", left=-2.2, right=1.2, path=0.0, edge=None, edge_std=0.2, slope=0.0):
+  """Only one inner line good; the other faded. slope: the kept line peels away (m per m)."""
+  m = model(left=left, right=right, path=path)
+  kept = 1 if keep == "left" else 2
+  m.laneLineProbs = [0.0, 0.9 if kept == 1 else 0.2, 0.9 if kept == 2 else 0.2, 0.0]
+  if slope:
+    y0 = left if kept == 1 else right
+    m.laneLines[kept].y = [y0 + slope * x for x in XS]
+  if edge is not None:
+    m.init("roadEdges", 2)
+    for e, y in zip(m.roadEdges, (-edge if keep == "right" else -9.0, edge if keep == "left" else 9.0), strict=True):
+      e.x = XS
+      e.y = [y] * len(XS)
+    m.roadEdgeStds = [edge_std, edge_std]
   return m
 
 
@@ -320,3 +338,103 @@ class TestLaneCentering(unittest.TestCase):
     result = controller.update(observation(elapsed_seconds=0.2))
     self.assertEqual(result.reason, "qualified")
     self.assertGreater(result.correction, 0.0)
+
+
+def on(m=None, **updates):
+  """observation() with the one-line switch on"""
+  source = observation(m, **updates)
+  return replace(source, settings=replace(source.settings, one_line=True))
+
+
+class TestOneLine(unittest.TestCase):
+  """Patch 37: one good line - steer to it +/- the lane width remembered from both lines."""
+
+  def test_switch_off_is_starpilots_own(self):
+    for kept in ("left", "right"):
+      controller = LaneCenteringController()
+      settled(controller, observation(model(left=-2.2, right=1.2)), 1000)
+      off = controller.update(observation(one_line(keep=kept)))
+      self.assertEqual(off.reason, "unqualified_model")
+      self.assertEqual(settled(LaneCenteringController(), observation(one_line(keep=kept))).correction, 0.0)
+    self.assertEqual(LaneCenteringController().update(observation(settings=LaneCenteringSettings(True, one_line=cast(Any, 1)))).reason,
+                     "invalid_input")
+
+  def both_then_one(self, keep):
+    controller = LaneCenteringController()
+    two = settled(controller, on(model(left=-2.2, right=1.2)), 1000).correction   # 3.4 m lane, us 0.5 m right of center
+    one = settled(controller, on(one_line(keep=keep)), 1000)
+    return two, one
+
+  def test_left_line_kept(self):
+    two, one = self.both_then_one("left")
+    self.assertLess(two, 0.0)
+    self.assertEqual(one.reason, "one_line_left")
+    self.assertAlmostEqual(one.correction, two * 0.5, delta=1e-12)   # same target, half strength
+
+  def test_right_line_kept(self):
+    two, one = self.both_then_one("right")
+    self.assertEqual(one.reason, "one_line_right")
+    self.assertAlmostEqual(one.correction, two * 0.5, delta=1e-12)
+
+  def test_never_above_the_limit(self):
+    controller = LaneCenteringController()
+    settled(controller, on(model(left=-1.8, right=1.8)))
+    far = settled(controller, on(one_line(left=0.2, path=0.0, keep="right", right=3.0),
+                                          settings=LaneCenteringSettings(True, strength=3.0, one_line=True)))
+    self.assertEqual(far.reason, "one_line_right")
+    self.assertLessEqual(abs(far.correction), MAX_CORRECTION * 0.5 + 1e-15)
+
+  def test_exit_line_peeling_away_is_ignored(self):
+    controller = LaneCenteringController()
+    settled(controller, on(model(left=-1.8, right=1.8)))
+    peeling = controller.update(on(one_line(keep="right", right=1.8, slope=0.05)))
+    self.assertEqual(peeling.reason, "unqualified_model")
+    self.assertIsNone(one_line_correction(one_line(keep="right", right=1.8, slope=0.05), 20.0, 0.0, 0.0, 3.6))
+    self.assertIsNotNone(one_line_correction(one_line(keep="right", right=1.8, slope=0.01), 20.0, 0.0, 0.0, 3.6))
+
+  def test_road_edge_closer_than_the_lane_width(self):
+    # left line at -1.5, 3.6 m lane -> target 0.3 m right; a curb at 1.2 m holds the target 1.1 m from it (0.1)
+    free = one_line_correction(one_line(left=-1.5, path=-0.5), 20.0, 0.0, 0.0, 3.6)
+    curb = one_line_correction(one_line(left=-1.5, path=-0.5, edge=1.2), 20.0, 0.0, 0.0, 3.6)
+    unsure = one_line_correction(one_line(left=-1.5, path=-0.5, edge=1.2, edge_std=0.8), 20.0, 0.0, 0.0, 3.6)
+    assert free is not None and curb is not None and unsure is not None
+    self.assertAlmostEqual(curb[0], 2.0 * (0.1 - (-0.5) - 0.08) / 20.0 ** 2)
+    self.assertLess(curb[0], free[0])
+    self.assertEqual(unsure[0], free[0])
+    # no room between the line and the curb: off
+    self.assertIsNone(one_line_correction(one_line(left=-1.5, path=-0.5, edge=0.5), 20.0, 0.0, 0.0, 3.6))
+
+  def test_width_memory_goes_stale(self):
+    controller = LaneCenteringController()
+    settled(controller, on(model(left=-2.2, right=1.2)))
+    fresh = controller.update(on(one_line(), elapsed_seconds=0.1))
+    for _ in range(250):    # 20 m/s x 0.1 s: 500 m with one line
+      stale = controller.update(on(one_line(), elapsed_seconds=0.1))
+    self.assertEqual(fresh.reason, "one_line_left")
+    raw = one_line_correction(one_line(), 20.0, 0.0, 0.0, DEFAULT_LANE_WIDTH)
+    assert raw is not None
+    self.assertAlmostEqual(stale.correction, raw[0] * 0.30 * 1.5 * 0.25, delta=1e-12)
+    # never saw both lines: a standard lane at a quarter
+    cold = settled(LaneCenteringController(), on(one_line()), 2000)
+    self.assertAlmostEqual(cold.correction, stale.correction, delta=1e-12)
+
+  def test_width_kept_through_override_cleared_on_disengage(self):
+    controller = LaneCenteringController()
+    settled(controller, on(model(left=-2.2, right=1.2)))
+    controller.update(on(driver_override=True))
+    kept = settled(controller, on(one_line()))
+    controller.update(on(lateral_active=False))
+    cleared = settled(controller, on(one_line()))
+    self.assertAlmostEqual(cleared.correction, settled(LaneCenteringController(), on(one_line())).correction, delta=1e-15)
+    self.assertNotAlmostEqual(kept.correction, cleared.correction)
+
+  def test_pauses_still_apply(self):
+    controller = LaneCenteringController()
+    settled(controller, on(model(left=-2.2, right=1.2)))
+    settled(controller, on(one_line()))
+    self.assertEqual(controller.update(on(one_line(), turn_signal_active=True)).reason, "signal_release")
+    self.assertEqual(controller.update(on(one_line(), driver_override=True)).correction, 0.0)
+    changing = one_line()
+    changing.meta.laneChangeState = "laneChangeStarting"
+    self.assertEqual(controller.update(on(changing)).correction, 0.0)
+    self.assertEqual(controller.update(on(one_line(), speed_mps=4.9)).correction, 0.0)

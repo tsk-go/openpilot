@@ -53,6 +53,10 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `starpilot/navigation/tests/test_intent.py`). The model keeps a turn desire pulse ~6.6 s; upstream pulses it once and
    its stop latch is cleared only by the next standstill. Upstream fixed = the turn desire is pulsed again while the turn
    is still wanted, or the latch lets go when pulling away after a stop.
+5. **Lane Centering stops when one lane line fades** (patch 37): in `openpilot/starpilot/lateral/lane_centering.py`
+   `one_line_correction`, `_two_lines`, the ONE_LINE / WIDTH constants and the controller's `_width` / `_since_two` /
+   `_release`; `LaneCenteringSettings.one_line`, `lane_runtime.py` reading `starview/lane_one_line.py`, starviewd action
+   `lane_one_line_set`, and `TestOneLine`. Upstream fixed = its Lane Centering keeps centering from one good line itself.
 
 # Fork history
 
@@ -114,6 +118,13 @@ Paths are under `openpilot/` unless noted.
     IMU_MNTALG_YAW/PITCH/ROLL) are no longer written at every connect: VALGET at connect, only what differs is written
     (RAM+BBR+flash). Once ESF-ALG says "fine" with steady angles for 2 min they go into flash with learning off and into
     /data/starview/rtk.json "mount"; realign / factory turn learning back on and forget them. status() "mountKept".
+24. Lane Centering with one line (patch 37): `starpilot/lateral/lane_centering.py` `one_line_correction`. With the
+    tablet's switch on (Settings > Steering > Lane Centering; starviewd `lane_one_line_set` -> /data/starview/lane_one_line,
+    no params key; off = upstream exactly), when exactly one inner line is good the target is that line +/- half the lane
+    width averaged (over ~60 m) while both were good, trusted 300 m, else 3.6 m at a quarter strength; otherwise half
+    strength. A confident road edge (std <= 0.5) on the missing side keeps the target 1.1 m from it; off when the line
+    peels 0.5 m away from the model path (exit / merge) and under the usual pauses. The width survives a stop, an override
+    and a lane change, not a disengage.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
