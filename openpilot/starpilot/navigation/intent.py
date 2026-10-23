@@ -97,17 +97,31 @@ def matching_turn_signal(sm, now_ns: int, *, supported: bool) -> bool:
               0 <= instruction.distanceMeters <= min(250., max(30., 15. + max(0., cs.vEgo) * 12.)))
 
 
+# Fork fix (patch 36): the model takes a desire as a one-frame pulse (modeld sends it on the rising edge) and keeps it in
+# its desire history for about 6.6 s. A route turn signalled before a long red light was forgotten by the time the car
+# pulled away, and the stop latch below could keep the new pulse from ever going out: while the turn is still wanted
+# the pulse is sent again every REPULSE_S (one frame without it, then it again), and after a stop the latch lets go once
+# nothing has asked to stop for GO_CLEAR_S - before, only the next standstill cleared it.
+REPULSE_S = 5.0
+GO_CLEAR_S = 1.0
+
+
 class TurnIntent:
   def __init__(self):
     self.key = None
     self.stop_hold = False
+    self.stood = False            # stood still since the stop latch was set (at the light, in the queue)
+    self.go_since = None          # since when nothing has asked to stop (after a stop)
+    self.turn = None              # the turn desire being sent, and since when (its last pulse)
+    self.turn_since = 0
 
   def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
     nav = current_instruction(sm, now_ns) if supported else None
     key = (nav.sessionId, nav.startedMonoTime) if nav is not None else None
     if key != self.key:
-      self.key, self.stop_hold = key, False
+      self.key, self.stop_hold, self.stood, self.go_since = key, False, False, None
     if nav is None:
+      self.turn = None
       return current_desire
     cs = sm['carState']
     try:
@@ -117,10 +131,30 @@ class TurnIntent:
                     nav.startedMonoTime <= plan.modelMonoTime <= stamp)
     except (KeyError, AttributeError, TypeError):
       plan_valid = False
-    if cs.standstill or cs.leftBlinker == cs.rightBlinker:
-      self.stop_hold = False
-    elif model_stop or (plan_valid and plan.shouldStop):
-      self.stop_hold = True
+    stop_asked = model_stop or (plan_valid and plan.shouldStop)
+    if cs.leftBlinker == cs.rightBlinker:
+      self.stop_hold, self.stood, self.go_since = False, False, None
+    elif cs.standstill:
+      self.stop_hold, self.stood, self.go_since = False, True, None
+    elif stop_asked:
+      self.stop_hold, self.go_since = True, None
+    elif self.stop_hold and self.stood:
+      # pulling away after a stop: the latch was set again by a stop request right at the start (the light just
+      # turned, the car ahead still slow) - it lets go once nothing has asked to stop for GO_CLEAR_S
+      if self.go_since is None:
+        self.go_since = now_ns
+      elif now_ns - self.go_since >= GO_CLEAR_S * 1e9:
+        self.stop_hold, self.go_since = False, None
     if self.stop_hold or not plan_valid:
+      self.turn = None
       return current_desire
-    return turn_desire(sm, now_ns, current_desire, supported=supported)
+    desire = turn_desire(sm, now_ns, current_desire, supported=supported)
+    if desire not in (log.Desire.turnLeft, log.Desire.turnRight) or desire == current_desire:
+      self.turn = None
+      return desire
+    if self.turn != desire:
+      self.turn, self.turn_since = desire, now_ns
+    elif now_ns - self.turn_since >= REPULSE_S * 1e9:
+      self.turn_since = now_ns     # one frame without it: the next frame is a new rising edge, a new pulse
+      return current_desire
+    return desire

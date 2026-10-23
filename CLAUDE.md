@@ -48,6 +48,11 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    normal_update's last stage is "rebooting" and the reboot installs it, but recover_fast_state turns every unfinished
    stage into "Update process restarted before completion". Upstream fixed = normal_update ends with stage "complete"
    (like fast_update does) or recover_fast_state accepts a full update's reboot.
+4. **A route turn forgotten after a long stop** (patch 36): in `openpilot/starpilot/navigation/intent.py` `REPULSE_S`,
+   `GO_CLEAR_S` and `TurnIntent`'s `stood` / `go_since` / `turn` (plus the three tests at the end of
+   `starpilot/navigation/tests/test_intent.py`). The model keeps a turn desire pulse ~6.6 s; upstream pulses it once and
+   its stop latch is cleared only by the next standstill. Upstream fixed = the turn desire is pulsed again while the turn
+   is still wanted, or the latch lets go when pulling away after a stop.
 
 # Fork history
 
@@ -116,6 +121,9 @@ Paths are under `openpilot/` unless noted.
 14. "Driving Model Lagging" seconds after the big model loads (patches 22, 24): `starpilot/models/warmup.py`; modeld keeps
     ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
 18. A full update shows "failed" after its own reboot (patch 29): `system/updated/updated.py` `recover_fast_state`.
+23. A route turn forgotten after a long stop (patch 36): `starpilot/navigation/intent.py` `TurnIntent` sends the turn desire
+    pulse again every 5 s while the turn is still wanted, and after a stop clears the stop latch once nothing has asked
+    to stop for 1 s (before, only the next standstill did: a stop request right as the car pulled away blocked the turn).
 
 **No longer carried**
 - AOL on the SecOC Sienna (patch 6): merged upstream (firestar `79fdeb4`, rebuilt panda/pandad `337bb0754`).

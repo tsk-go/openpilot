@@ -157,3 +157,77 @@ def test_approaching_turn_does_not_start_or_replace_lane_change(sm):
   helper.update(cs, True, 1., navigation_turn=turn)
   assert helper.lane_change_state == log.LaneChangeState.laneChangeStarting
   assert helper.desire == log.Desire.laneChangeRight
+
+
+def _at(sm, now):
+  """The fixture's messages, all fresh at now."""
+  for k in sm.logMonoTime:
+    sm.logMonoTime[k] = now
+  nav = sm['starpilotNavigation'].navigation
+  nav.frameMonoTime = nav.locationMonoTime = now
+  if 'longitudinalPlan' in sm:
+    sm['longitudinalPlan'].modelMonoTime = now
+
+
+def _plan(sm):
+  sm['longitudinalPlan'] = NS(modelMonoTime=NOW, shouldStop=False)
+  sm.logMonoTime['longitudinalPlan'] = NOW
+  sm.valid['longitudinalPlan'] = sm.alive['longitudinalPlan'] = True
+
+
+def test_turn_pulse_sent_again_while_still_wanted(sm):
+  # fork fix (patch 36): the model remembers a desire pulse ~6.6 s; while the turn is still wanted it is pulsed again
+  from openpilot.starpilot.navigation.intent import TurnIntent, REPULSE_S
+  owner = TurnIntent()
+  _plan(sm)
+  out = []
+  for k in range(int(12 / 0.05)):
+    now = NOW + int(k * 0.05e9)
+    _at(sm, now)
+    out.append(owner.select(sm, now, log.Desire.none, supported=True, model_stop=False))
+  gaps = [k for k in range(1, len(out)) if out[k] == log.Desire.none]
+  assert len(gaps) == 2                                     # at 5 s and 10 s: one frame each
+  assert abs(gaps[0] * 0.05 - REPULSE_S) < 0.06 and out[gaps[0] + 1] == log.Desire.turnRight
+  assert out[0] == log.Desire.turnRight
+
+
+def test_long_stop_then_stop_request_at_pull_away_does_not_lose_the_turn(sm):
+  # approaching the light: the planner stops for it (latch), the car stands, pulls away while a stop is still asked for
+  # a moment - before patch 36 the turn stayed blocked until the next standstill
+  from openpilot.starpilot.navigation.intent import TurnIntent
+  owner = TurnIntent()
+  _plan(sm)
+  t = [NOW]
+  def step(dt=0.05, model_stop=False):
+    t[0] += int(dt * 1e9)
+    _at(sm, t[0])
+    return owner.select(sm, t[0], log.Desire.none, supported=True, model_stop=model_stop)
+  assert step() == log.Desire.turnRight
+  sm['longitudinalPlan'].shouldStop = True
+  assert step() == log.Desire.none                          # braking for the light: latched (upstream behaviour)
+  sm['carState'].standstill, sm['carState'].vEgo = True, 0.
+  for _ in range(int(40 / 0.05)):                           # a 40 s red light
+    assert step() == log.Desire.none
+  sm['carState'].standstill, sm['carState'].vEgo = False, 1.
+  assert step(model_stop=True) == log.Desire.none           # pulling away, the model still says stop for a moment
+  sm['longitudinalPlan'].shouldStop = False
+  assert step() == log.Desire.none
+  outs = [step() for _ in range(25)]                        # nothing asks to stop for 1 s: the latch lets go
+  assert outs[-1] == log.Desire.turnRight
+  first = outs.index(log.Desire.turnRight)
+  assert all(o == log.Desire.turnRight for o in outs[first:])
+
+
+def test_latch_without_a_stop_still_holds(sm):
+  # a stop request while rolling (no standstill since) keeps blocking the turn: upstream's behaviour, unchanged
+  from openpilot.starpilot.navigation.intent import TurnIntent
+  owner = TurnIntent()
+  _plan(sm)
+  sm['longitudinalPlan'].shouldStop = True
+  _at(sm, NOW)
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False) == log.Desire.none
+  sm['longitudinalPlan'].shouldStop = False
+  for k in range(1, 60):
+    now = NOW + int(k * 0.05e9)
+    _at(sm, now)
+    assert owner.select(sm, now, log.Desire.none, supported=True, model_stop=False) == log.Desire.none
