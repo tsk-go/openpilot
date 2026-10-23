@@ -231,3 +231,90 @@ def test_latch_without_a_stop_still_holds(sm):
     now = NOW + int(k * 0.05e9)
     _at(sm, now)
     assert owner.select(sm, now, log.Desire.none, supported=True, model_stop=False) == log.Desire.none
+
+
+# ---- patch 38: your own blinker kept as a turn without a route (StarView's tablet sees a street on that side)
+
+def _no_route(sm):
+  sm['starpilotNavigation'].navigation.enabled = False
+  _plan(sm)
+
+
+def test_blinker_turn_without_a_route(sm):
+  from openpilot.starpilot.navigation.intent import TurnIntent
+  owner = TurnIntent()
+  _no_route(sm)
+  _at(sm, NOW)
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False) == log.Desire.none   # the tablet didn't ask
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.turnRight
+  sm['carState'].rightBlinker, sm['carState'].leftBlinker = False, True
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.turnLeft
+  sm['carState'].leftBlindspot = True
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.none
+  sm['carState'].leftBlindspot = False
+  sm['carState'].vEgo = 9.0                                   # over 20 mph: a lane change, not a turn
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.none
+  sm['carState'].vEgo = 5.
+  assert owner.select(sm, NOW, log.Desire.laneChangeLeft, supported=True, model_stop=False, blinker_turn=True) == \
+    log.Desire.laneChangeLeft                                 # a lane change already under way is kept
+  assert owner.select(sm, NOW, log.Desire.none, supported=False, model_stop=False, blinker_turn=True) == log.Desire.none
+
+
+def test_blinker_turn_kept_through_a_long_red_light(sm):
+  from openpilot.starpilot.navigation.intent import TurnIntent
+  owner = TurnIntent()
+  _no_route(sm)
+  t = [NOW]
+  def step(dt=0.05, model_stop=False):
+    t[0] += int(dt * 1e9)
+    _at(sm, t[0])
+    return owner.select(sm, t[0], log.Desire.none, supported=True, model_stop=model_stop, blinker_turn=True)
+  assert step() == log.Desire.turnRight
+  sm['longitudinalPlan'].shouldStop = True
+  assert step() == log.Desire.none                            # braking for the light
+  sm['carState'].standstill, sm['carState'].vEgo = True, 0.
+  for _ in range(int(60 / 0.05)):                             # a minute at the light
+    assert step() == log.Desire.none
+  sm['carState'].standstill, sm['carState'].vEgo = False, 1.
+  sm['longitudinalPlan'].shouldStop = False
+  outs = [step() for _ in range(25)]
+  assert outs[-1] == log.Desire.turnRight                     # still remembered when pulling away
+  outs = [step() for _ in range(int(11 / 0.05))]
+  assert outs.count(log.Desire.none) == 2                     # and pulsed again every 5 s while it's wanted
+
+
+def test_route_wins_over_the_blinker_turn(sm):
+  from openpilot.starpilot.navigation.intent import TurnIntent
+  owner = TurnIntent()
+  _plan(sm)
+  _at(sm, NOW)
+  sm['starpilotNavigation'].navigation.instruction.maneuverModifier = 'left'   # the route turns left, blinker right
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.none
+
+
+def test_blinker_turn_stops_a_lane_change_starting(sm):
+  from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+  from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
+  cs = sm['carState']
+  cs.steeringPressed, cs.steeringTorque = True, -1.
+  helper = DesireHelper(LaneChangePolicy(minimum_speed_mps=0.))
+  helper.update(cs, True, 1., navigation_turn=True)
+  assert helper.lane_change_state == log.LaneChangeState.off
+
+
+def test_tablet_turn_file(tmp_path):
+  from openpilot.starpilot.system.starview import blinker_turn
+  path = str(tmp_path / "turn")
+  clock = [100.0]
+  reader = blinker_turn.BlinkerTurn(path, clock=lambda: clock[0])
+  right = NS(leftBlinker=False, rightBlinker=True)
+  assert not reader.for_blinker(right)
+  blinker_turn.write("right", path, clock=lambda: clock[0])
+  assert reader.for_blinker(right)
+  assert not reader.for_blinker(NS(leftBlinker=True, rightBlinker=False))
+  clock[0] += 2.0                                              # the tablet stopped asking
+  assert not reader.for_blinker(right)
+  blinker_turn.write(None, path)
+  assert reader.read() == ""
+  with pytest.raises(ValueError):
+    blinker_turn.write("straight", path)

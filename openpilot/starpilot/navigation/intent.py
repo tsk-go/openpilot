@@ -54,6 +54,34 @@ def turn_desire(sm, now_ns: int, current_desire, *, supported: bool):
   return current_desire
 
 
+# Fork (patch 38): no route, your own blinker kept as a turn when StarView's tablet sees a street to turn into on that side
+# (starview/blinker_turn.py). Only under this speed; the tablet asks under 20 mph too.
+BLINKER_TURN_MAX_MPS = 20 * CV.MPH_TO_MS
+CONTROL_MAX_AGE_NS = 100_000_000
+
+
+def blinker_turn_desire(sm, now_ns: int, current_desire, *, supported: bool):
+  if not supported or current_desire != log.Desire.none:
+    return current_desire
+  try:
+    for service in ('carState', 'carControl'):
+      stamp = sm.logMonoTime[service]
+      if not sm.valid[service] or not sm.alive[service] or not 0 < stamp <= now_ns <= stamp + CONTROL_MAX_AGE_NS:
+        return current_desire
+    cs, cc = sm['carState'], sm['carControl']
+    if not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive':
+      return current_desire
+    if not cc.latActive or cs.standstill or not math.isfinite(cs.vEgo) or not 0 <= cs.vEgo < BLINKER_TURN_MAX_MPS:
+      return current_desire
+    if cs.leftBlinker and not cs.rightBlinker and not cs.leftBlindspot:
+      return log.Desire.turnLeft
+    if cs.rightBlinker and not cs.leftBlinker and not cs.rightBlindspot:
+      return log.Desire.turnRight
+  except (KeyError, AttributeError, TypeError):
+    pass
+  return current_desire
+
+
 def turn_speed(maneuver, min_steer_speed: float) -> float | None:
   kind, modifier = maneuver.maneuverType, maneuver.maneuverModifier
   target = TARGET_MPH.get(modifier) if kind == 'turn' else None
@@ -115,20 +143,23 @@ class TurnIntent:
     self.turn = None              # the turn desire being sent, and since when (its last pulse)
     self.turn_since = 0
 
-  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
+  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool, blinker_turn: bool = False):
+    """blinker_turn (patch 38): no route, StarView's tablet says the blinker that is on is for a turn there."""
     nav = current_instruction(sm, now_ns) if supported else None
-    key = (nav.sessionId, nav.startedMonoTime) if nav is not None else None
+    blinker = nav is None and supported and blinker_turn
+    key = (nav.sessionId, nav.startedMonoTime) if nav is not None else ('blinker',) if blinker else None
     if key != self.key:
       self.key, self.stop_hold, self.stood, self.go_since = key, False, False, None
-    if nav is None:
+    if nav is None and not blinker:
       self.turn = None
       return current_desire
     cs = sm['carState']
+    since = nav.startedMonoTime if nav is not None else 1
     try:
       stamp, plan = sm.logMonoTime['longitudinalPlan'], sm['longitudinalPlan']
       plan_valid = (sm.valid['longitudinalPlan'] and sm.alive['longitudinalPlan'] and
-                    nav.startedMonoTime <= stamp <= now_ns <= stamp + 150_000_000 and
-                    nav.startedMonoTime <= plan.modelMonoTime <= stamp)
+                    since <= stamp <= now_ns <= stamp + 150_000_000 and
+                    since <= plan.modelMonoTime <= stamp)
     except (KeyError, AttributeError, TypeError):
       plan_valid = False
     stop_asked = model_stop or (plan_valid and plan.shouldStop)
@@ -148,7 +179,8 @@ class TurnIntent:
     if self.stop_hold or not plan_valid:
       self.turn = None
       return current_desire
-    desire = turn_desire(sm, now_ns, current_desire, supported=supported)
+    desire = (turn_desire(sm, now_ns, current_desire, supported=supported) if nav is not None else
+              blinker_turn_desire(sm, now_ns, current_desire, supported=supported))
     if desire not in (log.Desire.turnLeft, log.Desire.turnRight) or desire == current_desire:
       self.turn = None
       return desire

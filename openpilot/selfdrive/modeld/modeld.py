@@ -40,6 +40,7 @@ from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
 from openpilot.starpilot.lateral.auto_lane_change import ClockEpochGuard, auto_evidence, paired_clocks_ns, session_policy, steering_capable
 from openpilot.starpilot.system.starview.blinker_signal import StarViewSignal
+from openpilot.starpilot.system.starview.blinker_turn import BlinkerTurn
 from openpilot.starpilot.system.starview.nudge import NudgeSetting
 from openpilot.starpilot.lateral.lane_change_status_wire import (
   Direction as StatusDirection, LaneChangeStatus, Phase as StatusPhase, encode_optional as encode_lane_status,
@@ -50,7 +51,7 @@ from openpilot.starpilot.models.startup import report_load_timeout, wait_for_che
 from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
 from openpilot.starpilot.models import load_profile, program_cache
 from openpilot.starpilot.models.warmup import BigModelWarmup
-from openpilot.starpilot.navigation.intent import TurnIntent, matching_turn_signal
+from openpilot.starpilot.navigation.intent import BLINKER_TURN_MAX_MPS, TurnIntent, matching_turn_signal
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID, DEFAULT_SMALL, DEFAULT_SMALL_SHA256
 from openpilot.starpilot.models.runner import CatalogModelState, load_verified_model
 from openpilot.starpilot.models import jetlink_adapter
@@ -484,6 +485,7 @@ def main(demo=False):
   DH = DesireHelper(runtime_lane_policy)
   navigation_turn = TurnIntent()
   starview = StarViewSignal()
+  starview_turn = BlinkerTurn()   # patch 38: your own blinker kept as a turn without a route (the tablet sees the street)
   nudge_setting = NudgeSetting(CP.brand)   # the tablet's nudge strength for lane changes (Toyota)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
@@ -530,8 +532,11 @@ def main(demo=False):
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
     # StarView's automatic blinker: "lane" = a lane change confirmed on the tablet, not the route's turn
     starview_why = starview.for_blinker(sm['carState'])
+    blinker_turn = (starview_why != "lane" and sm['carState'].vEgo < BLINKER_TURN_MAX_MPS and
+                    starview_turn.for_blinker(sm['carState']))
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
-                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop))
+                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop),
+                                     blinker_turn=blinker_turn)
     if starview_why == "lane":     # not the route's turn: keep the lane change helper's desire (TurnIntent keeps its stop latch)
       desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
@@ -661,7 +666,7 @@ def main(demo=False):
       route_turn = matching_turn_signal(sm, mono_now_ns, supported=turn_supported) and starview_why != "lane"
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=route_turn or starview_why == "turn", starview_lane=starview_lane, starview_evidence=starview_evidence,
+                navigation_turn=route_turn or starview_why == "turn" or blinker_turn, starview_lane=starview_lane, starview_evidence=starview_evidence,
                 nudge_torque=nudge_setting.torque())
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction

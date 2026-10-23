@@ -125,6 +125,12 @@ Paths are under `openpilot/` unless noted.
     strength. A confident road edge (std <= 0.5) on the missing side keeps the target 1.1 m from it; off when the line
     peels 0.5 m away from the model path (exit / merge) and under the usual pauses. The width survives a stop, an override
     and a lane change, not a disengage.
+25. Your blinker kept as a turn without a route (patch 38): `starview/blinker_turn.py` (starviewd action `turn_intent`
+    {side} -> /dev/shm/starview_turn, 1.5 s old = ignored), `navigation/intent.py` `blinker_turn_desire` and
+    `TurnIntent.select(blinker_turn=)`, modeld `starview_turn`. The tablet (StarView 2.63) asks only with your blinker
+    on, no route, under 20 mph and a street to turn into on that side within 250 ft (OSM: not a one-way coming at us,
+    not service). The comma then sends the turn desire like a route turn (stop latch, re-pulse every 5 s, blind spot
+    clear, under 20 mph) and no lane change starts for that blinker. A route always wins; "lane" from the tablet too.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

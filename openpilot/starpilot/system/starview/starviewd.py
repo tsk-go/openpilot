@@ -1729,6 +1729,12 @@ class Hub:
           return {"ok": True, "pct": nudge.write(req.get("pct")) or 100}
         except (TypeError, ValueError) as e:
           return {"ok": False, "error": str(e)}
+      if act == "turn_intent":  # {"side": "left"/"right"/null}: your blinker is for a turn here, no route (blinker_turn.py)
+        from openpilot.starpilot.system.starview import blinker_turn
+        try:
+          return {"ok": True, "side": blinker_turn.write(req.get("side"))}
+        except (OSError, ValueError) as e:
+          return {"ok": False, "error": str(e)}
       if act == "lane_one_line_set":  # {"on": bool}: Lane Centering also steers by one good line (lane_one_line.py)
         from openpilot.starpilot.system.starview import lane_one_line
         try:
