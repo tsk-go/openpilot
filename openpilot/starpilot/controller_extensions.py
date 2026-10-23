@@ -139,6 +139,9 @@ class ResumePlanInputs:
 def configure_controller(CI, params):
   cp = CI.CP
   controller = CI.CC
+  from openpilot.starpilot.car.ford.cluster_preferences import FordClusterPreference, qualified as cluster_qualified
+  if controller is not None and cluster_qualified(cp):
+    controller.hands_free_cluster_input = FordClusterPreference(params)
   if controller is not None and cp.brand == 'gm':
     from opendbc.car.gm.values import (is_bolt_euv_longitudinal, is_volt_longitudinal,
                                      camera_acc_pedal_profile, volt_cc_pedal_profile)
@@ -172,6 +175,14 @@ def configure_controller(CI, params):
       prepare_rav4h_stock(cp)
     elif controller is not None:
       controller.rav4h_filter_input = Rav4hFilterPreference(cp, params)
+  from opendbc.car.toyota import advert_filter
+  if advert_filter.enabled(cp):
+    from openpilot.starpilot.car.toyota.advert_preferences import AdvertFilterPreference
+    from openpilot.starpilot.car.toyota.prius_preferences import filter_preference_enabled
+    if not filter_preference_enabled(params):
+      advert_filter.prepare_stock(cp)
+    elif controller is not None:
+      controller.advert_filter_input = AdvertFilterPreference(cp, params)
   from opendbc.car.toyota.prius_longitudinal import enabled as prius_filter_enabled, prepare_stock as prepare_prius_stock
   if prius_filter_enabled(cp):
     from openpilot.starpilot.car.toyota.prius_preferences import PriusFilterPreference, filter_preference_enabled

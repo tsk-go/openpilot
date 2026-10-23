@@ -11,7 +11,7 @@ from openpilot.starpilot.system.android_auto.display_profile import (
   SCREEN_PATH, MAX_BYTES as SCREEN_MAX_BYTES, record_screen, validate_screen,
 )
 from openpilot.starpilot.system.android_auto.projection_layout import (
-  DOCUMENT_KEY, MAX_BYTES, ProjectionLayoutSource, comma_display, decode_layout, default_layout, layout_metadata, validate_layout,
+  DOCUMENT_KEY, JETLINK_WIDGET, MAX_BYTES, ProjectionLayoutSource, comma_display, decode_layout, default_layout, layout_metadata, validate_layout,
 )
 from openpilot.starpilot.ui.appearance_preferences import onroad_appearance
 from openpilot.starpilot.ui.onroad_customization import read_customization
@@ -81,8 +81,12 @@ class ProjectionLayoutOwner:
               'Connect Android Auto once to obtain the actual screen' if screen is None else
               'Saved projection layout is unavailable' if not readable else None)
     base = read_customization(self.params)
+    metadata = layout_metadata(screen) if screen is not None else None
+    if metadata is not None:
+      mode = self.params.get('JetlinkMode')
+      metadata['widgets'][JETLINK_WIDGET]['available'] = type(mode) is int and mode in (1, 2)
     return {'version': 1, 'document': document, 'defaults': defaults,
-            'metadata': layout_metadata(screen) if screen is not None else None,
+            'metadata': metadata,
             'screen': screen, 'revision': _revision(screen_raw, raw),
             'available': available, 'editable': bool(available and self.parked()), 'valid': valid,
             'reason': reason, 'retainedLayout': raw is not None,
@@ -115,6 +119,33 @@ class ProjectionLayoutOwner:
     if not result.committed or not result.verified:
       raise LayoutChanged('Projection layout could not be saved; reload while parked')
     return self.snapshot()
+
+  def disable_map(self, *, session_valid):
+    """Turn the Android Auto map off when the Big screen has taken it; True when it was on."""
+    raw, readable = read_saved(self.source, DOCUMENT_KEY, MAX_BYTES)
+    if not readable or raw is None:
+      return False
+    try:
+      document = json.loads(raw)
+      placed = document['widgets']['nav_map']
+    except (ValueError, KeyError, TypeError):
+      return False
+    if type(placed) is not dict or placed.get('enabled') is not True:
+      return False
+    placed['enabled'] = False
+    screen_raw, screen_readable, _ = self._screen()
+
+    def authorized():
+      if not session_valid() or not self.parked():
+        return False
+      current, current_readable, _ = self._screen()
+      return current_readable and current == screen_raw
+
+    self.source.prepare()
+    result = commit_exact(self.source, key=DOCUMENT_KEY, max_bytes=MAX_BYTES,
+                          raw=json.dumps(document, separators=(',', ':'), allow_nan=False).encode(), expected=raw,
+                          authorized=authorized, temp_prefix='.projection-layout-')
+    return bool(result.committed and result.verified)
 
 
 # ./dev galaxy has no car and no writable /data: give it a private screen and edit it with Android Auto off.

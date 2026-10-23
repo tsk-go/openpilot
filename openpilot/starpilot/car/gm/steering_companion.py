@@ -26,7 +26,7 @@ class SteeringCompanion:
     while len(self.samples) > MAX_COMPANIONS:
       del self.samples[min(self.samples)]
 
-  def current(self, sm, *, source_ns, now_ns):
+  def drain(self):
     if self.sock is not None:
       for _ in range(MAX_DRAIN):
         message = messaging.recv_one_or_none(self.sock)
@@ -34,8 +34,13 @@ class SteeringCompanion:
           break
         self._observe(message.logMonoTime, message.valid, message.starpilotCarState)
       else:
-        return None
-    elif sm.seen.get(SERVICE, False):
+        return False
+    return True
+
+  def current(self, sm, *, source_ns, now_ns, drain=True, allow_raw_projection=False):
+    if drain and not self.drain():
+      return None
+    if self.sock is None and sm.seen.get(SERVICE, False):
       self._observe(sm.logMonoTime[SERVICE], sm.valid.get(SERVICE, False), sm[SERVICE])
 
     for stamp in tuple(self.samples):
@@ -43,10 +48,17 @@ class SteeringCompanion:
         del self.samples[stamp]
     if not (sm.seen.get(SERVICE, False) and sm.valid.get(SERVICE, False) and sm.alive.get(SERVICE, False)):
       return None
+    # Raw receipts prove the exact selected source independently of when the
+    # conflating cache was polled. Its own validity, age and fault veto remain.
     sm_stamp = int(sm.logMonoTime[SERVICE])
     sm_companion = sm[SERVICE]
-    if not (int(sm_companion.sourceCarStateMonoTime) == sm_stamp and
-            0 < source_ns <= sm_stamp <= now_ns and now_ns - sm_stamp <= INTENT_MAX_AGE_NS):
+    if not (int(sm_companion.sourceCarStateMonoTime) == sm_stamp and 0 < sm_stamp <= now_ns):
+      return None
+    # Exact fresh raw input can arrive after SubMaster's nonblocking poll. The
+    # older healthy projection is not a second authority source or input lease.
+    # Keep its validity, identity, future-clock and explicit fault vetoes.
+    if (now_ns - sm_stamp > INTENT_MAX_AGE_NS and not
+        (allow_raw_projection and self.sock is not None and sm_stamp < source_ns)):
       return None
     latest = self.latest
     pair = self.samples.get(source_ns)

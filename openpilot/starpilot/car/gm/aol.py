@@ -36,6 +36,75 @@ def cc_independent_lateral_below_engage(cp, intent, *, enabled, active):
               intent.allowedLatch and intent.lateralArmed and not intent.pauseLateral)
 
 
+def f1_conventional_lateral_owner(cp) -> bool:
+  """Exact development F1 conventional-cruise owner; no pedal or ACC profile."""
+  from opendbc.car.gm.values import VOLT_CC_F1_WORD, is_volt_cc_profile
+  return bool(qualified_gm(cp) and aol_enabled(cp) and is_volt_cc_profile(cp) and
+              int(cp.safetyConfigs[0].safetyParam) == VOLT_CC_F1_WORD)
+
+
+def sdgm_alpha_lateral_owner(cp) -> bool:
+  from opendbc.car.gm.values import is_volt_sdgm_accepted_envelope
+  return bool(qualified_gm(cp) and aol_enabled(cp) and is_volt_sdgm_accepted_envelope(cp))
+
+
+def steering_raw_projection_owner(cp) -> bool:
+  """Qualified non-pedal Volt owners consume their exact raw steering receipt."""
+  from opendbc.car.gm.steering_authority import monitored_profile
+  return bool(qualified_gm(cp) and monitored_profile(cp))
+
+
+
+def steering_source_gap_intent_only(owner, cs, companion, now_ns: int) -> bool:
+  """Recognize lost Card publication; never supply a current steering receipt."""
+  from openpilot.starpilot.aol.runtime import INTENT_MAX_AGE_NS
+  service = 'starpilotCarState'
+  if (not is_volt_ascm_longitudinal(owner.CP) or not steering_raw_projection_owner(owner.CP) or
+      getattr(owner, 'steering_authority_unavailable', False) or
+      getattr(owner, 'car_state_samples', ())):
+    return False
+  anchor = getattr(owner, 'aol_ordinary_source_anchor', None)
+  accepted = anchor[2] if anchor is not None else None
+  held = bool(accepted is not None and
+    getattr(owner, 'aol_publication_retained_intent', None) is accepted and
+    getattr(owner, 'aol_published_fault_reason', '') == 'availabilityPause')
+  if not (getattr(owner, 'aol_expired_healthy_source', False) or held):
+    return False
+  source = getattr(owner, 'car_state_retained_source_ns', 0)
+  if not source and held:
+    source = int(accepted.carStateLogMonoTime)
+  latest = companion.latest
+  sm = owner.sm
+  if (latest is None or not latest[1] or latest[0] != source or latest[2] != source or latest[3] or
+      not 0 < source < now_ns or now_ns - source <= INTENT_MAX_AGE_NS or
+      not sm.seen.get(service, False) or not sm.valid.get(service, False) or not sm.alive.get(service, False)):
+    return False
+  cached = sm[service]
+  stamp = int(sm.logMonoTime[service])
+  if (not 0 < stamp <= source or cached.sourceCarStateMonoTime != stamp or
+      cached.lateralAuthorityUnavailable):
+    return False
+  # The existing classifier owns every original 200ms intent/native, identity,
+  # physical, fault and host-health veto. The 30ms source/output cutoff remains
+  # independent. No old receipt becomes current and no fault latch is cleared.
+  return owner.ordinary_source_availability(cs, now_ns)
+
+
+def sdgm_alpha_pedal_withdrawal(cp, cs) -> bool:
+  """Physical LONG withdrawal for the 2019 SASCM Alpha configuration."""
+  from opendbc.car.gm.values import is_volt_sdgm_accepted_envelope
+  from opendbc.car.structs import car
+  return bool(qualified_gm(cp) and aol_enabled(cp) and
+              is_volt_sdgm_accepted_envelope(cp) and
+              cs.canValid and not cs.canTimeout and cs.cruiseState.available and
+              not cs.steerFaultTemporary and not cs.steerFaultPermanent and not cs.accFaulted and
+              not cs.doorOpen and not cs.steeringDisengage and
+              cs.gearShifter in (car.CarState.GearShifter.drive, car.CarState.GearShifter.low,
+                                car.CarState.GearShifter.sport, car.CarState.GearShifter.brake,
+                                car.CarState.GearShifter.manumatic) and
+              (cs.brakePressed or cs.regenBraking))
+
+
 def stock_ascm_independent_lateral(cp) -> bool:
   """Stock cruise's engagement speed does not cancel independent lateral intent."""
   return bool(qualified_gm(cp) and cp.carFingerprint == CAR.CHEVROLET_VOLT_ASCM and
@@ -165,7 +234,7 @@ def cold_main_readiness(cp, cs, native, events, *, recovering=False):
   """A MAIN request may wait for host startup without acquiring either axis."""
   from openpilot.cereal import log
   names = (log.OnroadEvent.EventName.commIssue, log.OnroadEvent.EventName.commIssueAvgFreq,
-           log.OnroadEvent.EventName.locationdTemporaryError)
+           log.OnroadEvent.EventName.locationdTemporaryError, log.OnroadEvent.EventName.processNotRunning)
   faults = [event for event in events if event.softDisable or event.immediateDisable]
   host_wait = not faults if recovering else bool(faults and
     all(event.softDisable and not event.immediateDisable and event.name in names for event in faults))
@@ -199,7 +268,7 @@ def prior_main_off_intent_current(feedback, sm, cp, cs, axis, now_ns, *, latched
       cs.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.low,
                             car.CarState.GearShifter.sport, car.CarState.GearShifter.brake) or
       any(event.type == car.CarState.ButtonEvent.Type.cancel for event in cs.buttonEvents) or
-      str(axis.faultReason) != 'none' or axis.nativeAcknowledged or
+      str(axis.faultReason) != 'none' or axis.nativeAcknowledged and not sdgm_alpha_lateral_owner(cp) or
       axis.desiredLateral or axis.desiredLongitudinal or axis.lateralActive or axis.longitudinalActive or
       not 0 < axis.sourceCarStateMonoTime <= axis.observedMonoTime or axis.sourceCarStateMonoTime >= main_arm_ns or
       now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
@@ -270,17 +339,20 @@ def intent_disarming_fault(cp, events, state, **context):
 
 
 def physical_longitudinal_withdrawal_source(cp, cs, parser, observation, now_ns) -> int:
-  """Bind a Bolt pedal-owner withdrawal to its parsed CAN and local receipt."""
+  """Bind a qualified GM physical withdrawal to parsed CAN and local receipt."""
   from opendbc.car.gm.values import CruiseButtons, is_bolt_present_no_acc_pedal_profile
   from opendbc.car.structs import car
   try:
-    if (not qualified_gm(cp) or not is_bolt_present_no_acc_pedal_profile(cp) or
+    if (not qualified_gm(cp) or not (is_bolt_present_no_acc_pedal_profile(cp) or f1_conventional_lateral_owner(cp)) or
         not aol_enabled(cp) or
         observation is None or observation[0] is not cs or not cs.canValid or cs.canTimeout):
       return 0
     fields = []
     if cs.brakePressed and parser.vl['ECMEngineStatus']['BrakePressed']:
       fields.append(('ECMEngineStatus', 'BrakePressed'))
+    if (f1_conventional_lateral_owner(cp) and cs.brakePressed and
+        parser.vl['EBCMBrakePedalPosition']['BrakePedalPosition'] >= 6):
+      fields.append(('EBCMBrakePedalPosition', 'BrakePedalPosition'))
     if cs.regenBraking and parser.vl['EBCMRegenPaddle']['RegenPaddle']:
       fields.append(('EBCMRegenPaddle', 'RegenPaddle'))
     if (parser.vl['ASCMSteeringButton']['ACCButtons'] == CruiseButtons.CANCEL and
@@ -308,7 +380,7 @@ def retained_physical_longitudinal_intent(feedback, sm, cp, cs, axis, now_ns, *,
   from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS
   from openpilot.starpilot.aol.transport_pause import independent_lateral_health
   occurrence = feedback.gm_withdrawal_ns or source_ns
-  if (not qualified_gm(cp) or not is_bolt_present_no_acc_pedal_profile(cp) or
+  if (not qualified_gm(cp) or not (is_bolt_present_no_acc_pedal_profile(cp) or f1_conventional_lateral_owner(cp)) or
       not aol_enabled(cp) or
       not latched or feedback.failed or feedback.paused or feedback.pending_event or
       feedback.retention_started_ns or not feedback.session or str(axis.sessionId) != feedback.session or
@@ -356,12 +428,12 @@ def retained_physical_longitudinal_intent(feedback, sm, cp, cs, axis, now_ns, *,
 
 
 def physical_cancel_lateral_allowed(cp, cs, intent, native, *, source_ns, now_ns) -> bool:
-  """Exact armed Bolt Cancel removes only the lateral NO_ENTRY restriction."""
+  """Exact armed physical Cancel removes only the lateral NO_ENTRY restriction."""
   from opendbc.car.gm.values import is_bolt_present_no_acc_pedal_profile
   from opendbc.car.structs import car
   from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS, native_inventory_matches_cp
   try:
-    return bool(qualified_gm(cp) and is_bolt_present_no_acc_pedal_profile(cp) and
+    return bool(qualified_gm(cp) and (is_bolt_present_no_acc_pedal_profile(cp) or f1_conventional_lateral_owner(cp)) and
       aol_enabled(cp) and
       intent is not None and intent.settingsQualified and intent.allowedLatch and intent.lateralArmed and
       intent.producerSessionId and intent.carStateLogMonoTime == source_ns and

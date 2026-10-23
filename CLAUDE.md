@@ -48,12 +48,7 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    normal_update's last stage is "rebooting" and the reboot installs it, but recover_fast_state turns every unfinished
    stage into "Update process restarted before completion". Upstream fixed = normal_update ends with stage "complete"
    (like fast_update does) or recover_fast_state accepts a full update's reboot.
-4. **A route turn forgotten after a long stop** (patch 36): in `openpilot/starpilot/navigation/intent.py` `REPULSE_S`,
-   `GO_CLEAR_S` and `TurnIntent`'s `stood` / `go_since` / `turn` (plus the three tests at the end of
-   `starpilot/navigation/tests/test_intent.py`). The model keeps a turn desire pulse ~6.6 s; upstream pulses it once and
-   its stop latch is cleared only by the next standstill. Upstream fixed = the turn desire is pulsed again while the turn
-   is still wanted, or the latch lets go when pulling away after a stop.
-5. **Lane Centering stops when one lane line fades** (patch 37): in `openpilot/starpilot/lateral/lane_centering.py`
+4. **Lane Centering stops when one lane line fades** (patch 37): in `openpilot/starpilot/lateral/lane_centering.py`
    `one_line_correction`, `_two_lines`, the ONE_LINE / WIDTH constants and the controller's `_width` / `_since_two` /
    `_release`; `LaneCenteringSettings.one_line`, `lane_runtime.py` reading `starview/lane_one_line.py`, starviewd action
    `lane_one_line_set`, and `TestOneLine`. Upstream fixed = its Lane Centering keeps centering from one good line itself.
@@ -125,12 +120,12 @@ Paths are under `openpilot/` unless noted.
     strength. A confident road edge (std <= 0.5) on the missing side keeps the target 1.1 m from it; off when the line
     peels 0.5 m away from the model path (exit / merge) and under the usual pauses. The width survives a stop, an override
     and a lane change, not a disengage.
-25. Your blinker kept as a turn without a route (patch 38): `starview/blinker_turn.py` (starviewd action `turn_intent`
-    {side} -> /dev/shm/starview_turn, 1.5 s old = ignored), `navigation/intent.py` `blinker_turn_desire` and
-    `TurnIntent.select(blinker_turn=)`, modeld `starview_turn`. The tablet (StarView 2.63) asks only with your blinker
-    on, no route, under 20 mph and a street to turn into on that side within 250 ft (OSM: not a one-way coming at us,
-    not service). The comma then sends the turn desire like a route turn (stop latch, re-pulse every 5 s, blind spot
-    clear, under 20 mph) and no lane change starts for that blinker. A route always wins; "lane" from the tablet too.
+25. StarView's street map in Turn Signal Guidance (patch 38, redone at the Oct 23 sync on upstream's guidance):
+    `starview/blinker_turn.py` (starviewd action `turn_intent` {side: left/right/none/null} -> /dev/shm/starview_turn,
+    1.5 s old = no say), `navigation/intent.py` `TurnIntent.select(tablet=)` / `signal_desire(tablet=)`, modeld
+    `starview_turn`. Upstream turns any blinker under 20 mph into a turn (Galaxy: Turn Signal Guidance, the on/off). With
+    StarView's switch on and our street on its map, the tablet says whether there's a street to turn into on that side
+    within 250 ft (OSM: not a one-way coming at us, not service): "none" -> no turn (pulling over). No say -> upstream.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
@@ -138,11 +133,11 @@ Paths are under `openpilot/` unless noted.
 14. "Driving Model Lagging" seconds after the big model loads (patches 22, 24): `starpilot/models/warmup.py`; modeld keeps
     ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
 18. A full update shows "failed" after its own reboot (patch 29): `system/updated/updated.py` `recover_fast_state`.
-23. A route turn forgotten after a long stop (patch 36): `starpilot/navigation/intent.py` `TurnIntent` sends the turn desire
-    pulse again every 5 s while the turn is still wanted, and after a stop clears the stop latch once nothing has asked
-    to stop for 1 s (before, only the next standstill did: a stop request right as the car pulled away blocked the turn).
 
 **No longer carried**
+- A route turn forgotten after a long stop (patch 36: turn desire pulsed again every 5 s, stop latch let go after
+  pulling away): reverted by the owner at the Oct 23 sync, when upstream added Turn Signal Guidance (`navigation/intent.py`
+  `signal_desire`); patch 38 now sits on upstream's TurnIntent as it is.
 - AOL on the SecOC Sienna (patch 6): merged upstream (firestar `79fdeb4`, rebuilt panda/pandad `337bb0754`).
 - Waze bridge and split screen (patch 3): replaced by the in-app map (patch 9).
 - Hash the big model file while modeld waits (patch 17): written, then skipped by the owner.

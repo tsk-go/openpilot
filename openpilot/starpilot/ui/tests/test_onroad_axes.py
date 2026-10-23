@@ -29,6 +29,10 @@ def rgba(color: rl.Color) -> tuple[int, int, int, int]:
 
 class TestOnroadAxes(unittest.TestCase):
   def setUp(self):
+    for name in ('draw_rectangle_rounded', 'draw_rectangle_rounded_lines_ex', 'draw_circle', 'draw_ring'):
+      self.enterContext(patch('openpilot.starpilot.ui.speed_limit_widget.rl.' + name, new_callable=Mock))
+    for name in ('circle', 'arrow'):
+      self.enterContext(patch('openpilot.starpilot.ui.speed_limit_shapes.SpeedLimitShapes.' + name, new_callable=Mock))
     self.ui = ui_fake()
     self.ui.CP = NS(carFingerprint='', openpilotLongitudinalControl=True, pcmCruise=False)
     car = self.ui.sm["carState"]
@@ -59,8 +63,9 @@ class TestOnroadAxes(unittest.TestCase):
         fonts.horizontal_ink.return_value = (0, 20)
         with patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card"), patch.object(rl, "draw_line_ex"):
           UnifiedSpeedWidget(fonts).render(rl.Rectangle(30, 30, 1800, 1020), state)
-        label_color = fonts.draw.call_args_list[0].args[-1]
-        self.assertEqual(rgba(label_color), (172, 190, 203, 255))
+        from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
+        label_color = foreground_calls(fonts.draw)[0].args[-1]
+        self.assertEqual(rgba(label_color), (190, 208, 202, 255))
         compact = CompactHudRenderer(fonts, Path("/unused"))
         with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
              patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
@@ -303,7 +308,8 @@ class TestOnroadAxes(unittest.TestCase):
     fonts.horizontal_ink.return_value = (0, 20)
     with patch("openpilot.starpilot.ui.onroad_large_widgets.draw_control_card"), patch.object(rl, "draw_line_ex"):
       UnifiedSpeedWidget(fonts).render(rl.Rectangle(30, 30, 1800, 1020), state)
-    self.assertEqual(rgba(fonts.draw.call_args_list[0].args[-1]), (172, 190, 203, 255))
+    from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
+    self.assertEqual(rgba(foreground_calls(fonts.draw)[0].args[-1]), (190, 208, 202, 255))
     compact = CompactHudRenderer(fonts, Path("/unused"))
     with patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
       compact.render(state)
@@ -332,7 +338,9 @@ class TestOnroadAxes(unittest.TestCase):
     self.assertEqual(requests, [])
     fonts = Mock()
     fonts.measure.return_value = NS(width=20, height=10)
+    fonts.vertical_ink.return_value = (0, 10)
     compact = CompactHudRenderer(fonts, Path("/unused"))
+    fonts.horizontal_ink.return_value = (0, 20)
     with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
          patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
       compact.render(active)
@@ -387,3 +395,4 @@ class TestOnroadAxes(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+

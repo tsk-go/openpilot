@@ -99,11 +99,28 @@ def _exercise_join(identity, alternate, incidental, withdrawal, monkeypatch, *, 
         from opendbc.car.hyundai import ecu_startup
         from opendbc.car.hyundai.ecu_startup import Outcome
         from opendbc.car.hyundai.torque_ev_startup import TorqueEVStartup
+        from opendbc.car.hyundai.gv70_startup import GV70Startup
+        from opendbc.car.hyundai.hyundaicanfd import hkg_can_fd_checksum
+        from opendbc.car.hyundai.ioniq6_handoff import TimestampedCanPacket
+        from opendbc.car import CanData
         from openpilot.starpilot.vehicle_startup import VehicleStartupOwner
         saved.put_bool('AlphaLongitudinalEnabled', True, block=True)
         saved.put_bool('IsReleaseBranch', False, block=True)
         holder = VehicleStartupOwner()
         sent = []
+        captured_counter = 0
+        def capture():
+          nonlocal captured_counter
+          captured_counter += 1
+          now[0] += 1_000_000
+          data = bytearray(32)
+          data[2], data[4] = captured_counter % 256, 7
+          data[:2] = hkg_can_fd_checksum(0x51, None, data).to_bytes(2, 'little')
+          return [TimestampedCanPacket([CanData(0x51, bytes(data), 0)], now[0])]
+        captured = identity == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN
+        if captured:
+          from opendbc.car.hyundai.tests.test_gv70_longitudinal import params as gv70_params
+          cp = gv70_params()
         def query(sender, receiver, bus, addresses, requests, responses):
           assert bus == 1 and addresses == [(0x730, None)]
           request = requests[0]
@@ -116,8 +133,8 @@ def _exercise_join(identity, alternate, incidental, withdrawal, monkeypatch, *, 
         with patch.object(ecu_startup, 'IsoTpParallelQuery', side_effect=query), \
              patch.object(card_module.time, 'clock_gettime_ns', side_effect=lambda clock: now[0]), \
              patch('opendbc.car.hyundai.torque_ev_startup.time.sleep'):
-          selected = holder.prepare(cp, CarInterface, (list, sent.extend), requested=True, admission=lambda: True)
-          assert isinstance(holder.owner, TorqueEVStartup)
+          selected = holder.prepare(cp, CarInterface, (capture if captured else list, sent.extend), requested=True, admission=lambda: True)
+          assert isinstance(holder.owner, GV70Startup if captured else TorqueEVStartup)
           assert holder.owner.outcome is Outcome.SENT_UNCONFIRMED
           ci = CarInterface(selected)
           card = card_module.Car(CI=ci, RI=RadarInterface(ci.CP), startup_owner=holder.owner)

@@ -40,6 +40,7 @@ from openpilot.tools.replay.display_clock import BOOT_TIME_SERVICES
 from opendbc.car.structs import car as car_schema
 from openpilot.starpilot.ui.device_state import DeviceRequest, DeviceState
 from openpilot.starpilot.ui.home_state import HomeMode, HomeState
+from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
 from openpilot.starpilot.ui.onroad_state import conditional_lead_from_message
 from openpilot.starpilot.ui.onroad_state import (AlertSize, BorderSignals, ObservationKind, OnroadAlert,
                                                 OnroadState, SpeedLimitObservation, is_personality_notice, speed_limit_from_message)
@@ -291,7 +292,7 @@ class RuntimeSnapshotAdapter:
   """Build one coherent display snapshot after each UIState.update()."""
 
   def __init__(self, ui_state: Any, galaxy_access: GalaxyAccessOwner | None = None,
-               bluetooth_powered: Callable[[], bool] | None = None,
+               bluetooth_powered: Callable[[], str | bool] | None = None,
                *, mono_clock: Callable[[], int] = time.monotonic_ns,
                boot_clock: Callable[[], int] = _boot_time_ns):
     self.ui_state = ui_state
@@ -303,6 +304,7 @@ class RuntimeSnapshotAdapter:
     # A second screen (Android Auto) swaps in its own display choices before anything uses them.
     self.appearance_override: Callable[[OnroadAppearance], OnroadAppearance] | None = None
     self._last_mode: ShellMode | None = None
+    self._jetlink = JetlinkStatusFeed()
     self._onroad_ancillary: tuple[int, tuple[bool, int, bool], ShellSnapshot] | None = None
     self._onroad_view_ancillary: tuple[int, tuple[bool, int, bool], ShellSnapshot] | None = None
     self._conditional = ConditionalDisplayProjector()
@@ -378,7 +380,7 @@ class RuntimeSnapshotAdapter:
   def build(self, mode: ShellMode, selected: Destination = Destination.STAR, *, compact_y: float = 0,
             compact_scroll_x: float = 0, sidebar_expanded: bool = True, now_ns: int | None = None,
             menu_only: bool = False, stopped_timer_enabled: bool | None = None,
-            onroad_view_only: bool = False) -> ShellSnapshot:
+            onroad_view_only: bool = False, stopped_timer_profile: str = "compact") -> ShellSnapshot:
     replay = getattr(self.ui_state, "replay_sample", None)
     if getattr(self.ui_state, "replay_clock", None) is not None:
       if replay is not None and replay.epoch != self._replay_epoch:
@@ -490,7 +492,7 @@ class RuntimeSnapshotAdapter:
         self._replay_stopped_history = False
       elif not timer_standstill or timer_reverse:
         self._replay_stopped_history = True
-    timer_enabled = (placement(self._customization_value, "compact", STOPPED_TIMER_WIDGET)["enabled"]
+    timer_enabled = (placement(self._customization_value, stopped_timer_profile, STOPPED_TIMER_WIDGET)["enabled"]
                      if stopped_timer_enabled is None else stopped_timer_enabled)
     stopped_duration = self._stopped_timer.step(
       now_ns=now_ns,
@@ -585,7 +587,8 @@ class RuntimeSnapshotAdapter:
       if positive(shown_mps):
         # Keep only what the sign shows: a proposal or action identity is never retained.
         sign = replace(observation, speed_limit_mps=shown_mps, pending_speed_limit_mps=None, pending_source='none',
-                       decision_id=None, pending_adjusted_limit_mps=None, action_enabled=False)
+                       decision_id=None, pending_adjusted_limit_mps=None, action_enabled=False,
+                       automatic_adoption_pending=False, pending_since_ns=0)
         self._slc_sign_cache = (int(sm.logMonoTime['slcState']), drive_key, observation.session_id or '', sign)
       else:
         self._slc_sign_cache = None
@@ -596,7 +599,7 @@ class RuntimeSnapshotAdapter:
           not getattr(slc, 'decisionId', 0)):
         # Bridge a brief source gap without retaining a control target, acceptance,
         # action identity, or an obsolete limit for the rest of the drive.
-        source = previous.accepted_source if positive(previous.accepted_speed_limit_mps) else previous.source
+        source = previous.source
         observation = SpeedLimitObservation(kind=ObservationKind.VALID, source=source,
                                             speed_limit_mps=displayed_limit_mps(previous),
                                             offset_mps=previous.offset_mps, status='display_hold',
@@ -702,9 +705,13 @@ class RuntimeSnapshotAdapter:
       ping = int(device.lastAthenaPingTime)
       connection = "ONLINE" if 0 < ping <= now_ns and now_ns - ping < 80_000_000_000 else "OFFLINE"
     try:
-      bluetooth = self.bluetooth_powered() is True if mode == ShellMode.HOME and self.bluetooth_powered is not None else False
+      value = self.bluetooth_powered() if mode == ShellMode.HOME and self.bluetooth_powered is not None else ""
+      bluetooth = value if value in ("off", "on", "connected") else "on" if value is True else "off" if value is False else ""
     except (OSError, RuntimeError, ValueError):
-      bluetooth = False
+      bluetooth = ""
+    self._jetlink.set_enabled(mode == ShellMode.HOME)
+    jetlink_port = self._jetlink.snapshot().port
+    jetlink = "connected" if jetlink_port == "connected" else "plugged" if jetlink_port == "device" else "off"
     gpu_present = bool(device is not None and getattr(device, "chestnutPresent", False) and
                        not getattr(ui, "usb_unknown", False))
     gpu_active = bool(gpu_present and getattr(getattr(ui, "chestnut_state", None), "value", None) == "active")
@@ -722,7 +729,8 @@ class RuntimeSnapshotAdapter:
                      vehicle_online=panda_connected, connection=connection,
                      recording_audio=bool(ui.recording_audio), bluetooth=bluetooth,
                      gpu_present=gpu_present, gpu_active=gpu_active, branch=_text(params, "GitBranch"),
-                     gpu_state=getattr(getattr(ui, "chestnut_state", None), "value", "disconnected"))
+                     gpu_state=getattr(getattr(ui, "chestnut_state", None), "value", "disconnected"),
+                     jetlink=jetlink)
 
     settings_pages = (Destination.STAR, Destination.DEVICE, Destination.NETWORK, Destination.SOFTWARE, Destination.TOGGLES,
                       Destination.DRIVING_CONTROLS, Destination.SOUNDS, Destination.APPEARANCE,

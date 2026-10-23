@@ -144,3 +144,4 @@ openpilot/selfdrive/modeld/models/*.unchunked
 
 # StarView: the folder name matches the st?????? pattern above
 !openpilot/starpilot/system/starview/
+openpilot/starpilot/flm/_primitive_walk.cpp

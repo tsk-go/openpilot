@@ -13,6 +13,9 @@ TOYOTA_NO_LEAD_CRUISE_SIGN_FLIP_MIN_SET_SPEED_ERROR = .35
 
 
 def configured(cp):
+  from opendbc.car.toyota import prius_sdsu
+  if prius_sdsu.configured(cp):
+    return True
   return (cp.brand == 'toyota' and cp.carFingerprint in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT) and
           cp.pcmCruise and not cp.dashcamOnly and not cp.notCar and
           not cp.passive and cp.steerControlType == structs.CarParams.SteerControlType.torque and
@@ -31,6 +34,9 @@ def stopping_decel_rate(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import prius_sdsu
+  if prius_sdsu.prepare_stock(cp):
+    return True
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

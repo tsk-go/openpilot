@@ -18,6 +18,48 @@ SCREEN = {'version': 1, 'width': 1280, 'height': 720, 'margin_width': 0,
 
 
 class TestProjectionLayout(unittest.TestCase):
+  def test_v4_large_sign_migration_clamps_old_bottom_placement_without_losing_custom_actions(self):
+    document = default_layout(SCREEN)
+    document['version'] = 4
+    bounds = layout_metadata(SCREEN)['bounds']
+    bottom = bounds['y'] + bounds['height']
+    document['widgets']['cruise_limits']['y'] = bottom - 132
+    document['widgets']['speed_limit_actions'].update(x=250, y=400)
+    before = copy.deepcopy(document)
+    migrated = validate_layout(document, SCREEN)
+    self.assertEqual(document, before)
+    self.assertEqual(migrated['version'], 5)
+    self.assertEqual(migrated['widgets']['cruise_limits']['y'], bottom - 168)
+    self.assertEqual(migrated['widgets']['speed_limit_actions'], document['widgets']['speed_limit_actions'])
+    self.assertEqual(validate_layout(migrated, SCREEN), migrated)
+
+  def test_v4_moves_actions_only_when_they_follow_the_old_default_sign_position(self):
+    document = default_layout(SCREEN)
+    document['version'] = 4
+    card = document['widgets']['cruise_limits']
+    document['widgets']['speed_limit_actions'].update(x=card['x']+12, y=card['y']+173)
+    migrated = validate_layout(document, SCREEN)
+    self.assertEqual(migrated['widgets']['speed_limit_actions']['y'], card['y']+221)
+
+  def test_jetlink_widget_migrates_and_preserves_placement_and_order(self):
+    document = default_layout(SCREEN)
+    expected = document['widgets'].pop('jetlink_status')
+    self.assertFalse(expected['enabled'])
+    document['widgetOrder'] = [key for key in layout_metadata(SCREEN)['widgetOrder'] if key != 'jetlink_status']
+    document['widgets']['current_speed']['x'] += 20
+    before = copy.deepcopy(document)
+    migrated = validate_layout(document, SCREEN)
+    self.assertEqual(document, before)
+    self.assertEqual(migrated['widgets']['jetlink_status'], expected)
+    self.assertEqual(migrated['widgetOrder'], [*before['widgetOrder'][:-1], 'jetlink_status', CAR_EXIT])
+    migrated['widgets']['jetlink_status'].update(enabled=True, x=700, y=500)
+    decoded = decode_layout(json.dumps(migrated).encode(), SCREEN)
+    base = default_document()
+    converted = projection_customization(decoded, base)
+    self.assertEqual(converted['layouts']['large']['jetlink_status'], migrated['widgets']['jetlink_status'])
+    self.assertFalse(base['layouts']['large']['jetlink_status']['enabled'])
+    self.assertNotIn('jetlink_status', converted['layouts']['compact'])
+
   def test_exit_defaults_and_monitor_scaling_preserve_saved_appearance(self):
     document = default_layout(SCREEN)
     metadata = layout_metadata(SCREEN)
@@ -237,9 +279,11 @@ class TestProjectionLayout(unittest.TestCase):
     before = copy.deepcopy(base)
     document = default_layout(SCREEN)
     converted = projection_customization(document, base)
-    native = {key: value for key, value in converted['layouts']['large'].items() if key not in PROJECTION_WIDGETS}
-    self.assertEqual(native, base['layouts']['large'])
-    self.assertEqual(converted['layouts']['large'][NAV_MAP], document['widgets'][NAV_MAP])
+    own = (*PROJECTION_WIDGETS, 'jetlink_status')
+    native = {key: value for key, value in converted['layouts']['large'].items() if key not in own}
+    self.assertEqual(native, {key: value for key, value in base['layouts']['large'].items() if key not in own})
+    shift = document['canvas']['width'] - 1860
+    self.assertEqual(converted['layouts']['large'][NAV_MAP], {**document['widgets'][NAV_MAP], 'x': document['widgets'][NAV_MAP]['x'] - shift})
     document['widgets']['current_speed']['x'] += 100
     converted = projection_customization(document, base)
     self.assertEqual(converted['layouts']['large']['current_speed']['x'], 740)
@@ -379,3 +423,43 @@ class TestProjectionLayout(unittest.TestCase):
       self.assertGreaterEqual(overlay['y'], card['y'] + 195)
       self.assertLessEqual(overlay['y'] + overlay['height'], document['canvas']['height'] - 30)
     self.assertLess(small['widgets'][NAV_MAP]['width'], wide['widgets'][NAV_MAP]['width'])
+
+
+class TestNowPlayingWidget(unittest.TestCase):
+  def test_default_card_is_on_with_a_background_opacity(self):
+    placement = default_layout(SCREEN)['widgets']['now_playing']
+    self.assertTrue(placement['enabled'])
+    self.assertEqual(placement['opacity'], 85)
+    self.assertFalse(placement['collapse'])
+    self.assertEqual(set(placement), {'x', 'y', 'enabled', 'opacity', 'collapse'})
+
+  def test_opacity_is_validated_and_old_layouts_gain_the_card(self):
+    document = default_layout(SCREEN)
+    self.assertEqual(validate_layout(copy.deepcopy(document), SCREEN)['widgets']['now_playing']['opacity'], 85)
+    for bad in (101, -1, 50.5, '50'):
+      broken = copy.deepcopy(document)
+      broken['widgets']['now_playing']['opacity'] = bad
+      with self.assertRaises(ValueError):
+        validate_layout(broken, SCREEN)
+    old = copy.deepcopy(document)
+    del old['widgets']['now_playing']
+    self.assertEqual(validate_layout(old, SCREEN)['widgets']['now_playing'], document['widgets']['now_playing'])
+
+  def test_collapse_on_pause_is_a_validated_option_older_layouts_default_off(self):
+    document = default_layout(SCREEN)
+    document['widgets']['now_playing']['collapse'] = True
+    self.assertTrue(validate_layout(copy.deepcopy(document), SCREEN)['widgets']['now_playing']['collapse'])
+    self.assertTrue(layout_metadata(SCREEN)['widgets']['now_playing']['collapseToggle'])
+    for bad in (1, 'on', None):
+      broken = copy.deepcopy(document)
+      broken['widgets']['now_playing']['collapse'] = bad
+      with self.assertRaises(ValueError):
+        validate_layout(broken, SCREEN)
+    old = copy.deepcopy(document)
+    del old['widgets']['now_playing']['collapse']
+    self.assertFalse(validate_layout(old, SCREEN)['widgets']['now_playing']['collapse'])
+
+  def test_card_stays_below_the_exit_control(self):
+    order = layout_metadata(SCREEN)['widgetOrder']
+    self.assertIn('now_playing', order)
+    self.assertEqual(order[-1], CAR_EXIT)

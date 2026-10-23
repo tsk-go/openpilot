@@ -9,12 +9,41 @@ import time
 from openpilot.starpilot.system.android_auto.identity import EXPIRY_WARNING_DAYS
 from openpilot.starpilot.system.android_auto.projection_exit import ProjectionExit
 from openpilot.starpilot.system.android_auto.projection_geometry import FALLBACK_VIEWPORT
+from openpilot.starpilot.system.android_auto.projection_map_lease import MapLeaseWriter
 
 CERTIFICATE_NOTICE_NS = 10_000_000_000  # how long the expiry heads-up stays at the start of a drive
+BOOKMARK_NOTICE_NS = 2_000_000_000  # how long "Bookmark Saved" stays after the drive is bookmarked
+MODE_NOTICE_NS = 2_000_000_000  # how long the driving-mode banner stays after the mode changes
 DRIVER_MONITOR_HOLD_NS = 350_000_000
 STANDBY_LOGO = Path(__file__).parents[3] / 'selfdrive/assets/images/starpilot_logo.png'
 BUBBLE_REDUNDANT_ALERTS = frozenset(('preLaneChangeLeft', 'preLaneChangeRight', 'laneChange',
                                      'laneChangeBlocked', 'laneChangeBlockedLoud'))
+
+
+def driving_mode_label(state) -> str | None:
+  """The driving mode the driver chose, or None while it cannot be read.
+
+  Conditional mode's own automatic switching is not a change of mode, so it all reads as one label;
+  only a driver override (a wheel or screen tap) changes it."""
+  from openpilot.starpilot.conditional_mode.policy import ModeChoice
+  choice = getattr(state, 'conditional_configured', None)
+  if choice in (ModeChoice.CEM, ModeChoice.CCM):
+    effective = getattr(state, 'conditional_effective', None)
+    if effective is None:
+      if getattr(state, 'engaged', True):
+        return None  # not reported between planner updates
+      # Disengaged, nothing is reported and nothing switches by itself: the flag is the driver's choice.
+      experimental = getattr(state, 'experimental_enabled', None)
+      return None if not isinstance(experimental, bool) else 'Experimental Mode' if experimental else 'Chill Mode'
+    if effective.reason == 'manual_experimental':
+      return 'Experimental Mode'
+    if effective.reason == 'manual_chill':
+      return 'Chill Mode'
+    return 'Conditional Experimental' if choice is ModeChoice.CEM else 'Conditional Chill'
+  experimental = getattr(state, 'experimental_enabled', None)
+  if not isinstance(experimental, bool):
+    return None
+  return 'Experimental Mode' if experimental else 'Chill Mode'
 
 
 def certificate_notice(days_left: int | None) -> str:
@@ -23,6 +52,17 @@ def certificate_notice(days_left: int | None) -> str:
     return ""
   when = "Within a Day" if days_left == 0 else f"in {days_left} Day{'' if days_left == 1 else 's'}"
   return f"Heads Up: AA Certificate Expires {when}"
+
+
+def apply_plain_camera_look(camera, rl):
+  """The car screen keeps the plain camera look: the shader's non-road path, not the comma UI's engagement grading.
+
+  The comma UI fades the road camera when disengaged (color_strength) and a car screen reads that as washed out.
+  """
+  camera._color_strength_val[0] = 1.0
+  camera._road_camera_val[0] = 0
+  rl.set_shader_value(camera.shader, camera._color_strength_loc, camera._color_strength_val, rl.ShaderUniformDataType.SHADER_UNIFORM_FLOAT)
+  rl.set_shader_value(camera.shader, camera._road_camera_loc, camera._road_camera_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
 
 def native_dependencies():
@@ -45,6 +85,8 @@ def native_dependencies():
   from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter, current_message, display_message
   from openpilot.starpilot.ui.shell import ShellMode
   from openpilot.starpilot.system.android_auto.projection_favorites import ProjectionFavorites
+  from openpilot.starpilot.system.android_auto.projection_now_playing import ProjectionNowPlayingFeed
+  from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
 
   class ProjectionRoadCamera(AugmentedRoadView):
     """Current native calibrated camera/model without stock action widgets."""
@@ -74,12 +116,7 @@ def native_dependencies():
     def _update_texture_color_filtering(self):
       if getattr(self, 'large_ui_gamma_trial', False):
         return super()._update_texture_color_filtering()
-      # The comma UI fades the engaged road camera to 20% color (30477f3cef). On the car
-      # screen that reads as black and white, so keep the plain look: non-road shader path.
-      self._engaged_val[0] = 0
-      self._road_camera_val[0] = 0
-      rl.set_shader_value(self.shader, self._engaged_loc, self._engaged_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
-      rl.set_shader_value(self.shader, self._road_camera_loc, self._road_camera_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+      apply_plain_camera_look(self, rl)
 
   def standby_logo(height):
     """The StarPilot crescent, shrunk once on the CPU to its standby size; None if it cannot be loaded."""
@@ -105,7 +142,8 @@ def native_dependencies():
                          shell_mode=ShellMode, pip_renderer=PiPRenderer, read_pip=read_pip, pip_signals=Signals,
                          pip_rect=Rect, pip_widgets=CAMERA_WIDGETS, placement=placement, widget_size=widget_size,
                          alert=OnroadAlert, alert_size=AlertSize, map_overlay=MapOverlay, map_feed=MapFeed,
-                         favorites=ProjectionFavorites, standby_logo=standby_logo)
+                         favorites=ProjectionFavorites, standby_logo=standby_logo, now_playing_feed=ProjectionNowPlayingFeed,
+                         jetlink_feed=JetlinkStatusFeed)
 
 
 class ProjectionOnroad:
@@ -118,6 +156,10 @@ class ProjectionOnroad:
     self.customization = customization
     self._certificate_notice = certificate_notice(certificate_days)
     self._certificate_notice_until_ns: int | None = None
+    self._bookmark_notice_until_ns: int | None = None
+    self._mode_label: str | None = None  # the drive's last known driving mode
+    self._mode_engaged: bool | None = None
+    self._mode_notice: tuple[str, int] | None = None  # (banner text, shown until)
     self._base_customization = None
     self._projection_customization = None
     self._base_appearance = None
@@ -144,6 +186,14 @@ class ProjectionOnroad:
       self._resources.callback(self._close_camera)
       self.onroad = self.create_view(native.onroad, self.fonts, camera_layer=self._camera_layer, viewport=viewport)
       self._resources.callback(self._close_onroad)
+      self.now_playing_feed = None
+      if getattr(native, 'now_playing_feed', None) is not None:
+        self.now_playing_feed = native.now_playing_feed()
+        self._resources.callback(self.now_playing_feed.close)
+      self.jetlink_feed = None
+      if getattr(native, 'jetlink_feed', None) is not None:
+        self.jetlink_feed = native.jetlink_feed()
+        self._resources.callback(self.jetlink_feed.close)
       self.exit = ProjectionExit(native.rl, lambda: self.native_focus())
       self.onroad.projection_exit_layer = self.exit.render
       self.monitor = native.monitor(native.profile.LARGE)
@@ -153,7 +203,7 @@ class ProjectionOnroad:
       from openpilot.starpilot.ui.onroad_state import OnroadInput
       def emit_slc(request) -> None:
         self.slc_action(request)
-      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE)
+      self._slc_input = OnroadInput(emit_slc, native.profile.LARGE, slop=30)
       self.onroad.pressed_action = lambda: self._slc_input.pressed_action
       self.pip = None
       self._pip_saved = None
@@ -164,6 +214,8 @@ class ProjectionOnroad:
         self.onroad.pip_layer = self._pip_layer
       self.map = None
       self.map_feed = None
+      self._map_lease = MapLeaseWriter()
+      self._resources.callback(self._release_map)
       self._ensure_map()
       self.adapter = native.adapter(native.ui_state)
       # Personality notices and the reverse camera are decided inside the adapter, so it needs AA's choices too.
@@ -247,9 +299,15 @@ class ProjectionOnroad:
     native = self.native
     if self.map is None and self._map_placement() is not None and getattr(native, 'map_overlay', None) is not None:
       self.map = native.map_overlay(fonts=self.fonts)
-      self._resources.callback(self.map.close)
       self.map_feed = native.map_feed()
       self.onroad.map_layer = self._map_layer
+
+  def _release_map(self):
+    if self.map is not None:
+      self.map.close()
+    self.map = self.map_feed = None
+    self.onroad.map_layer = None
+    self._map_lease.release()
 
   def apply_layout(self, customization):
     """Switch to a newly saved Android Auto layout without reconnecting."""
@@ -284,16 +342,29 @@ class ProjectionOnroad:
   def prepare(self):
     """Before the frame's render target is bound: offscreen map work happens here."""
     self._check_layout()
+    if self.now_playing_feed is not None:
+      placed = (self.customization or {}).get('widgets', {}).get('now_playing', {})
+      self.now_playing_feed.set_enabled(bool(placed.get('enabled')))
+      self.onroad.now_playing.track = self.now_playing_feed.snapshot()
+    if self.jetlink_feed is not None:
+      placed = (self.customization or {}).get('widgets', {}).get('jetlink_status', {})
+      self.jetlink_feed.set_enabled(bool(placed.get('enabled') and self.native.ui_state.started))
+      self.onroad.jetlink_status.status = self.jetlink_feed.snapshot()
     if self.favorites is not None:
       self.favorites.refresh()
       self.onroad.navigation_favorites.document = self.favorites.document
       self.onroad.navigation_favorites.error = self.favorites.error
     placed = self._map_placement()
+    if self.map is not None and placed is None:
+      self._release_map()
     if self.map is None or placed is None or not self.native.ui_state.started:
       return
+    self._map_lease.touch()
     document = self.favorites.document if self.favorites is not None else None
     requested = bool(document['destination']) if document is not None else None
-    data = self.map_feed.read(self.native.ui_state.sm, navigation_requested=requested)
+    from openpilot.starpilot.system.android_auto.projection_favorites import destination_label
+    data = self.map_feed.read(self.native.ui_state.sm, navigation_requested=requested,
+                              destination=destination_label(document) if document is not None else None)
     self.map.prepare(data, placed['width'], placed['height'])
 
   def _map_layer(self, rect, state):
@@ -353,6 +424,41 @@ class ProjectionOnroad:
     return replace(state, alert=self.native.alert(size=sizes.SMALL, text1=self._certificate_notice,
                                                   alert_type='androidAutoCertificate/warning'))
 
+  def bookmark_saved(self, now_ns=None):
+    """A bookmark was published for this drive (from any button): confirm it on the car screen."""
+    self._bookmark_notice_until_ns = (time.monotonic_ns() if now_ns is None else now_ns) + BOOKMARK_NOTICE_NS
+
+  def _with_bookmark_notice(self, state, now_ns):
+    """Show "Bookmark Saved" briefly after a bookmark; a real alert always wins."""
+    until = self._bookmark_notice_until_ns
+    if until is None or now_ns >= until:
+      return state
+    sizes = self.native.alert_size
+    if state.alert.size != sizes.NONE:
+      return state
+    return replace(state, alert=self.native.alert(size=sizes.SMALL, text1='Bookmark Saved',
+                                                  alert_type='androidAutoBookmark/saved'))
+
+  def _with_mode_notice(self, state, now_ns):
+    """Show the new driving mode briefly when it changes during a drive; a real alert always wins."""
+    label = driving_mode_label(state)
+    engaged = bool(getattr(state, 'engaged', True))
+    if engaged != self._mode_engaged:
+      self._mode_engaged = engaged
+      self._mode_label = None  # engaging or disengaging is not a mode change
+    if label is not None:
+      # Only the driver's own choice is announced, never the planner handing back to conditional mode.
+      if self._mode_label is not None and label != self._mode_label and not label.startswith('Conditional'):
+        self._mode_notice = (label, now_ns + MODE_NOTICE_NS)
+      self._mode_label = label
+    if self._mode_notice is None or now_ns >= self._mode_notice[1]:
+      return state
+    sizes = self.native.alert_size
+    if state.alert.size != sizes.NONE:
+      return state
+    return replace(state, alert=self.native.alert(size=sizes.SMALL, text1=self._mode_notice[0],
+                                                  alert_type='androidAutoDrivingMode/changed'))
+
   def _standby(self):
     rl = self.native.rl
     purple = rl.Color(188, 132, 255, 255)  # StarPilot purple, as on the comma's moon
@@ -396,9 +502,6 @@ class ProjectionOnroad:
       now_ns = time.monotonic_ns()
       timer_enabled = bool((self.customization or {}).get('widgets', {}).get('stopped_timer', {}).get('enabled', False))
       state = self.adapter.build(self.native.shell_mode.ONROAD, now_ns=now_ns, stopped_timer_enabled=timer_enabled).onroad
-      # Touch hit-tests read viewport_width; the view draws at the car canvas width (1920 for a 1280x720 head unit).
-      if state.viewport_width != self.width:
-        state = replace(state, viewport_width=self.width)
       if self.customization is not None:
         from openpilot.starpilot.system.android_auto.projection_layout import projection_customization
         if state.customization is not self._base_customization:
@@ -408,8 +511,15 @@ class ProjectionOnroad:
           # The car screen's display options live in the AA layout, not the comma's settings.
           self._projection_appearance = self._own_appearance(state.appearance)
           self._base_appearance = state.appearance
-        state = replace(state, customization=self._projection_customization, appearance=self._projection_appearance)
-      self._state = self._with_certificate_notice(state, now_ns)
+        state = replace(state, customization=self._projection_customization, appearance=self._projection_appearance,
+                        reverse_driver_camera=False)
+      # Touch hit-tests read viewport_width; the view draws at the car canvas width (1920 for a 1280x720 head unit).
+      if state.viewport_width != self.width:
+        state = replace(state, viewport_width=self.width)
+      state = self._with_bookmark_notice(self._with_certificate_notice(state, now_ns), now_ns)
+      self._state = self._with_mode_notice(state, now_ns)
+      if self._slc_input is not None:
+        self._state = self._slc_input.present(self._state)
       self.onroad.render(self._state)
       self.fonts.draw('StarPilot', self.native.font_role.BRAND, 30, self.width - 210, self.height - 90)
     else:
@@ -417,6 +527,7 @@ class ProjectionOnroad:
       if self.favorites is not None:
         self.favorites.cancel()
       self._certificate_notice_until_ns = None  # the next drive shows the heads-up again
+      self._mode_label = self._mode_engaged = self._mode_notice = None  # a drive's starting mode is not a change
       self._monitor_pair = None
       self._monitor_pair_ns = None
       if self.pip is not None:

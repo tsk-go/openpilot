@@ -22,6 +22,10 @@ class Params:
   def __init__(self, root):
     self.root = root
     self.enabled = True
+    self.jetlink_mode = 0
+  def get(self, key):
+    assert key == 'JetlinkMode'
+    return self.jetlink_mode
   def get_param_path(self, key):
     return str(self.root / key)
   def get_bool(self, key):
@@ -57,6 +61,20 @@ class TestProjectionLayoutOwner(unittest.TestCase):
     self.assertIsNone(value['defaults'])
     self.assertIn('actual screen', value['reason'])
 
+  def test_jetlink_widget_available_when_selected_and_placement_retained_when_off(self):
+    self.screen()
+    self.assertFalse(self.owner.snapshot()['metadata']['widgets']['jetlink_status']['available'])
+    for mode in (1, 2):
+      self.params.jetlink_mode = mode
+      self.assertTrue(self.owner.snapshot()['metadata']['widgets']['jetlink_status']['available'])
+    payload = self.payload()
+    payload['document']['widgets']['jetlink_status'].update(enabled=True, x=700, y=500)
+    self.owner.save(payload, session_valid=lambda: True)
+    self.params.jetlink_mode = 0
+    snapshot = self.owner.snapshot()
+    self.assertFalse(snapshot['metadata']['widgets']['jetlink_status']['available'])
+    self.assertEqual(snapshot['document'], payload['document'])
+
   def test_defaults_valid_false_then_exact_saved_document(self):
     self.screen()
     value = self.owner.snapshot()
@@ -89,6 +107,26 @@ class TestProjectionLayoutOwner(unittest.TestCase):
     (self.root / 'SignalMetrics').write_bytes(b'0')
     self.assertTrue(self.owner.snapshot()['document']['signalBorder'])
     self.assertEqual(self.owner.snapshot()['document'], saved['document'])
+
+  def test_disable_map_turns_only_the_map_off_and_only_when_it_was_on(self):
+    self.screen()
+    self.assertFalse(self.owner.disable_map(session_valid=lambda: True), 'nothing saved yet')
+    payload = self.payload()
+    payload['document']['widgets']['nav_map']['enabled'] = True
+    payload['document']['widgets']['nav_card']['x'] -= 5
+    self.owner.save(payload, session_valid=lambda: True)
+    self.assertFalse(self.owner.disable_map(session_valid=lambda: False), 'a stale session cannot change it')
+    self.assertTrue(self.owner.snapshot()['document']['widgets']['nav_map']['enabled'])
+    self.parked = False
+    self.assertFalse(self.owner.disable_map(session_valid=lambda: True), 'only while parked')
+    self.parked = True
+    self.assertTrue(self.owner.disable_map(session_valid=lambda: True))
+    saved = self.owner.snapshot()
+    self.assertTrue(saved['valid'])
+    expected = copy.deepcopy(payload['document'])
+    expected['widgets']['nav_map']['enabled'] = False
+    self.assertEqual(saved['document'], expected)
+    self.assertFalse(self.owner.disable_map(session_valid=lambda: True))
 
   def test_disabled_retains_layout_but_unavailable(self):
     self.screen()
@@ -228,7 +266,7 @@ from types import SimpleNamespace
 from openpilot.starpilot.galaxy.projection_layout import host_owner
 from openpilot.starpilot.system.android_auto.projection_layout_runtime import load_projection_layout
 root = Path(os.environ['ANDROID_AUTO_DIR'])
-params = SimpleNamespace(get_param_path=lambda key: str(root / 'params' / key), get_bool=lambda key: False)
+params = SimpleNamespace(get_param_path=lambda key: str(root / 'params' / key), get_bool=lambda key: False, get=lambda key: None)
 owner = host_owner(params, lambda: True)
 snapshot = owner.snapshot()
 payload = {'revision': snapshot['revision'], 'document': copy.deepcopy(snapshot['document'])}

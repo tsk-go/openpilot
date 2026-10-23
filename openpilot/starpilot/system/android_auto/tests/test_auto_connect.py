@@ -279,12 +279,15 @@ def test_config_v4_resets_head_unit_verification(tmp_path):
   assert identity_store.load_config(path)["verify_head_unit"] is True
 
 
-def test_config_v5_resets_dedicated_wifi_default(tmp_path):
+def test_config_v5_turns_on_staying_on_home_wifi(tmp_path):
   from openpilot.starpilot.system.android_auto import identity as identity_store
   path = tmp_path / "config.json"
+  # Every v5 save wrote the old default (off); it was rarely chosen.
   path.write_text(json.dumps({"config_version": 5, "dedicated_wifi_interface": False}))
-  assert identity_store.load_config(path)["dedicated_wifi_interface"] is True
-  path.write_text(json.dumps({"config_version": 6, "dedicated_wifi_interface": False}))
+  config = identity_store.load_config(path)
+  assert config["dedicated_wifi_interface"] is True
+  identity_store.save_config({**config, "dedicated_wifi_interface": False}, path)
+  # From v6 on it is a real choice and stays as saved.
   assert identity_store.load_config(path)["dedicated_wifi_interface"] is False
 
 

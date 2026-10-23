@@ -6,6 +6,9 @@ This presentation catalog supplies the purpose before any genuine prerequisite.
 from openpilot.starpilot.ui.long_profile_feature import CATEGORY_HELP, VALUE_HELP
 
 DESCRIPTIONS = {
+  'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
+  'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
+                              'Applies after the next startup; exact vehicle takeover checks remain required.'),
   'lane_change:enabled': 'Enables lane-change assistance after you signal. With Automatic Lane Changes off, give the wheel a nudge to begin.',
   'lane_change:pace': 'Sets how quickly steering moves into the adjacent lane. Higher values change lanes more quickly; lower values make steering gentler.',
   'lane_change:speed': 'Sets the lowest speed at which lane-change assistance can begin.',
@@ -52,7 +55,7 @@ DESCRIPTIONS = {
   'curve_reset': 'Deletes saved cornering learning so Curve Speed Controller can learn your preferences again.',
   'SpeedLimitController': 'Adjusts the set speed to accepted speed limits using your source priority and offsets.',
   'ShowSpeedLimits': 'Shows recognized speed-limit signs on the driving screen.',
-  'SLCConfirmation': 'Asks you to approve the first speed limit and every higher or lower limit from any source, including while cruise is off.',
+  'SLCConfirmation': 'Auto adopts after a 3-second flash. With Automatic adoption off, + accepts and − declines within 10 seconds.',
   'SLCPriority1': 'Chooses the first source checked for a fresh speed limit.',
   'SLCPriority2': 'Chooses the source used when the primary source has no fresh speed limit.',
   'SLCFallback': 'Keeps the previously accepted speed limit when sources are unavailable, until another limit is accepted.',

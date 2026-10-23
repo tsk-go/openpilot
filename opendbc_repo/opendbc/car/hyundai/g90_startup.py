@@ -51,6 +51,21 @@ class G90Startup(ContinuousECUStartup):
       raise RuntimeError('G90 AOL finalization changed unrelated CarParams')
     self.prepared_cp = expected
 
+  def sources_current(self, ci, now_ns):
+    if self.outcome is not Outcome.SENT_UNCONFIRMED:
+      return True
+    if not ci.CS.out.canValid or ci.CS.out.canTimeout:
+      return False
+    parser = ci.can_parsers[Bus.pt]
+    if parser.bus != 0:
+      return False
+    for name in ('EMS16', 'WHL_SPD11', 'TCS13', 'MDPS12', 'CLU11'):
+      source = parser.message_states.get(parser.dbc.name_to_msg[name].address)
+      if (source is None or not source.timestamps or source.counter_fail >= MAX_BAD_COUNTER or
+          not self.floor_ns < int(source.timestamps[-1]) <= now_ns or now_ns - int(source.timestamps[-1]) > source.timeout_threshold):
+        return False
+    return True
+
   def _warm_stock(self, ci):
     deadline = time.monotonic() + 3.
     while time.monotonic() < deadline:

@@ -92,6 +92,8 @@ def test_phone_role_temporarily_changes_adapter_and_restores(tmp_path):
     shared.request('scan')
   with pytest.raises(BluetoothRejected, match='Android Auto pairing operation'):
     shared.request('pair', address='AA:BB:CC:DD:EE:FF', session=('old', 'session'))
+  with pytest.raises(BluetoothRejected, match='Android Auto pairing operation'):
+    shared.request('accept_pair', session=state['session'])
   lease.release()
   lease.release()
   assert bluez.writes == [(True, True), (False, False)] and phone.released == 1 and bluez.agent_closed == 1
@@ -295,6 +297,62 @@ def test_projection_survives_drive_and_browser_expiry_but_not_disable_or_receive
   assert lease.released and phone.released == 2
   assert bluez.writes == [(False, False)] * 4
   shared.close()
+
+
+def test_accessory_scan_and_pair_keep_projection_lock_and_cancel_on_release(tmp_path):
+  import threading
+  state = {'parked': True, 'session': ('galaxy', '42'), 'enabled': True, 'selected': 'AA:BB:CC:DD:EE:FF'}
+  bluez = FakeBlueZ()
+  target = '11:22:33:44:55:66'
+  bluez.paired.append({'address': target, 'path': '/org/bluez/hci0/dev_11_22_33_44_55_66',
+                       'paired': False, 'connected': False, 'name': 'Car'})
+  shared = owner(tmp_path, state, bluez)
+  lease = shared.acquire_projection_role(state['selected'], Phone(), enabled=lambda: state['enabled'],
+                                         selected_receiver=lambda: state['selected'])
+  other = owner(tmp_path, state, bluez)
+  started = threading.Event()
+  def pair(address, path, session):
+    started.set()
+    session.done.wait(2)
+    return False
+  bluez.pair = pair
+  bluez.cancel_pair = lambda path: None
+  try:
+    assert shared.phone_window('scan', state['session'])['discovering']
+    with pytest.raises(BluetoothRejected, match='another process'):
+      other.request('scan')
+    result = shared.phone_window('pair', state['session'], address=target)
+    assert result['pairing']['address'] == target
+    assert started.wait(1)
+    assert not bluez.props['Discovering']
+    assert shared.phone_lease is lease and not lease.released
+    assert shared.phone_window('status', state['session'])['pairing']['state'] == 'pairing'
+    lease.release()
+    assert shared.pairing.done.wait(1)
+    assert shared.pairing.state == 'canceled'
+    assert other.request('scan')['discovering']
+  finally:
+    shared.close()
+    other.close()
+
+
+def test_projection_accessory_operations_require_park_and_reject_receiver_pairing(tmp_path):
+  state = {'parked': True, 'session': ('galaxy', '42')}
+  bluez = FakeBlueZ()
+  shared = owner(tmp_path, state, bluez)
+  receiver = bluez.paired[0]['address']
+  shared.acquire_projection_role(receiver, Phone(), enabled=lambda: True, selected_receiver=lambda: receiver)
+  try:
+    with pytest.raises(BluetoothRejected, match='Use Android Auto'):
+      shared.phone_window('pair', state['session'], address=receiver)
+    state['parked'] = False
+    for operation in ('scan', 'pair'):
+      with pytest.raises(BluetoothRejected) as error:
+        shared.phone_window(operation, state['session'], address='11:22:33:44:55:66')
+      assert error.value.code == 'park_required'
+    assert not bluez.props['Discovering']
+  finally:
+    shared.close()
 
 
 def test_projection_restores_original_visibility_on_release_and_failure(tmp_path):

@@ -1729,7 +1729,7 @@ class Hub:
           return {"ok": True, "pct": nudge.write(req.get("pct")) or 100}
         except (TypeError, ValueError) as e:
           return {"ok": False, "error": str(e)}
-      if act == "turn_intent":  # {"side": "left"/"right"/null}: your blinker is for a turn here, no route (blinker_turn.py)
+      if act == "turn_intent":  # {"side": "left"/"right"/"none"/null}: is there a street to turn into on that side (blinker_turn.py)
         from openpilot.starpilot.system.starview import blinker_turn
         try:
           return {"ok": True, "side": blinker_turn.write(req.get("side"))}

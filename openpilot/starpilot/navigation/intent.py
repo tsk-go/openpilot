@@ -54,34 +54,6 @@ def turn_desire(sm, now_ns: int, current_desire, *, supported: bool):
   return current_desire
 
 
-# Fork (patch 38): no route, your own blinker kept as a turn when StarView's tablet sees a street to turn into on that side
-# (starview/blinker_turn.py). Only under this speed; the tablet asks under 20 mph too.
-BLINKER_TURN_MAX_MPS = 20 * CV.MPH_TO_MS
-CONTROL_MAX_AGE_NS = 100_000_000
-
-
-def blinker_turn_desire(sm, now_ns: int, current_desire, *, supported: bool):
-  if not supported or current_desire != log.Desire.none:
-    return current_desire
-  try:
-    for service in ('carState', 'carControl'):
-      stamp = sm.logMonoTime[service]
-      if not sm.valid[service] or not sm.alive[service] or not 0 < stamp <= now_ns <= stamp + CONTROL_MAX_AGE_NS:
-        return current_desire
-    cs, cc = sm['carState'], sm['carControl']
-    if not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive':
-      return current_desire
-    if not cc.latActive or cs.standstill or not math.isfinite(cs.vEgo) or not 0 <= cs.vEgo < BLINKER_TURN_MAX_MPS:
-      return current_desire
-    if cs.leftBlinker and not cs.rightBlinker and not cs.leftBlindspot:
-      return log.Desire.turnLeft
-    if cs.rightBlinker and not cs.leftBlinker and not cs.rightBlindspot:
-      return log.Desire.turnRight
-  except (KeyError, AttributeError, TypeError):
-    pass
-  return current_desire
-
-
 def turn_speed(maneuver, min_steer_speed: float) -> float | None:
   kind, modifier = maneuver.maneuverType, maneuver.maneuverModifier
   target = TARGET_MPH.get(modifier) if kind == 'turn' else None
@@ -125,68 +97,76 @@ def matching_turn_signal(sm, now_ns: int, *, supported: bool) -> bool:
               0 <= instruction.distanceMeters <= min(250., max(30., 15. + max(0., cs.vEgo) * 12.)))
 
 
-# Fork fix (patch 36): the model takes a desire as a one-frame pulse (modeld sends it on the rising edge) and keeps it in
-# its desire history for about 6.6 s. A route turn signalled before a long red light was forgotten by the time the car
-# pulled away, and the stop latch below could keep the new pulse from ever going out: while the turn is still wanted
-# the pulse is sent again every REPULSE_S (one frame without it, then it again), and after a stop the latch lets go once
-# nothing has asked to stop for GO_CLEAR_S - before, only the next standstill cleared it.
-REPULSE_S = 5.0
-GO_CLEAR_S = 1.0
-
-
 class TurnIntent:
-  def __init__(self):
+  def __init__(self, params=None, cp=None):
+    from openpilot.starpilot.lateral.auto_lane_change import steering_capable
+    from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
+    self.guidance = LiveLaneChangePolicy(params) if params is not None else None
+    self.steering_capable = steering_capable(cp)
+    self.signal_stop_hold = False
     self.key = None
     self.stop_hold = False
-    self.stood = False            # stood still since the stop latch was set (at the light, in the queue)
-    self.go_since = None          # since when nothing has asked to stop (after a stop)
-    self.turn = None              # the turn desire being sent, and since when (its last pulse)
-    self.turn_since = 0
 
-  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool, blinker_turn: bool = False):
-    """blinker_turn (patch 38): no route, StarView's tablet says the blinker that is on is for a turn there."""
+  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool, tablet: str | None = None):
+    """tablet (fork patch 38, StarView): None = no say (Turn Signal Guidance as upstream); "turn" = the tablet's street
+    map has a street to turn into on the blinker's side; "no" = it has none (a lane change or pulling over, not a turn)."""
     nav = current_instruction(sm, now_ns) if supported else None
-    blinker = nav is None and supported and blinker_turn
-    key = (nav.sessionId, nav.startedMonoTime) if nav is not None else ('blinker',) if blinker else None
+    key = (nav.sessionId, nav.startedMonoTime) if nav is not None else None
     if key != self.key:
-      self.key, self.stop_hold, self.stood, self.go_since = key, False, False, None
-    if nav is None and not blinker:
-      self.turn = None
-      return current_desire
+      self.key, self.stop_hold = key, False
+    if nav is None:
+      return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop, tablet=tablet)
     cs = sm['carState']
-    since = nav.startedMonoTime if nav is not None else 1
     try:
       stamp, plan = sm.logMonoTime['longitudinalPlan'], sm['longitudinalPlan']
       plan_valid = (sm.valid['longitudinalPlan'] and sm.alive['longitudinalPlan'] and
-                    since <= stamp <= now_ns <= stamp + 150_000_000 and
-                    since <= plan.modelMonoTime <= stamp)
+                    nav.startedMonoTime <= stamp <= now_ns <= stamp + 150_000_000 and
+                    nav.startedMonoTime <= plan.modelMonoTime <= stamp)
     except (KeyError, AttributeError, TypeError):
       plan_valid = False
-    stop_asked = model_stop or (plan_valid and plan.shouldStop)
-    if cs.leftBlinker == cs.rightBlinker:
-      self.stop_hold, self.stood, self.go_since = False, False, None
-    elif cs.standstill:
-      self.stop_hold, self.stood, self.go_since = False, True, None
-    elif stop_asked:
-      self.stop_hold, self.go_since = True, None
-    elif self.stop_hold and self.stood:
-      # pulling away after a stop: the latch was set again by a stop request right at the start (the light just
-      # turned, the car ahead still slow) - it lets go once nothing has asked to stop for GO_CLEAR_S
-      if self.go_since is None:
-        self.go_since = now_ns
-      elif now_ns - self.go_since >= GO_CLEAR_S * 1e9:
-        self.stop_hold, self.go_since = False, None
+    if cs.standstill or cs.leftBlinker == cs.rightBlinker:
+      self.stop_hold = False
+    elif model_stop or (plan_valid and plan.shouldStop):
+      self.stop_hold = True
     if self.stop_hold or not plan_valid:
-      self.turn = None
       return current_desire
-    desire = (turn_desire(sm, now_ns, current_desire, supported=supported) if nav is not None else
-              blinker_turn_desire(sm, now_ns, current_desire, supported=supported))
-    if desire not in (log.Desire.turnLeft, log.Desire.turnRight) or desire == current_desire:
-      self.turn = None
-      return desire
-    if self.turn != desire:
-      self.turn, self.turn_since = desire, now_ns
-    elif now_ns - self.turn_since >= REPULSE_S * 1e9:
-      self.turn_since = now_ns     # one frame without it: the next frame is a new rising edge, a new pulse
+    selected = turn_desire(sm, now_ns, current_desire, supported=supported)
+    if selected != log.Desire.none:
+      return selected
+    return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop, tablet=tablet)
+
+  def signal_desire(self, sm, now_ns, current_desire, *, supported, model_stop, tablet=None):
+    if self.guidance is None:
       return current_desire
-    return desire
+    try:
+      cs, cc, device, plan = (sm[name] for name in ('carState', 'carControl', 'deviceState', 'longitudinalPlan'))
+      signaling = bool(cs.leftBlinker or cs.rightBlinker)
+      policy = self.guidance.sample(now_ns, signaling=signaling,
+                                    maneuver_active=current_desire != log.Desire.none)
+      if not signaling or cs.standstill:
+        self.signal_stop_hold = False
+      if model_stop or plan.shouldStop:
+        self.signal_stop_hold = True
+      if (not supported or not self.steering_capable or not policy.turn_signal_guidance or
+          current_desire != log.Desire.none or self.signal_stop_hold or not cc.latActive or
+          not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive' or cs.standstill or
+          not math.isfinite(cs.vEgo) or not 0.1 < cs.vEgo < 20 * CV.MPH_TO_MS or
+          cs.leftBlinker == cs.rightBlinker or not device.started):
+        return current_desire
+      for service, age in (('carState', 100_000_000), ('carControl', 100_000_000),
+                           ('longitudinalPlan', 150_000_000), ('deviceState', 2_000_000_000)):
+        stamp = sm.logMonoTime[service]
+        if (not sm.valid[service] or not sm.alive[service] or
+            not 0 < device.startedMonoTime <= stamp <= now_ns <= stamp + age):
+          return current_desire
+      if not device.startedMonoTime <= plan.modelMonoTime <= sm.logMonoTime['longitudinalPlan']:
+        return current_desire
+      if tablet == "no":     # fork patch 38: the tablet's map has no street to turn into on that side
+        return current_desire
+      if cs.leftBlinker and not cs.leftBlindspot:
+        return log.Desire.turnLeft
+      if cs.rightBlinker and not cs.rightBlindspot:
+        return log.Desire.turnRight
+    except (KeyError, AttributeError, TypeError, ValueError):
+      pass
+    return current_desire

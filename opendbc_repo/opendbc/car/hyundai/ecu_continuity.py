@@ -47,6 +47,10 @@ class ContinuousECUStartup(HyundaiECUStartup):
       self.outcome = Outcome.ABORT_UNCERTAIN
       raise RuntimeError(f"{self.label} startup diagnostic continuity failed")
 
+  def before_control(self, **context):
+    self.check()
+    return self.outcome is not Outcome.SENT_UNCONFIRMED or (context['configured'] and context['sources_current'] and context['control_current'])
+
   def maintain(self, *, configured):
     self.check()
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 import base64
 import ctypes
 import gc
@@ -15,6 +16,8 @@ from tinygrad.engine.realize import lower_and_compile
 from tinygrad.tensor import Tensor
 from tinygrad.helpers import all_int, round_up
 from tinygrad.uop.ops import UOp
+if TYPE_CHECKING:
+  from openpilot.starpilot.models.runtime_bridge.legacy_types import LegacyBuffer, LegacyUOpFactory
 import math
 import pickle
 import threading
@@ -51,7 +54,7 @@ from openpilot.starpilot.models.startup import report_load_timeout, wait_for_che
 from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
 from openpilot.starpilot.models import load_profile, program_cache
 from openpilot.starpilot.models.warmup import BigModelWarmup
-from openpilot.starpilot.navigation.intent import BLINKER_TURN_MAX_MPS, TurnIntent, matching_turn_signal
+from openpilot.starpilot.navigation.intent import TurnIntent, matching_turn_signal
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID, DEFAULT_SMALL, DEFAULT_SMALL_SHA256
 from openpilot.starpilot.models.runner import CatalogModelState, load_verified_model
 from openpilot.starpilot.models import jetlink_adapter
@@ -167,8 +170,8 @@ class FrameMeta:
 def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
   from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy
   if selected_legacy():
-    view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
-    return Tensor(UOp.from_buffer(view)).reshape(shape)
+    view = cast("LegacyBuffer", buffer).view(math.prod(shape), dtype, offset).ensure_allocated()
+    return Tensor(cast("LegacyUOpFactory", UOp).from_buffer(view)).reshape(shape)
   view = buffer.view(math.prod(shape) * dtype.itemsize, offset).ensure_allocated()
   return Tensor(UOp.from_buffer(view, dtype)).reshape(shape)
 
@@ -246,7 +249,8 @@ class ModelState:
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
     self.run_model(output_buffers=self.outputs, **self.input_queues)
-    if self.chestnut and not selected_legacy() and (err := Device[self.outputs['outputs'].device].error_state.host.view(fmt='q')[0]):
+    if (self.chestnut and not selected_legacy() and
+        (err := Device[cast(str, self.outputs['outputs'].device)].error_state.host.view(fmt='q')[0])):
       raise RuntimeError(f"chestnut failed with {err}")
     if after_enqueue is not None:
       after_enqueue()
@@ -338,6 +342,8 @@ def main(demo=False):
   else:
     CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("modeld got CarParams: %s", CP.brand)
+  from openpilot.starpilot.car.subaru.smoothing import read_frozen, seconds as subaru_smooth_seconds, filter_action
+  subaru_smoothing = read_frozen(CP, params)
 
   st = time.monotonic()
   cloudlog.warning("loading model")
@@ -483,9 +489,9 @@ def main(demo=False):
   initial_mono_ns, initial_boot_ns, initial_skew_ns = paired_clocks_ns()
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy)
-  navigation_turn = TurnIntent()
+  navigation_turn = TurnIntent(params, CP)
   starview = StarViewSignal()
-  starview_turn = BlinkerTurn()   # patch 38: your own blinker kept as a turn without a route (the tablet sees the street)
+  starview_turn = BlinkerTurn()   # patch 38: the tablet's street map says whether your blinker is for a turn
   nudge_setting = NudgeSetting(CP.brand)   # the tablet's nudge strength for lane changes (Toyota)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
@@ -532,17 +538,19 @@ def main(demo=False):
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
     # StarView's automatic blinker: "lane" = a lane change confirmed on the tablet, not the route's turn
     starview_why = starview.for_blinker(sm['carState'])
-    blinker_turn = (starview_why != "lane" and sm['carState'].vEgo < BLINKER_TURN_MAX_MPS and
-                    starview_turn.for_blinker(sm['carState']))
+    # Turn Signal Guidance (upstream) decides on any blinker under 20 mph; the tablet's map, when it has a say, whether
+    # there is a street to turn into on that side (a lane change the tablet holds is never a turn)
+    tablet_turn = "no" if starview_why == "lane" else starview_turn.for_blinker(sm['carState'])
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
                                      supported=turn_supported, model_stop=bool(prev_action.shouldStop),
-                                     blinker_turn=blinker_turn)
+                                     tablet=tablet_turn)
     if starview_why == "lane":     # not the route's turn: keep the lane change helper's desire (TurnIntent keeps its stop latch)
       desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)
+    lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_tau
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
@@ -636,6 +644,7 @@ def main(demo=False):
       posenet_send = messaging.new_message('cameraOdometry')
 
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      filter_action(action, prev_action, v_ego, subaru_tau)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
@@ -666,7 +675,7 @@ def main(demo=False):
       route_turn = matching_turn_signal(sm, mono_now_ns, supported=turn_supported) and starview_why != "lane"
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=engaged,
-                navigation_turn=route_turn or starview_why == "turn" or blinker_turn, starview_lane=starview_lane, starview_evidence=starview_evidence,
+                navigation_turn=route_turn or starview_why == "turn", starview_lane=starview_lane, starview_evidence=starview_evidence,
                 nudge_torque=nudge_setting.torque())
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction

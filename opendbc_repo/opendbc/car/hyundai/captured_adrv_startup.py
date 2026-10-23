@@ -96,6 +96,9 @@ class CapturedADRVStartup(ContinuousECUStartup):
           return False
     return True
 
+  def sources_current(self, ci, now_ns):
+    return self.outcome is not Outcome.SENT_UNCONFIRMED or self._sources(ci, now_ns, floor=self.floor_ns)
+
   def _warm_stock(self, ci):
     deadline = time.monotonic() + 3.
     while time.monotonic() < deadline:

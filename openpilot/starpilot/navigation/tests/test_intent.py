@@ -144,6 +144,7 @@ def test_approaching_turn_does_not_start_or_replace_lane_change(sm):
   from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
   cs = sm['carState']
   cs.steeringPressed, cs.steeringTorque = True, -1.
+  cs.vEgo = 21. * CV.MPH_TO_MS  # Above the current turn-guidance lane-change floor.
   helper = DesireHelper(LaneChangePolicy(minimum_speed_mps=0.))
   turn = matching_turn_signal(sm, NOW, supported=True)
   assert turn
@@ -159,147 +160,33 @@ def test_approaching_turn_does_not_start_or_replace_lane_change(sm):
   assert helper.desire == log.Desire.laneChangeRight
 
 
-def _at(sm, now):
-  """The fixture's messages, all fresh at now."""
-  for k in sm.logMonoTime:
-    sm.logMonoTime[k] = now
-  nav = sm['starpilotNavigation'].navigation
-  nav.frameMonoTime = nav.locationMonoTime = now
-  if 'longitudinalPlan' in sm:
-    sm['longitudinalPlan'].modelMonoTime = now
+# ---- fork patch 38: StarView's street map has a say in Turn Signal Guidance
 
-
-def _plan(sm):
-  sm['longitudinalPlan'] = NS(modelMonoTime=NOW, shouldStop=False)
-  sm.logMonoTime['longitudinalPlan'] = NOW
-  sm.valid['longitudinalPlan'] = sm.alive['longitudinalPlan'] = True
-
-
-def test_turn_pulse_sent_again_while_still_wanted(sm):
-  # fork fix (patch 36): the model remembers a desire pulse ~6.6 s; while the turn is still wanted it is pulsed again
-  from openpilot.starpilot.navigation.intent import TurnIntent, REPULSE_S
-  owner = TurnIntent()
-  _plan(sm)
-  out = []
-  for k in range(int(12 / 0.05)):
-    now = NOW + int(k * 0.05e9)
-    _at(sm, now)
-    out.append(owner.select(sm, now, log.Desire.none, supported=True, model_stop=False))
-  gaps = [k for k in range(1, len(out)) if out[k] == log.Desire.none]
-  assert len(gaps) == 2                                     # at 5 s and 10 s: one frame each
-  assert abs(gaps[0] * 0.05 - REPULSE_S) < 0.06 and out[gaps[0] + 1] == log.Desire.turnRight
-  assert out[0] == log.Desire.turnRight
-
-
-def test_long_stop_then_stop_request_at_pull_away_does_not_lose_the_turn(sm):
-  # approaching the light: the planner stops for it (latch), the car stands, pulls away while a stop is still asked for
-  # a moment - before patch 36 the turn stayed blocked until the next standstill
+def _guided(on=True):
   from openpilot.starpilot.navigation.intent import TurnIntent
   owner = TurnIntent()
-  _plan(sm)
-  t = [NOW]
-  def step(dt=0.05, model_stop=False):
-    t[0] += int(dt * 1e9)
-    _at(sm, t[0])
-    return owner.select(sm, t[0], log.Desire.none, supported=True, model_stop=model_stop)
-  assert step() == log.Desire.turnRight
-  sm['longitudinalPlan'].shouldStop = True
-  assert step() == log.Desire.none                          # braking for the light: latched (upstream behaviour)
-  sm['carState'].standstill, sm['carState'].vEgo = True, 0.
-  for _ in range(int(40 / 0.05)):                           # a 40 s red light
-    assert step() == log.Desire.none
-  sm['carState'].standstill, sm['carState'].vEgo = False, 1.
-  assert step(model_stop=True) == log.Desire.none           # pulling away, the model still says stop for a moment
-  sm['longitudinalPlan'].shouldStop = False
-  assert step() == log.Desire.none
-  outs = [step() for _ in range(25)]                        # nothing asks to stop for 1 s: the latch lets go
-  assert outs[-1] == log.Desire.turnRight
-  first = outs.index(log.Desire.turnRight)
-  assert all(o == log.Desire.turnRight for o in outs[first:])
+  owner.guidance = NS(sample=lambda *a, **k: NS(turn_signal_guidance=on))
+  owner.steering_capable = True
+  sm = {'carState': NS(canValid=True, canTimeout=False, gearShifter='drive', vEgo=5., standstill=False,
+                       leftBlinker=True, rightBlinker=False, leftBlindspot=False, rightBlindspot=False),
+        'carControl': NS(latActive=True), 'deviceState': NS(started=True, startedMonoTime=1),
+        'longitudinalPlan': NS(shouldStop=False, modelMonoTime=NOW)}
+  class SM(dict):
+    valid = dict.fromkeys(sm, True)
+    alive = dict(valid)
+    logMonoTime = dict.fromkeys(sm, NOW)
+  return owner, SM(sm)
 
 
-def test_latch_without_a_stop_still_holds(sm):
-  # a stop request while rolling (no standstill since) keeps blocking the turn: upstream's behaviour, unchanged
-  from openpilot.starpilot.navigation.intent import TurnIntent
-  owner = TurnIntent()
-  _plan(sm)
-  sm['longitudinalPlan'].shouldStop = True
-  _at(sm, NOW)
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False) == log.Desire.none
-  sm['longitudinalPlan'].shouldStop = False
-  for k in range(1, 60):
-    now = NOW + int(k * 0.05e9)
-    _at(sm, now)
-    assert owner.select(sm, now, log.Desire.none, supported=True, model_stop=False) == log.Desire.none
+@pytest.mark.parametrize('tablet,expected', [(None, log.Desire.turnLeft), ('turn', log.Desire.turnLeft), ('no', log.Desire.none)])
+def test_tablet_map_says_whether_the_blinker_is_a_turn(tablet, expected):
+  owner, sm = _guided()
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, tablet=tablet) == expected
 
 
-# ---- patch 38: your own blinker kept as a turn without a route (StarView's tablet sees a street on that side)
-
-def _no_route(sm):
-  sm['starpilotNavigation'].navigation.enabled = False
-  _plan(sm)
-
-
-def test_blinker_turn_without_a_route(sm):
-  from openpilot.starpilot.navigation.intent import TurnIntent
-  owner = TurnIntent()
-  _no_route(sm)
-  _at(sm, NOW)
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False) == log.Desire.none   # the tablet didn't ask
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.turnRight
-  sm['carState'].rightBlinker, sm['carState'].leftBlinker = False, True
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.turnLeft
-  sm['carState'].leftBlindspot = True
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.none
-  sm['carState'].leftBlindspot = False
-  sm['carState'].vEgo = 9.0                                   # over 20 mph: a lane change, not a turn
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.none
-  sm['carState'].vEgo = 5.
-  assert owner.select(sm, NOW, log.Desire.laneChangeLeft, supported=True, model_stop=False, blinker_turn=True) == \
-    log.Desire.laneChangeLeft                                 # a lane change already under way is kept
-  assert owner.select(sm, NOW, log.Desire.none, supported=False, model_stop=False, blinker_turn=True) == log.Desire.none
-
-
-def test_blinker_turn_kept_through_a_long_red_light(sm):
-  from openpilot.starpilot.navigation.intent import TurnIntent
-  owner = TurnIntent()
-  _no_route(sm)
-  t = [NOW]
-  def step(dt=0.05, model_stop=False):
-    t[0] += int(dt * 1e9)
-    _at(sm, t[0])
-    return owner.select(sm, t[0], log.Desire.none, supported=True, model_stop=model_stop, blinker_turn=True)
-  assert step() == log.Desire.turnRight
-  sm['longitudinalPlan'].shouldStop = True
-  assert step() == log.Desire.none                            # braking for the light
-  sm['carState'].standstill, sm['carState'].vEgo = True, 0.
-  for _ in range(int(60 / 0.05)):                             # a minute at the light
-    assert step() == log.Desire.none
-  sm['carState'].standstill, sm['carState'].vEgo = False, 1.
-  sm['longitudinalPlan'].shouldStop = False
-  outs = [step() for _ in range(25)]
-  assert outs[-1] == log.Desire.turnRight                     # still remembered when pulling away
-  outs = [step() for _ in range(int(11 / 0.05))]
-  assert outs.count(log.Desire.none) == 2                     # and pulsed again every 5 s while it's wanted
-
-
-def test_route_wins_over_the_blinker_turn(sm):
-  from openpilot.starpilot.navigation.intent import TurnIntent
-  owner = TurnIntent()
-  _plan(sm)
-  _at(sm, NOW)
-  sm['starpilotNavigation'].navigation.instruction.maneuverModifier = 'left'   # the route turns left, blinker right
-  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, blinker_turn=True) == log.Desire.none
-
-
-def test_blinker_turn_stops_a_lane_change_starting(sm):
-  from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-  from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
-  cs = sm['carState']
-  cs.steeringPressed, cs.steeringTorque = True, -1.
-  helper = DesireHelper(LaneChangePolicy(minimum_speed_mps=0.))
-  helper.update(cs, True, 1., navigation_turn=True)
-  assert helper.lane_change_state == log.LaneChangeState.off
+def test_guidance_off_means_no_turn_whatever_the_tablet_says():
+  owner, sm = _guided(on=False)
+  assert owner.select(sm, NOW, log.Desire.none, supported=True, model_stop=False, tablet='turn') == log.Desire.none
 
 
 def test_tablet_turn_file(tmp_path):
@@ -307,13 +194,16 @@ def test_tablet_turn_file(tmp_path):
   path = str(tmp_path / "turn")
   clock = [100.0]
   reader = blinker_turn.BlinkerTurn(path, clock=lambda: clock[0])
-  right = NS(leftBlinker=False, rightBlinker=True)
-  assert not reader.for_blinker(right)
+  right, left = NS(leftBlinker=False, rightBlinker=True), NS(leftBlinker=True, rightBlinker=False)
+  assert reader.for_blinker(right) is None                     # no say
   blinker_turn.write("right", path, clock=lambda: clock[0])
-  assert reader.for_blinker(right)
-  assert not reader.for_blinker(NS(leftBlinker=True, rightBlinker=False))
-  clock[0] += 2.0                                              # the tablet stopped asking
-  assert not reader.for_blinker(right)
+  assert reader.for_blinker(right) == "turn"
+  assert reader.for_blinker(left) == "no"
+  blinker_turn.write("none", path, clock=lambda: clock[0])
+  assert reader.for_blinker(right) == "no"
+  assert reader.for_blinker(NS(leftBlinker=False, rightBlinker=False)) is None
+  clock[0] += 2.0                                              # the tablet stopped saying: no say
+  assert reader.for_blinker(right) is None
   blinker_turn.write(None, path)
   assert reader.read() == ""
   with pytest.raises(ValueError):

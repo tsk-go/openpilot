@@ -60,6 +60,8 @@ class Controls:
     cloudlog.info("controlsd is waiting for CarParams")
     self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
     cloudlog.info("controlsd got CarParams")
+    from openpilot.starpilot.car.subaru.smoothing import read_frozen
+    self.subaru_smoothing = read_frozen(self.CP, self.params)
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP)
     self.hyundai_lateral_fault = LateralFaultLatch(self.CP.carFingerprint)
@@ -75,7 +77,9 @@ class Controls:
                  'extrinsicsCalibration', 'deviceMotion', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
                  'driverMonitoringState', 'onroadEvents', 'driverAssistance'] +
                 (['aolAxisState', 'aolSafetyWire'] if self.aol_replay or self.ordinary_axis_ack_required else []))
-    optional = list(dict.fromkeys(self.longitudinal_inputs.optional_services + ['deviceState', 'autoSteeringLearning']))
+    optional = list(dict.fromkeys(
+      self.longitudinal_inputs.optional_services + ['deviceState', 'autoSteeringLearning', 'starpilotSteeringTracking', 'pandaStates']
+    ))
     if optional:
       ignore = set(optional)
       self.sm = messaging.SubMaster(services + optional, poll='selfdriveState',
@@ -122,7 +126,8 @@ class Controls:
                      "startupPidGain": [list(row) for row in self.LaC.pid._k_p],
                      "startupPidLimits": [self.LaC.pid.neg_limit, self.LaC.pid.pos_limit]})
 
-    self.global_learning = GlobalRuntime(self.CP, self.CI, self.LaC)
+    from openpilot.starpilot.flm.live_trial_store import load_confirmed_history
+    self.global_learning = GlobalRuntime(self.CP, self.CI, self.LaC, confirmed_live_history=load_confirmed_history(self.params))
 
     from openpilot.starpilot.lateral.controller_selection import model_turn_assist_supported
     assist_enabled = self.vehicle_startup_preferences.turn_assist and model_turn_assist_supported(self.CP)
@@ -353,7 +358,8 @@ class Controls:
     if self.last_lane_centering_result is not None and self.last_lane_centering_result.correction != 0.0:
       baseline_curvature, _ = clip_curvature(CS.vEgo, previous_curvature, limit_rate(CS.vEgo, previous_curvature, lane_base_curvature, factor), lp.roll)
       self.lane_centering_applied = self.desired_curvature - baseline_curvature
-    lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    from openpilot.starpilot.car.subaru.smoothing import seconds as subaru_smooth_seconds, control_maximum
+    lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_smooth_seconds(CS.vEgo, control_maximum(self))
 
     actuators.curvature = self.desired_curvature
     automatic = getattr(self, 'global_learning', None)
@@ -438,6 +444,7 @@ class Controls:
       hudControl.leftLaneDepart = self.sm['driverAssistance'].leftLaneDeparture
       hudControl.rightLaneDepart = self.sm['driverAssistance'].rightLaneDeparture
 
+    feedback_input_limited = self.steer_limited_by_safety
     if CC.latActive:
       CO = self.sm['carOutput']
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
@@ -505,6 +512,21 @@ class Controls:
         feedback = learning_feedback
       except Exception:
         self._discard_global_learning()
+    if (automatic is not None and automatic.eligible and automatic.source is not None and
+        automatic.source.enabled and not automatic.source.manual and
+        self.CP.steerControlType == car.CarParams.SteerControlType.torque):
+      try:
+        from openpilot.starpilot.flm.feedback_observation import capture_controls
+        from openpilot.starpilot.flm.feedback_wire import write_consumption
+        observation = capture_controls(self, CC, control_ns=int(cc_send.logMonoTime), input_limited=feedback_input_limited)
+        if observation is not None:
+          feedback_copy = feedback.as_reader().as_builder()
+          write_consumption(feedback_copy.starpilotLateralState, observation)
+          feedback = feedback_copy
+      except Exception:
+        self.learning_feedback_prior_publish_ns = 0
+    else:
+      self.learning_feedback_prior_publish_ns = 0
     self.pm.send('starpilotLateralState', feedback)
 
   def run(self):

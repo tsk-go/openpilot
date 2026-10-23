@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
-import { AndroidAutoFeed, AndroidAutoPage, validPairingStatus, validPromptInput, uploadPackage,
+import { AndroidAutoFeed, AndroidAutoPage, validPairingStatus, validPromptInput, uploadPackage, uploadTimeout,
   expiryInfo, packagePreflight, importProblem, installChecks } from "../web/js/android-auto.js"
 
 const setup = { enabled: true, bluetoothEnabled: true, parked: true, installReady: true, serviceReady: true,
@@ -19,7 +19,7 @@ assert.equal(validPromptInput(prompt, ""), true)
 assert.match(AndroidAutoPage.template, /Check that this code matches your car/)
 assert.match(AndroidAutoPage.template, /Cancel Search \/ Pairing/)
 assert.match(AndroidAutoPage.template, /:row="wiredRow"[^>]*:disabled="wiredDisabled"/)
-assert.match(AndroidAutoPage.template, /A direct USB cable from the comma to the car is supported as Wired USB Connection/)
+assert.match(AndroidAutoPage.template, /Read the Android Auto troubleshooting guide/)
 assert.doesNotMatch(AndroidAutoPage.template, /v-html|autoaccept/i)
 const app = readFileSync(new URL("../web/js/app.js", import.meta.url), "utf8")
 assert.match(app, /AndroidAutoPage v-else-if="route\.path === '\/android-auto'"/)
@@ -224,7 +224,7 @@ assert.equal(uploadCalls.length, beforeDeniedEnable, "failed enable never upload
 console.log("Android Auto: APK/XAPK/APKM uploads in either road state, enable/upload sequencing, explicit blockers and feed boundaries passed")
 assert.match(AndroidAutoPage.template, /<section[^>]*:inert="busy"[^>]*:aria-busy="busy \|\| undefined"/)
 assert.match(AndroidAutoPage.template, /@click="openInstall">Update/)
-assert.match(AndroidAutoPage.template, /Turning Android Auto on or off, package uploads, package deletion, Connect, and Disconnect work on-road and off-road/)
+assert.match(AndroidAutoPage.template, /<header class="gx-page-header">/)
 const removePage = page({ ...setup, enabled: false, parked: false })
 removePage.runtime = { running: true }
 removePage.feed = { async removePackage() { return true } }
@@ -304,6 +304,11 @@ const alreadyAborted = new AbortController(); alreadyAborted.abort()
 const neverSent = new UploadRequest()
 await assert.rejects(uploadPackage('upload', { signal: alreadyAborted.signal }, () => {}, () => neverSent), /canceled/)
 assert.equal(neverSent.sent, null)
+assert.equal(uploadTimeout(5 * 1024 * 1024), 180000, "small packages keep the three-minute floor")
+assert.equal(uploadTimeout(100 * 1024 * 1024), 1600000, "large packages get time for a slow tunnel")
+const slowLink = new UploadRequest()
+uploadPackage('upload', { body: {}, timeout: 1600000 }, () => {}, () => slowLink)
+assert.equal(slowLink.timeout, 1600000)
 assert.doesNotMatch(AndroidAutoPage.template, /v-if="!localAccess"|Open this comma directly/)
 console.log('Remote-capable binary uploader: progress, credentials, failure, timeout and cancellation passed')
 

@@ -299,14 +299,14 @@ def exercise_bolt_cancel_recovery(self, identity, removed, *, critical=None, com
           events.add(getattr(EventName, communications))
         if regen or brake:
           events.add(EventName.pedalPressed)
-        if fault and critical in ('controlsMismatch', 'calibrationInvalid'):
+        if fault and critical in ('controlsMismatch', 'steerUnavailable'):
           events.add(getattr(EventName, critical))
         ctx['events'] = [int(event) for event in events.names]
         if communication_loss:
           self.assertTrue(events.contains(ET.NO_ENTRY), msg=ctx)
           self.assertTrue(events.contains(ET.SOFT_DISABLE), msg=ctx)
           self.assertEqual(events.contains(ET.IMMEDIATE_DISABLE),
-                           bool(fault and critical in ('controlsMismatch', 'permanentEPS')), msg=ctx)
+                           bool(fault and critical in ('controlsMismatch', 'steerUnavailable', 'permanentEPS')), msg=ctx)
         if regen or brake:
           self.assertIn(EventName.pedalPressed, events.names, msg=ctx)
           self.assertTrue(events.contains(ET.USER_DISABLE), msg=ctx)

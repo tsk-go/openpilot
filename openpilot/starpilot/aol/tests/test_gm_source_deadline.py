@@ -1,14 +1,43 @@
 """Volt route c0508: source cutoff must not replace an unexpired axis proof."""
+from collections import deque
 from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
 
 from opendbc.car.gm.tests.test_volt_sdgm_control import sdgm_params
+from openpilot.cereal import messaging
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.starpilot.aol.intent import read_settings
 from openpilot.starpilot.aol.tests import test_ioniq_availability as fixture
 from openpilot.starpilot.aol.tests.test_input_deadline_continuity import BASE, intent
+
+
+def bind_steering_receipts(sd, step, cleanup):
+  """Deliver the same declared producer receipt through its actual socket path."""
+  if sd.steering_companion is None:
+    return step
+  pending = deque()
+  original = messaging.recv_one_or_none
+
+  def receive(sock):
+    if sock is sd.steering_companion.sock:
+      return pending.popleft() if pending else None
+    return original(sock)
+
+  cleanup.enter_context(patch('openpilot.selfdrive.selfdrived.selfdrived.messaging.recv_one_or_none', side_effect=receive))
+
+  def observed_step(tick, **kwargs):
+    if not kwargs.get('timeout', False):
+      stamp = kwargs.get('state_stamp', 10_000_000_000 + tick * 10_000_000 + kwargs.get('offset_ns', 0))
+      receipt = messaging.new_message('starpilotCarState', valid=True, logMonoTime=stamp)
+      receipt.starpilotCarState.sourceCarStateMonoTime = stamp
+      receipt.starpilotCarState.lateralAuthorityUnavailable = kwargs.get('authority_unavailable', False)
+      kwargs['authority_message'] = receipt
+      pending.append(receipt.as_reader())
+    return step(tick, **kwargs)
+
+  return observed_step
 
 
 def profiles():
@@ -38,6 +67,7 @@ def test_volt_cutoff_keeps_only_original_lease_then_consumes_next_source(mode, s
     cleanup.callback(case.doCleanups)
     full = mode == 'ordinary'
     sd, controls, step = case._authority_callers(full, cp=cp.as_reader().as_builder(), genuine_events=True)
+    step = bind_steering_receipts(sd, step, cleanup)
     sd.aol_settings = read_settings(sd.params)
     cs = fixture.car_state(brake=mode == 'brake')
     cs.regenBraking = mode == 'regen'
@@ -46,6 +76,13 @@ def test_volt_cutoff_keeps_only_original_lease_then_consumes_next_source(mode, s
     assert old.lateralActive and command.latActive and bool(command.longActive) == full
     deadline = old.validUntilMonoTime
     clock = [BASE + 29_900_000]
+    actual_controls_receive = controls.sm.update_msgs
+
+    def empty_control_receive(timeout):
+      assert timeout == 0
+      actual_controls_receive(clock[0] / 1e9, [])
+
+    cleanup.enter_context(patch.object(controls.sm, 'update', side_effect=empty_control_receive))
     original = sd.update_process_health
 
     def finish_preamble():
@@ -57,6 +94,15 @@ def test_volt_cutoff_keeps_only_original_lease_then_consumes_next_source(mode, s
          patch.object(sd, 'update_process_health', side_effect=finish_preamble):
       held, _, _ = step(5, timeout=True, state_stamp=BASE, offset_ns=-100_000,
         intent_message=intent(BASE, 3), observed_state=cs, native_request_long=full)
+    from opendbc.car.gm.steering_authority import monitored_profile
+    if monitored_profile(cp):
+      # This monitored profile also needs its original steering-health receipt.
+      # At this point that source is older than30ms. Its missing successor cannot
+      # inherit health from an unexpired axis envelope or a fresh Panda grant.
+      assert not sd.aol_axis_publication_deferred
+      assert not held.lateralActive and not held.longitudinalActive
+      assert sd.steering_authority_unavailable and sd.aol_authority_lost
+      return
     assert sd.aol_axis_publication_deferred
     assert held.to_dict() == old.to_dict() and held.validUntilMonoTime == deadline
     assert not sd.aol_authority_lost
@@ -90,6 +136,7 @@ def test_volt_deferral_cannot_hide_driver_edges_or_failed_proof(bad):
   with OpenpilotPrefix(), ExitStack() as cleanup:
     cleanup.callback(case.doCleanups)
     sd, _, step = case._authority_callers(False, cp=sdgm_params(alpha=True), genuine_events=True)
+    step = bind_steering_receipts(sd, step, cleanup)
     sd.aol_settings = read_settings(sd.params)
     old, _, command = step(2, state_stamp=BASE, offset_ns=4_530_833,
       intent_message=intent(BASE, 3), native_request_long=False)
@@ -135,6 +182,7 @@ def test_ascm_separate_steering_companion_expiry_still_withdraws_outputs(cp):
   with OpenpilotPrefix(), ExitStack() as cleanup:
     cleanup.callback(case.doCleanups)
     sd, _, step = case._authority_callers(True, cp=cp.as_reader().as_builder(), genuine_events=True)
+    step = bind_steering_receipts(sd, step, cleanup)
     sd.aol_settings = read_settings(sd.params)
     from collections import deque
     queue = deque()

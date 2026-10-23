@@ -16,7 +16,7 @@ SESSION = ('galaxy', 'live-proof')
 class CompanionTests(unittest.TestCase):
   def setUp(self):
     self.state: dict = {'parked': True, 'valid': True, 'enabled': True, 'selected': ADAPTER}
-    self.devices = {CAR: {'address': CAR, 'path': '/org/bluez/hci0/dev_00_92_A5_2F_68_32',
+    self.devices: dict[str, dict] = {CAR: {'address': CAR, 'path': '/org/bluez/hci0/dev_00_92_A5_2F_68_32',
       'paired': True, 'connected': False, 'uuids': [HFP]},
       ADAPTER: {'address': ADAPTER, 'path': '/org/bluez/hci0/dev_50_5A_65_8B_8B_82',
       'paired': True, 'connected': True, 'uuids': []}}
@@ -27,8 +27,10 @@ class CompanionTests(unittest.TestCase):
     self.owner.parked = lambda: self.state['parked']
     self.owner.session_valid = lambda session: session == SESSION and self.state['valid']
     self.owner.companion_devices = {}
+    self.forgotten = []
     self.client = SimpleNamespace(adapter_identity=lambda: ('/org/bluez/hci0', {'Powered': True}, ':1.5'),
-      _objects=dict, _devices=lambda objects: list(self.devices.values()))
+      _objects=dict, _devices=lambda objects: list(self.devices.values()),
+      operation=lambda operation, address: self.forgotten.append((operation, address)))
     self.owner._client = Mock(side_effect=lambda: self.client)
     def call(*args, **kwargs):
       self.calls.append((args, kwargs))
@@ -58,8 +60,8 @@ class CompanionTests(unittest.TestCase):
     self.assertTrue(self.devices[ADAPTER]['connected'])
     self.assertFalse(self.lease.released)
 
-  def test_selected_adapter_and_non_hfp_or_unpaired_peers_never_change_radio(self):
-    for address, alteration in [(ADAPTER, {}), (CAR, {'paired': False}), (CAR, {'uuids': []}),
+  def test_selected_adapter_and_unpaired_or_foreign_peers_never_change_radio(self):
+    for address, alteration in [(ADAPTER, {}), (CAR, {'paired': False}),
                                 (CAR, {'path': '/org/bluez/hci1/dev_car'})]:
       before = dict(self.devices[address])
       self.devices[address].update(alteration)
@@ -68,6 +70,26 @@ class CompanionTests(unittest.TestCase):
       self.devices[address] = before
     self.assertEqual(self.calls, [])
     self.assertEqual(self.owner.companion_devices, {})
+
+  def test_accessory_connect_preserves_the_selected_car_and_projection(self):
+    from openpilot.starpilot.system.android_auto.supervisor import Supervisor
+    self.devices[CAR]['uuids'] = []  # HID controller, not an HFP car.
+    def operation(operation, address):
+      self.forgotten.append((operation, address))
+      self.devices[address]['connected'] = operation == 'connect'
+    self.client.operation = operation
+    host = Supervisor.__new__(Supervisor)
+    host._lock = threading.RLock()
+    host.config = {'receiver_address': ADAPTER, 'companion_address': 'saved-car', 'companion_name': 'My car'}
+    host._shared_bluetooth_owner = self.owner
+    with patch.object(host, '_phone', return_value=self.phone), patch('openpilot.starpilot.system.android_auto.identity.save_config') as save:
+      host.companion_bluetooth_action('connect', CAR, SESSION)
+      host.companion_bluetooth_action('disconnect', CAR, SESSION)
+      save.assert_not_called()
+    self.assertEqual(self.forgotten, [('connect', CAR), ('disconnect', CAR)])
+    self.assertEqual(host.config['companion_address'], 'saved-car')
+    self.assertEqual(self.owner.companion_devices, {})
+    self.assertFalse(self.lease.released)
 
   def test_session_pairing_and_changed_owner_are_fail_closed(self):
     alterations = [('valid', False), ('enabled', False), ('selected', CAR)]
@@ -87,10 +109,43 @@ class CompanionTests(unittest.TestCase):
   def test_no_owner_is_only_fallback_case_and_unsupported_operations_stay_denied(self):
     self.owner.phone_lease = None
     self.assertIsNone(self.owner.companion_action('connect', CAR, SESSION))
-    for operation in ('scan', 'pair', 'forget', 'power', 'stop_scan'):
+    for operation in ('scan', 'pair', 'power', 'stop_scan'):
       with self.assertRaises(ValueError):
         self.owner.companion_action(operation, CAR, SESSION)
     self.assertEqual(self.calls, [])
+
+  def test_forget_removes_another_device_while_projection_keeps_its_lease(self):
+    other = '02:00:00:00:00:09'
+    self.devices[other] = {'address': other, 'path': '/org/bluez/hci0/dev_old', 'paired': True, 'connected': False, 'uuids': []}
+    self.owner.companion_devices[other] = self.devices[other]['path']
+    result = self.owner.companion_action('forget', other, SESSION)
+    self.assertIsNotNone(result)
+    self.assertEqual(self.forgotten, [('forget', other)])
+    self.assertNotIn(other, self.owner.companion_devices)
+    self.assertFalse(self.lease.released)
+    self.assertIs(self.owner.phone_lease, self.lease)
+
+  def test_forget_never_removes_the_projection_receiver_or_foreign_devices(self):
+    with self.assertRaises(Rejected) as error:
+      self.owner.companion_action('forget', ADAPTER, SESSION)
+    self.assertEqual(error.exception.code, 'projection_active')
+    self.devices[CAR]['path'] = '/org/bluez/hci1/dev_car'
+    with self.assertRaises(Rejected):
+      self.owner.companion_action('forget', CAR, SESSION)
+    del self.devices[CAR]
+    with self.assertRaises(Rejected):
+      self.owner.companion_action('forget', CAR, SESSION)
+    self.assertEqual(self.forgotten, [])
+
+  def test_forget_is_fail_closed_during_pairing_and_for_expired_sessions(self):
+    self.state['valid'] = False
+    with self.assertRaises(Rejected):
+      self.owner.companion_action('forget', CAR, SESSION)
+    self.state['valid'] = True
+    self.lease.session = SESSION
+    with self.assertRaises(Rejected):
+      self.owner.companion_action('forget', CAR, SESSION)
+    self.assertEqual(self.forgotten, [])
 
   def test_failed_connect_revokes_new_admission_without_releasing_projection(self):
     def failure(): raise TimeoutError('D-Bus operation timed out')
@@ -240,14 +295,60 @@ class CompanionTests(unittest.TestCase):
     self.assertEqual(self.daemon_call(), {'handled': False})
 
   def test_daemon_denials_and_timeouts_never_produce_normal_owner_fallback(self):
-    self.assertEqual(self.daemon_call(address=ADAPTER), {'handled': True, 'error_code': 'busy'})
+    self.assertEqual(self.daemon_call(address=ADAPTER), {'handled': True, 'error_code': 'projection_active',
+                                                         'message': 'Stop projection before changing its adapter'})
     self.lease.session = SESSION
-    self.assertEqual(self.daemon_call(), {'handled': True, 'error_code': 'busy'})
+    self.assertEqual(self.daemon_call(), {'handled': True, 'error_code': 'busy', 'message': 'Finish Android Auto pairing first'})
     self.lease.session = None
     def timeout(): raise TimeoutError('No profile reply')
     self.hook = timeout
     self.assertEqual(self.daemon_call(), {'handled': True, 'error_code': 'service_unavailable'})
     self.assertFalse(self.lease.released)
+
+  def test_power_off_goes_through_the_owner_and_power_on_is_a_no_op(self):
+    self.owner.request = Mock(return_value={'powered': False})  # test double
+    self.assertEqual(self.owner.companion_power(False, SESSION), {'powered': False})
+    self.owner.request.assert_called_once_with('power', enabled=False, session=SESSION)
+    self.owner.request.reset_mock()
+    result = self.owner.companion_power(True, SESSION)
+    assert result is not None
+    self.assertTrue(result['powered'])
+    self.owner.request.assert_not_called()
+
+  def test_power_refusals_and_no_lease(self):
+    self.state['valid'] = False
+    with self.assertRaises(Rejected) as error:
+      self.owner.companion_power(False, SESSION)
+    self.assertEqual(error.exception.code, 'session_expired')
+    self.state['valid'] = True
+    self.lease.session = SESSION
+    with self.assertRaises(Rejected) as error:
+      self.owner.companion_power(False, SESSION)
+    self.assertEqual(error.exception.code, 'busy')
+    self.lease.session = None
+    self.owner.phone_lease = None
+    self.assertIsNone(self.owner.companion_power(False, SESSION))
+
+  def power_call(self, enabled=False, valid=True, parked=True):
+    supervisor = SimpleNamespace(companion_power=self.owner.companion_power,
+      bind_source_session=lambda session: self.fail('Companion command must not rebind projection source'))
+    request = {'command': 'bluetooth_power', 'source': SESSION[1], 'enabled': enabled}
+    with patch('openpilot.common.params.Params') as params:
+      params.return_value.get_bool.return_value = True
+      return daemon.handle(Mock(wraps=supervisor), request, Mock(wraps=SimpleNamespace(valid=lambda source: valid)), parked=lambda: parked)
+
+  def test_daemon_power_command_requires_proof_park_and_a_boolean(self):
+    self.owner.request = Mock(return_value={'powered': False})  # test double
+    self.assertEqual(self.power_call(), {'handled': True, 'bluetooth': {'powered': False}})
+    self.assertEqual(self.power_call(parked=False), {'handled': True, 'error_code': 'park_required'})
+    with self.assertRaises(RuntimeError):
+      self.power_call(valid=False)
+    with self.assertRaises(ValueError):
+      self.power_call(enabled='off')  # wrong type on purpose
+    self.lease.session = SESSION
+    self.assertEqual(self.power_call(), {'handled': True, 'error_code': 'busy', 'message': 'Finish Android Auto pairing first'})
+    self.owner.phone_lease = None
+    self.assertEqual(self.power_call(), {'handled': False})
 
   def test_daemon_requires_live_source_and_park_before_touching_owner(self):
     with self.assertRaises(RuntimeError):

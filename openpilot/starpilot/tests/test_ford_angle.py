@@ -117,7 +117,7 @@ class TestFordAngleStartup(unittest.TestCase):
             observed[0][0x5A] = 8
             observed[2].update({0x3D6: 8, 0x186: 8})
             cp = CarInterface.get_params(identity, observed, [], alpha, release, False)
-            long = alpha and (identity not in CANFD or not release)
+            long = alpha
             self.assertEqual(cp.openpilotLongitudinalControl, long)
             self.assertTrue(cp.pcmCruise)
             self.assertEqual(cp.alternativeExperience, 0)
