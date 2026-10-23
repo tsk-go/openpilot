@@ -126,6 +126,12 @@ Paths are under `openpilot/` unless noted.
     `starview_turn`. Upstream turns any blinker under 20 mph into a turn (Galaxy: Turn Signal Guidance, the on/off). With
     StarView's switch on and our street on its map, the tablet says whether there's a street to turn into on that side
     within 250 ft (OSM: not a one-way coming at us, not service): "none" -> no turn (pulling over). No say -> upstream.
+26. Advice from StarView's New ideas (patch 39): `starview/advice.py` (starviewd action `advice` {cap, follow, offset,
+    why} -> /dev/shm/starview_advice, read at most every 0.25 s, 1.5 s old = none). Only ever gentler: the planner's
+    v_cruise lowered to `cap` (never below 10 mph, never raised; `longitudinal_planner.py` after the navigation ceiling),
+    up to 0.6 s added to the follow time (`mpc_follow`), Lane Centering's offset shifted by up to 0.3 m
+    (`lane_runtime.LaneCenteringHost.sample`). Everything that decides (speed bumps, potholes, cut-ins, lights...) runs
+    on the tablet (StarView 2.67).
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

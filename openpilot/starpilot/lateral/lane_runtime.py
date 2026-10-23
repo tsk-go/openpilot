@@ -1,6 +1,7 @@
 """Saved lane-centering preferences and fresh host authority, opt-in at startup."""
 
 import math
+from dataclasses import replace
 import os
 from pathlib import Path
 
@@ -58,6 +59,8 @@ class LaneCenteringHost:
     self.settings = LaneCenteringSettings()
     self.last_refresh_ns: int | None = None
     self.last_tick_ns: int | None = None
+    from openpilot.starpilot.system.starview.advice import Advice
+    self.advice = Advice()   # fork patch 39: the tablet may shift us a little inside the lane
 
   def sample(self, sm, *, now_ns: int, lateral_active: bool, longitudinal_active: bool) -> LaneCenteringRequest | None:
     previous = self.last_tick_ns
@@ -80,4 +83,8 @@ class LaneCenteringHost:
     mode = (ControlMode.COMBINED if longitudinal_active else ControlMode.LATERAL_ONLY) if lateral_active else (
       ControlMode.LONGITUDINAL_ONLY if longitudinal_active else ControlMode.OFF)
     dt = DT_CTRL if previous is None or discontinuity else (now_ns - previous) / 1e9
-    return LaneCenteringRequest(mode, self.settings, dt, discontinuity)
+    settings = self.settings
+    shift = self.advice.offset()
+    if shift:
+      settings = replace(settings, offset_m=min(0.3, max(-0.3, settings.offset_m + shift)))
+    return LaneCenteringRequest(mode, settings, dt, discontinuity)

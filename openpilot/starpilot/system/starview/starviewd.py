@@ -1729,6 +1729,12 @@ class Hub:
           return {"ok": True, "pct": nudge.write(req.get("pct")) or 100}
         except (TypeError, ValueError) as e:
           return {"ok": False, "error": str(e)}
+      if act == "advice":  # {"cap", "follow", "offset", "why"} or {}: gentler driving from the tablet's New ideas (advice.py)
+        from openpilot.starpilot.system.starview import advice
+        try:
+          return {"ok": True, "advice": advice.write({k: req.get(k) for k in ("cap", "follow", "offset", "why") if req.get(k) is not None})}
+        except OSError as e:
+          return {"ok": False, "error": str(e)}
       if act == "turn_intent":  # {"side": "left"/"right"/"none"/null}: is there a street to turn into on that side (blinker_turn.py)
         from openpilot.starpilot.system.starview import blinker_turn
         try:

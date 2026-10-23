@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.navigation.intent import cruise_ceiling as navigation_ceiling
+from openpilot.starpilot.system.starview.advice import Advice
 from openpilot.starpilot.car.tesla.preap_adaptive import startup_owner as preap_adaptive_owner
 from openpilot.starpilot.longitudinal.vehicle_policy import forecast_should_stop, planner_cost_owner, far_follow_owner
 from openpilot.starpilot.longitudinal.cruise_ceiling import CruiseCeiling, CurveCeiling, select_cruise_ceiling, select_curve_ceiling
@@ -97,6 +98,7 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, clock_ns: Callable[[], int] = time.monotonic_ns):
     self.CP = CP
+    self.starview_advice = Advice()   # fork patch 39: the tablet's advice (only ever gentler)
     self.mpc = LongitudinalMpc(dt=dt)
     self.model_lead_history = ModelLeadHistory()
     self.fcw = False
@@ -265,9 +267,12 @@ class LongitudinalPlanner:
         follow_seconds=selected_follow, active=profile_eligible and not reset_state)
       if preap_acceleration_cap is not None:
         acceleration_cap = preap_acceleration_cap
+    mpc_follow = follow if follow is not None else (self.last_profile.follow_seconds if self.last_profile is not None else None)
+    extra_follow = self.starview_advice.extra_follow() if profile_eligible and not reset_state else 0.0
+    if extra_follow > 0.0:   # fork patch 39: more room (a cut-in spot, a car drifting toward us...)
+      mpc_follow = (mpc_follow if mpc_follow is not None else get_T_FOLLOW(sm['selfdriveState'].personality)) + extra_follow
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
-                    follow_seconds=follow if follow is not None else
-                    (self.last_profile.follow_seconds if self.last_profile is not None else None),
+                    follow_seconds=mpc_follow,
                     acceleration_max=acceleration_cap,
                     stop_line_m=self.force_stop_plan.obstacle_m, modelV2=qualified_model_leads(sm, sample_now_ns, self.model_lead_history))
 
@@ -297,6 +302,9 @@ class LongitudinalPlanner:
     navigation_target = navigation_ceiling(sm, self.CP, sample_now_ns, v_cruise) if profile_eligible else None
     if navigation_target is not None:
       v_cruise = min(v_cruise, navigation_target)
+    advice_cap = self.starview_advice.speed_cap() if profile_eligible else None
+    if advice_cap is not None:   # fork patch 39: a lower set speed from the tablet (a speed bump, a pothole...)
+      v_cruise = min(v_cruise, advice_cap)
     coast_plan = None
     if wheel_coast is not None:
       owner, wheel_params = wheel_coast
