@@ -38,8 +38,7 @@ def read_settings(params) -> LaneCenteringSettings:
       raise ValueError('Invalid lane strength')
     if not math.isfinite(offset) or not -0.3 <= offset <= 0.3 or not math.isfinite(authority) or not 0 <= authority <= 1:
       raise ValueError('Invalid lane tuning')
-    from openpilot.starpilot.system.starview import lane_one_line
-    return LaneCenteringSettings(enabled, offset, authority, pause, strength, lane_one_line.read())
+    return LaneCenteringSettings(enabled, offset, authority, pause, strength)
   except (OSError, ValueError):
     return LaneCenteringSettings()
 

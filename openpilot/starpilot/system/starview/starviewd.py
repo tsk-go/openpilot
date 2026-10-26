@@ -1741,12 +1741,6 @@ class Hub:
           return {"ok": True, "side": blinker_turn.write(req.get("side"))}
         except (OSError, ValueError) as e:
           return {"ok": False, "error": str(e)}
-      if act == "lane_one_line_set":  # {"on": bool}: Lane Centering also steers by one good line (lane_one_line.py)
-        from openpilot.starpilot.system.starview import lane_one_line
-        try:
-          return {"ok": True, "on": lane_one_line.write(req.get("on"))}
-        except (OSError, ValueError) as e:
-          return {"ok": False, "error": str(e)}
       if act == "rtk_rtcm":  # {"b64": RTCM3 bytes}: corrections the tablet fetched from the NTRIP caster, for rtk.py
         import base64
         b64 = req.get("b64")

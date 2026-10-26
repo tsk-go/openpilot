@@ -20,13 +20,6 @@ the center-error deadband is 0.08 m. End-to-end authority controls how strongly
 a confident model path reduces the contribution between 0.15 and 0.50 m of
 center error. Raw curvature is capped at 0.004 and scaled by 0.30.
 
-One line (fork patch 37, off unless StarView's switch is on): when exactly one inner
-line qualifies, the target is that line plus or minus half the lane width averaged
-while both lines qualified (trusted for 300 m, else 3.6 m), at half strength (a
-quarter without a recent width). A road edge with standard deviation at most 0.5 m
-on the missing side keeps the target 1.1 m from it, and a line that peels more than
-0.5 m away from the model path (an exit or merge) is not followed.
-
 Acquisition uses a 0.4 s exponential filter. Signal pause and confidence loss
 release the contribution over 0.2 s; driver override resets it immediately.
 Signal pause takes precedence over the lane-change reset when both apply.
