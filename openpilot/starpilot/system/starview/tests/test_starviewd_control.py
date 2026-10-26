@@ -373,3 +373,78 @@ def test_nav_preview_never_takes_the_request_number_for_a_mapbox_place():
   assert got[-1] == ({"name": "Work", "latitude": 40.6, "longitude": -73.8}, {"latitude": 40.5, "longitude": -73.9})
   hub.control({"action": "nav_preview", "id": "r13", "placeId": "poi/1", "searchId": "s1", "name": "Starbucks"})
   assert got[-1][0] == {"name": "Starbucks", "searchId": "s1", "id": "poi/1"}
+
+
+def _slc_receiver(tmp_path, monkeypatch):
+  from openpilot.starpilot.system.android_auto.projection_slc_action import SlcActionReceiver
+  path = tmp_path / "slc.sock"
+  monkeypatch.setattr(starviewd, "SLC_ACTION_SOCKET", str(path))
+  return SlcActionReceiver(path)
+
+
+def test_slc_action_reaches_the_native_ui_as_the_car_screens_tap(tmp_path, monkeypatch):
+  from openpilot.starpilot.ui.onroad_state import SlcActionKind, SlcUiRequest
+  receiver = _slc_receiver(tmp_path, monkeypatch)
+  try:
+    hub = make_hub(onroad=True, started=True)
+    ack = hub.control({"action": "slc_action", "id": "r1", "kind": "accept", "session": "s-1", "decision": 7,
+                       "presentation": 9, "speed": 17.8816})
+    assert ack == {"ok": True}
+    assert receiver.drain() == [SlcUiRequest(SlcActionKind.ACCEPT, "s-1", 7, 9, 17.8816)]
+    assert hub.control({"action": "slc_action", "kind": "adopt", "session": "s-1", "decision": 0, "presentation": 9,
+                        "speed": 13.4})["ok"]
+    assert receiver.drain()[0].kind == SlcActionKind.ADOPT
+  finally:
+    receiver.close()
+
+
+@pytest.mark.parametrize("bad", [
+  {"kind": "delete", "session": "s", "decision": 1, "presentation": 1, "speed": 10},
+  {"kind": "accept", "session": "", "decision": 1, "presentation": 1, "speed": 10},
+  {"kind": "accept", "session": "s", "decision": 1, "presentation": 0, "speed": 10},
+  {"kind": "accept", "session": "s", "decision": 1, "presentation": 1, "speed": float("nan")},
+  {"kind": "accept", "session": "s", "decision": "x", "presentation": 1, "speed": 10},
+  {"kind": "accept", "session": "s", "decision": 1, "presentation": 1},
+])
+def test_slc_action_refuses_malformed_taps(tmp_path, monkeypatch, bad):
+  receiver = _slc_receiver(tmp_path, monkeypatch)
+  try:
+    hub = make_hub(onroad=True, started=True)
+    assert hub.control({"action": "slc_action", **bad})["ok"] is False
+    assert receiver.drain() == []
+  finally:
+    receiver.close()
+
+
+def test_slc_action_only_while_driving(tmp_path, monkeypatch):
+  receiver = _slc_receiver(tmp_path, monkeypatch)
+  try:
+    ack = make_hub().control({"action": "slc_action", "kind": "accept", "session": "s", "decision": 1, "presentation": 1, "speed": 10})
+    assert ack["ok"] is False and receiver.drain() == []
+  finally:
+    receiver.close()
+
+
+def test_slc_action_without_the_native_ui_says_so(tmp_path, monkeypatch):
+  monkeypatch.setattr(starviewd, "SLC_ACTION_SOCKET", str(tmp_path / "nobody.sock"))
+  ack = make_hub(onroad=True, started=True).control({"action": "slc_action", "kind": "accept", "session": "s", "decision": 1,
+                                                     "presentation": 1, "speed": 10})
+  assert ack["ok"] is False and "speed limit" in ack["error"]
+
+
+def test_the_tablet_gets_the_side_view_settings():
+  hub = make_hub(onroad=True, started=True)
+  hub.params.values.update({"PIPPreviewEnabled": True, "PIPPreviewShowOnBlinker": True,
+                            "PIPPreviewMask": {"width": 1928, "height": 1208, "crop_size": 580, "center_left": [315, 548], "center_right": None}})
+  hub._param_keys = {"PIPPreviewEnabled", "PIPPreviewShowOnBlinker", "PIPPreviewMask", "PIPPreviewShowOnBSM", "PIPPreviewInvert"}
+  hub._chestnut_display = dict
+  hub._model_label = lambda: ""
+  p = hub._build_params_snapshot()["p"]
+  assert p["PIPPreviewEnabled"] is True and p["PIPPreviewMask"]["center_right"] is None
+
+
+def test_slc_action_kinds_match_the_native_ui():
+  from openpilot.starpilot.ui.onroad_state import SlcActionKind
+  from openpilot.starpilot.system.android_auto.projection_slc_action import DEFAULT_SOCKET
+  assert set(starviewd.SLC_ACTION_KINDS) == {k.value for k in SlcActionKind}
+  assert starviewd.SLC_ACTION_SOCKET == DEFAULT_SOCKET

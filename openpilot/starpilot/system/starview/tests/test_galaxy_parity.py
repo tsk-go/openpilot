@@ -16,7 +16,8 @@ ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 
 # What StarView mirrors (as of StarView 2.73.2)
 MIRRORED_SCALES = {"lane-strength"}
-ROW_FIELDS = {"action", "available", "choices", "confirm", "defaultValue", "displayScale", "label", "maximum", "minimum", "page", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
+ROW_FIELDS = {"action", "available", "choices", "confirm", "defaultValue", "displayScale", "label", "maximum", "minimum", "page",
+              "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
 PRESENTATION_SHA256 = "cfadb55e311513d364d35269b42dc545388d507b18e1f7b49cbf463bdffd9643"
 
 
@@ -33,7 +34,7 @@ def presentation_source() -> str:
 def test_galaxy_row_presentation_unchanged():
   sha = hashlib.sha256(presentation_source().encode()).hexdigest()
   assert sha == PRESENTATION_SHA256, (
-    f"Galaxy's setting-row presentation changed (galaxy-setting-row.js, sha256 {sha}): mirror it in StarView's "
+    f"Galaxy's setting-row presentation changed (galaxy-setting-row.js, sha256 {sha}): mirror it in StarView's " +
     "GalaxyRows.kt / GalaxySettingsView.kt, then record the new sha256 in this test")
 
 

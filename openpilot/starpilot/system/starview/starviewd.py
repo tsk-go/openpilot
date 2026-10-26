@@ -47,6 +47,7 @@ import os
 import secrets
 import struct
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -107,6 +108,8 @@ UI_PARAMS_PERSISTENT = [
   "Offroad_ChestnutUpdateFailed", "Offroad_ChestnutUsbSlow", "Offroad_IsTakingSnapshot", "Offroad_NeosUpdate",
   "Offroad_UnregisteredHardware", "Offroad_CarUnrecognized", "Offroad_NoFirmware", "Offroad_Recalibration",
   "Offroad_DriverMonitoringUncertain", "Offroad_ExcessiveActuation",
+  # Big UI's side views from the cabin camera (pip_preferences.py): the tablet draws the same bubbles
+  "PIPPreviewEnabled", "PIPPreviewMask", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM", "PIPPreviewInvert",
 ]
 UI_PARAMS_MEMORY = ["CEStatus", "NavInstructionState", "NavInstructionCollapsed", "VisionSpeedLimit",
                     "SpeedLimitAccepted", "OnroadDistanceButtonPressed", "SwitchbackModeEnabled"]
@@ -126,6 +129,9 @@ CONTROL_WRITE_PERSISTENT = {
   # Software / Network
   "AutomaticUpdates", "UpdaterTargetBranch", "GsmRoaming", "GsmMetered", "GsmApn",
 }
+# Big UI's speed-limit buttons (projection_slc_action.py DEFAULT_SOCKET / SlcActionKind), sent like the car screen's
+SLC_ACTION_SOCKET = "/tmp/starpilot-projection-slc.sock"
+SLC_ACTION_KINDS = ("accept", "reject", "adopt")
 CONTROL_WRITE_MEMORY = {"OnroadDistanceButtonPressed", "SpeedLimitAccepted", "NavInstructionCollapsed"}
 # toggles that restart openpilot when changed while the car is on (toggles.py needs_restart / developer.py)
 RESTART_PARAMS = {"OpenpilotEnabledToggle", "SafeMode", "RecordFront", "RecordAudio", "AlphaLongitudinalEnabled"}
@@ -1541,6 +1547,33 @@ class Hub:
         out["p"]["IsOnroad"] = True   # the tablet shows the drive screens, as when that drive was recorded
     return out
 
+  def _slc_action(self, req: dict) -> dict:
+    """Big UI's speed-limit buttons from the tablet (Accept / Decline / Use limit N): handed to the native UI the way the
+    car screen's taps are (SlcActionSender in projection_slc_action.py, same datagram). The native UI checks each one
+    against the live slcState (session, decision, presentation) and publishes it; a stale or mismatched tap does
+    nothing. Not imported from there: that module pulls in the whole onroad UI (raylib, the MPC) - too heavy here."""
+    if not self.started:
+      return {"ok": False, "error": "Speed limit buttons work while driving."}
+    try:
+      kind, session = str(req["kind"]), str(req["session"])
+      decision, presentation, speed = int(req["decision"]), int(req["presentation"]), float(req["speed"])
+    except (KeyError, TypeError, ValueError):
+      return {"ok": False, "error": "bad speed limit action"}
+    if (kind not in SLC_ACTION_KINDS or not session or len(session) > 128 or presentation <= 0 or decision < 0 or
+        not math.isfinite(speed) or speed <= 0):
+      return {"ok": False, "error": "bad speed limit action"}
+    payload = json.dumps({"kind": kind, "session": session, "decision": decision, "presentation": presentation,
+                          "speed": speed}).encode()
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+      sock.setblocking(False)
+      sock.sendto(payload, SLC_ACTION_SOCKET)
+    except OSError:
+      return {"ok": False, "error": "The comma's screen isn't taking speed limit taps right now."}
+    finally:
+      sock.close()
+    return {"ok": True}
+
   def control(self, req: dict) -> dict:
     """Allow-listed writes. Returns a JSON-able ack."""
     act = req.get("action")
@@ -1787,6 +1820,8 @@ class Hub:
         if self._aol_steering():
           return {"ok": False, "error": "Always On Lateral is steering: turn it off to change the drive state."}
         return drive_state_request(self.params, {"default": "auto"}.get(mode, mode))
+      if act == "slc_action":
+        return self._slc_action(req)
       return {"ok": False, "error": f"unknown action {act}"}
     except Exception as e:
       cloudlog.exception("starview: control")
