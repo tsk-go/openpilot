@@ -27,6 +27,10 @@
 `SecretGoodStarPilot_v2` with a merge commit (`git fetch https://github.com/firestar5683/StarPilot.git SecretGoodStarPilot
 && git merge --no-edit -m "Merge upstream StarPilot SecretGoodStarPilot" FETCH_HEAD`), then a normal push.
 Never rebase or force-push for a sync: the local commits must be kept as they are. On a conflict, stop and ask.
+After the merge, run `pytest openpilot/starpilot/system/starview/tests/test_galaxy_parity.py`. It fails when Galaxy
+changed how its settings rows are presented (galaxy-setting-row.js, a new displayScale, new row fields). StarView draws
+those rows natively, so tell the owner: the StarView app needs the same change (GalaxyRows.kt / GalaxySettingsView.kt);
+record the new fingerprint in the test only after the app matches.
 
 # Fork fixes to drop when upstream fixes them
 
