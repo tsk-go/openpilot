@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import pyray as rl
+import pytest
 
 from openpilot.cereal import log, messaging
 from openpilot.starpilot.ui.onroad_state import AlertSize, ObservationKind
@@ -1049,3 +1050,23 @@ class TestHostOffroad(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+@pytest.mark.parametrize('phase,label,present', [('active', 'Jetlink Model', True),
+                                               ('ready', 'Jetlink Model', True), ('connecting', '', True),
+                                               ('disconnected', '', False), ('unavailable', '', False),
+                                               ('off', '', False)])
+def test_home_jetlink_model_name_and_gpu_share_existing_feed(phase, label, present):
+  from openpilot.starpilot.models.jetlink_status import JetlinkStatus
+  ui = ui_fake()
+  feed = Mock()
+  feed.snapshot.return_value = JetlinkStatus('Computer', phase, port='connected' if present else None)
+  ui.jetlink_status_feed = feed
+  ui.chestnut_state = NS(value='active' if phase == 'active' else 'loading')
+  adapter = RuntimeSnapshotAdapter(ui)
+  with patch.object(adapter._jetlink, 'set_enabled') as enable:
+    home = adapter.build(ShellMode.HOME, now_ns=NOW).home
+  enable.assert_called_once_with(False)
+  assert home.model_label == label
+  assert home.gpu_present is present
+  assert home.gpu_active is (phase == 'active')

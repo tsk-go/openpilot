@@ -14,6 +14,9 @@ AUTO_RESUME_CARS = frozenset((CAR.TOYOTA_RAV4H, CAR.TOYOTA_HIGHLANDER, CAR.TOYOT
 
 
 def hardware_supported(candidate, fingerprint, car_fw):
+  if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+    from opendbc.car.toyota import matrix_filter
+    return matrix_filter.hardware_supported(candidate, fingerprint, car_fw, length=4)
   if (candidate not in PROFILES or fingerprint.get(0, {}).get(0x2FF) != 4 or
       any(address in messages for messages in fingerprint.values() for address in (0x201, 0x2AA)) or
       any(bus not in (0, 2) or messages[0x2FF] != 4 for bus, messages in fingerprint.items() if 0x2FF in messages) or
@@ -44,6 +47,11 @@ def apply(cp):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
+  if cp is not None and cp.carFingerprint == CAR.TOYOTA_MATRIX_RETROFIT:
+    from opendbc.car.toyota import matrix_filter
+    return matrix_filter.configured(cp, length=4)
   if (cp is None or cp.brand != 'toyota' or cp.carFingerprint not in PROFILES or cp.notCar or cp.passive or cp.dashcamOnly or
       cp.secOcRequired or not cp.pcmCruise or len(cp.safetyConfigs) != 1 or
       cp.steerControlType != structs.CarParams.SteerControlType.torque):
@@ -64,6 +72,9 @@ def enabled(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

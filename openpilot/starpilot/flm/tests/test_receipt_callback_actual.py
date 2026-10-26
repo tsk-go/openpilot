@@ -113,7 +113,7 @@ def test_parent_renews_actual_source_and_retains_real_collector_block(tmp_path, 
     # Arrival bookkeeping now samples health before draining/renewing receipts.
     # Those calls confer no native authority; stop only at the original
     # post-drain physical-admission boundary, before any fitting/publication.
-    if current[0] >= BASE + 512_000_000:
+    if after_drain and current[0] >= BASE + 512_000_000:
       raise StopIteration
     return False
 

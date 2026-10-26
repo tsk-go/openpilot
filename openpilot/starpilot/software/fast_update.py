@@ -136,8 +136,6 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
       raise FastUpdateError('Fast Update requires fresh parked state')
     if git('symbolic-ref', '--short', 'HEAD').strip() != initial_branch:
       raise FastUpdateError('Installed branch changed; refresh and try again')
-    if git('status', '--porcelain', '--untracked-files=no').strip():
-      raise FastUpdateError('Tracked source has local changes')
 
   git('check-ref-format', '--branch', branch)
   initial_branch = git('symbolic-ref', '--short', 'HEAD').strip()
@@ -178,7 +176,7 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
   launch = git('show', f'{target}:launch_env.sh')
   if not current_os or required_os_version(launch) != current_os:
     raise FastUpdateIncompatible('Update requires a different or unverified operating system')
-  if target == previous and branch == initial_branch:
+  if target == previous and branch == initial_branch and not git('status', '--porcelain', '--untracked-files=no').strip():
     notify('complete', 'Already up to date.')
     return 'up-to-date'
   for revision in (previous, target):
@@ -218,6 +216,15 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
 
   retained = optional('rev-parse', '--verify', 'refs/starpilot/previous^{commit}')
   retained_branch = optional('config', '--local', '--get', 'starpilot.previousVersion')
+  local_backup = None
+  if git('status', '--porcelain', '--untracked-files=no').strip():
+    notify('preparing', 'Saving local tracked changes before installation...')
+    local_backup = git('stash', 'create').strip()
+    if not re.fullmatch(r'[0-9a-f]{40}', local_backup):
+      raise FastUpdateError('Could not back up local tracked changes')
+    backup_ref = f'refs/starpilot/local-changes/{time.time_ns()}'
+    git('update-ref', backup_ref, local_backup)
+    notify('preparing', f'Local changes saved as {backup_ref}.')
   git('update-ref', 'refs/starpilot/previous', previous)
   git('config', '--local', 'starpilot.previousVersion', f'{previous} {initial_branch}')
   try:
@@ -250,6 +257,8 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
       git('reset', '--hard', '--no-recurse-submodules', previous)
     if git('rev-parse', 'HEAD^{commit}').strip() != previous:
       raise FastUpdateError('Source rollback failed') from None
+    if local_backup is not None:
+      git('stash', 'apply', '--index', local_backup)
     if retained is None:
       git('update-ref', '-d', 'refs/starpilot/previous')
     else:

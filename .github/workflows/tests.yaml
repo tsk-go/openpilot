@@ -291,7 +291,7 @@ jobs:
   custom_pytest_complete:
     name: complete custom pytest catalog
     needs: custom_pytest
-    if: always()
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -320,7 +320,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     env:
       FUZZ_SEED: '0'
     steps:
@@ -330,7 +330,7 @@ jobs:
       run: scons
     - name: Gate every assigned lifecycle module serially
       timeout-minutes: 10
-      run: python3 tools/ci/run_vehicle_tests.py --suite aol-lifecycle --shard-index "${{ matrix.shard }}" --shard-count 8 --output "ci-results/aol-lifecycle-${{ matrix.shard }}"
+      run: python3 tools/ci/run_vehicle_tests.py --suite aol-lifecycle --shard-index "${{ matrix.shard }}" --shard-count 16 --output "ci-results/aol-lifecycle-${{ matrix.shard }}"
     - name: Save every lifecycle outcome and native build
       if: always()
       uses: actions/upload-artifact@v4
@@ -342,7 +342,7 @@ jobs:
   aol_lifecycle_complete:
     name: complete AOL lifecycle catalog
     needs: aol_lifecycles
-    if: always()
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -353,7 +353,7 @@ jobs:
         pattern: aol-lifecycle-*
         path: ci-results/aol-lifecycles
     - name: Require every full-catalog case exactly once and passed
-      run: python3 tools/ci/lifecycle_shards.py ci-results/aol-lifecycles --count 8 --output ci-results/aol-lifecycle-complete.json
+      run: python3 tools/ci/lifecycle_shards.py ci-results/aol-lifecycles --count 16 --output ci-results/aol-lifecycle-complete.json
     - name: Save complete catalog verdict
       if: always()
       uses: actions/upload-artifact@v4
@@ -395,7 +395,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [interfaces, safety-debug, safety-release]
+        suite: [interfaces, safety-debug]
     env:
       FUZZ_SEED: '0'
     steps:
@@ -419,6 +419,57 @@ jobs:
       with:
         name: vehicle-contracts-${{ matrix.suite }}
         path: ci-results/${{ matrix.suite }}/
+        if-no-files-found: error
+
+  safety_release_contracts:
+    name: RELEASE vehicle contracts (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      FUZZ_SEED: '0'
+    steps:
+    - uses: actions/checkout@v7
+    - run: ./tools/op.sh setup
+    - name: Build native host dependencies
+      run: scons
+    - name: Run every assigned RELEASE target serially
+      timeout-minutes: 20
+      run: python3 tools/ci/run_vehicle_tests.py --suite safety-release --shard-index "${{ matrix.shard }}" --shard-count 4 --output "ci-results/safety-release-${{ matrix.shard }}"
+    - name: Save every RELEASE outcome and native build
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: safety-release-${{ matrix.shard }}
+        path: ci-results/safety-release-${{ matrix.shard }}/
+        if-no-files-found: error
+
+  safety_release_complete:
+    name: complete RELEASE vehicle catalog
+    needs: safety_release_contracts
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: safety-release-*
+        path: ci-results/safety-release-shards
+    - name: Require every RELEASE case exactly once and passed
+      run: python3 tools/ci/lifecycle_shards.py ci-results/safety-release-shards --suite safety-release --count 4 --output ci-results/safety-release-complete.json
+    - name: Save complete RELEASE verdict
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: safety-release-complete
+        path: ci-results/safety-release-complete.json
         if-no-files-found: error
 
   recorded_vehicles:

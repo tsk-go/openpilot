@@ -44,6 +44,13 @@ def run(candidate, stock, bridge, scenario='nominal', aol=True, alpha=False, hyb
       assert safety.aol_get_permission_mask() == 0
 
   fw = helpers.firmware(candidate)
+  if hybrid and candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+    from opendbc.car.toyota.interface import CarInterface
+    cp = CarInterface.get_params(candidate, {0: {0x2FF: 8}, 1: {}, 2: {}},
+      [structs.CarParams.CarFw(ecu=structs.CarParams.Ecu.hybrid, address=0x7E2,
+        fwVersion=b"synthetic hybrid ECU response", brand="toyota", bus=0, logging=True)], False, False, False)
+    assert not legacy_sdsu.configured(cp)
+    return
   if hybrid:
     fw.append(
       structs.CarParams.CarFw(ecu=structs.CarParams.Ecu.hybrid, address=0x7E2, fwVersion=b'synthetic hybrid ECU response', brand='toyota', bus=0, logging=True)
@@ -63,6 +70,9 @@ def run(candidate, stock, bridge, scenario='nominal', aol=True, alpha=False, hyb
     assert_hybrid_release=hybrid,
     on_sample=observe,
     camera_messages=camera_messages,
+    manual_selection=candidate == CAR.TOYOTA_MATRIX_RETROFIT,
+    manual_filter_length=8 if candidate == CAR.TOYOTA_MATRIX_RETROFIT else None,
+    fingerprint_frames=[(0x2FF, bytes(8), 0)] if candidate == CAR.TOYOTA_MATRIX_RETROFIT else None,
   )
 
 

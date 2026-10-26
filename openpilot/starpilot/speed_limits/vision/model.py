@@ -296,6 +296,7 @@ class VisionModelCore:
     self.published_confidence = 0.0
     self.previous_published_speed_limit_mph = 0
     self.last_publish_change_at = 0.0
+    self.last_detection_at = 0.0
     self.last_published_support_at = 0.0
     self.episode = 0
     self.published_support_count = 0
@@ -308,6 +309,7 @@ class VisionModelCore:
     self.published_confidence = 0.0
     self.previous_published_speed_limit_mph = 0
     self.last_publish_change_at = 0.0
+    self.last_detection_at = 0.0
     self.last_published_support_at = 0.0
     self.published_support_count = 0
     self.episode = 0
@@ -344,6 +346,7 @@ class VisionModelCore:
       raise ValueError("Invalid observation time")
     detection = self.infer(frame_bgr)
     if detection is not None and math.isfinite(detection.confidence) and 0 <= detection.confidence <= 1:
+      self.last_detection_at = now
       self.history.append(HistoryEntry(detection.speed_limit_mph, detection.confidence, now, detection.strong_consensus))
       self._prune_history(now)
       confirmed = self._confirm_detection()

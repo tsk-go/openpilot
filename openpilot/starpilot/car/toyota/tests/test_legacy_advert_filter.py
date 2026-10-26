@@ -1,8 +1,8 @@
 import pytest
-from opendbc.car import gen_empty_fingerprint
+from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.toyota import legacy_advert_filter, advert_filter, rav4h_filter
 from opendbc.car.toyota.interface import CarInterface, toyota_auto_hold_supported
-from opendbc.car.toyota.values import ToyotaFlags
+from opendbc.car.toyota.values import CAR, ToyotaFlags
 from openpilot.starpilot.car.toyota.tests.test_rav4h_caller_native import firmware
 
 
@@ -16,7 +16,7 @@ def test_complete_sdsu_cp_tunes_retained_for_advertisement(candidate, stock):
   fp[0][0x2FF] = 4
   new = CarInterface.get_params(candidate, fp, fw, False, False, False)
   assert legacy_advert_filter.enabled(new) and advert_filter.enabled(new)
-  assert not toyota_auto_hold_supported(new)
+  assert toyota_auto_hold_supported(new) == toyota_auto_hold_supported(old)
   if stock:
     assert rav4h_filter.prepare_stock(old) and advert_filter.prepare_stock(new)
   assert legacy_advert_filter.configured(new)
@@ -51,6 +51,11 @@ def test_advertisement_identity_and_topology_fail_closed(candidate, bad):
     fp[0][0x2AA] = 8
   else:
     fw = []
+    if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+      # Manual selection admits empty acquisition, not invalid critical-ECU metadata.
+      assert legacy_advert_filter.hardware_supported(candidate, fp, fw)
+      fw = [structs.CarParams.CarFw(ecu=structs.CarParams.Ecu.eps, address=0x7A1,
+                                   fwVersion=b'', brand='toyota', bus=0)]
   assert not legacy_advert_filter.hardware_supported(candidate, fp, fw)
 
 

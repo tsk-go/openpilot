@@ -11,6 +11,6 @@ export const BluetoothNotice = {
   template: `<GxNotice class="gx-alert--bluetooth" tone="info" icon="bi-bluetooth" :title="feature">
     Not available over Bluetooth. Connect using Galaxy Wi-Fi or LAN to use this feature.
     <slot />
-    <button v-if="canSwitch" type="button" class="gx-btn gx-btn--tonal" @click="connections">Connection options</button>
+    <template #actions v-if="canSwitch"><button type="button" class="gx-btn gx-btn--tonal" @click="connections">Connection options</button></template>
   </GxNotice>`,
 }

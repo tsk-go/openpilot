@@ -17,6 +17,19 @@ from tools.ci.record_firmware import compile_commands
 
 class TestVehicleCollection(unittest.TestCase):
 
+  def test_gv70_two_panda_and_stop_parity_callers_are_required(self):
+    required = (
+      'openpilot/starpilot/aol/tests/test_hkg_cancel_joined.py',
+      'openpilot/starpilot/aol/tests/test_gv70_two_panda_long.py',
+      'openpilot/starpilot/longitudinal/tests/test_gv70_stopping_parity.py',
+    )
+    targets = targets_for('aol-lifecycle')
+    self.assertLessEqual(set(required), set(targets))
+    for target in targets:
+      self.assertTrue(target.endswith('.py'), target)
+      self.assertNotIn('::', target)
+
+
   def test_hkg_gv60_and_inherited_profile_guards_are_required(self):
     self.assertIn('opendbc_repo/opendbc/safety/tests/test_hyundai_gv60_long.py::TestGV60LongDebug', targets_for('safety-debug'))
     self.assertIn('opendbc_repo/opendbc/safety/tests/test_hyundai_blended_alpha_inherited.py', targets_for('safety-debug'))

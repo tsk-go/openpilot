@@ -344,19 +344,67 @@ class TestFastUpdate(unittest.TestCase):
     self.assertFalse(self.invalidations)
     self.assertFalse(self.params.calls)
 
-  def test_dirty_tracked_source_rejected(self):
-    (self.repo / 'openpilot/starpilot/ui/source.py').write_text('local repair')
-    with self.assertRaises(owner.FastUpdateError):
-      self.update()
-    self.assertEqual((self.repo / 'openpilot/starpilot/ui/source.py').read_text(), 'local repair')
+  def test_dirty_tracked_source_backed_up_before_update(self):
+    path = 'openpilot/starpilot/ui/source.py'
+    (self.repo / path).write_text('local repair')
+    self.assertEqual(self.update(), 'reboot-requested')
+    self.assertEqual((self.repo / path).read_text(), 'new')
+    refs = self.git(self.repo, 'for-each-ref', '--format=%(refname)', 'refs/starpilot/local-changes').splitlines()
+    self.assertEqual(len(refs), 1)
+    self.assertEqual(self.git(self.repo, 'show', refs[0] + ':' + path), 'local repair')
 
-  def test_staged_source_rejected(self):
-    (self.repo / 'openpilot/starpilot/ui/source.py').write_text('staged repair')
-    self.git(self.repo, 'add', 'openpilot/starpilot/ui/source.py')
-    with self.assertRaises(owner.FastUpdateError):
-      self.update()
-    self.assertEqual((self.repo / 'openpilot/starpilot/ui/source.py').read_text(), 'staged repair')
+  def test_staged_and_unstaged_source_restored_on_failure(self):
+    path = 'openpilot/starpilot/ui/source.py'
+    (self.repo / path).write_text('staged repair')
+    self.git(self.repo, 'add', path)
+    (self.repo / path).write_text('unstaged repair')
+    with patch.object(self.params, 'put_bool', side_effect=RuntimeError('reboot failed')):
+      with self.assertRaisesRegex(RuntimeError, 'reboot failed'):
+        self.update()
+    self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.previous)
+    self.assertEqual(self.git(self.repo, 'show', ':' + path), 'staged repair')
+    self.assertEqual((self.repo / path).read_text(), 'unstaged repair')
+
+  def test_dirty_version_listing_leaves_changes_and_backup_refs_untouched(self):
+    path = self.repo / 'openpilot/starpilot/ui/source.py'
+    path.write_text('local repair')
+    self.assertEqual(self.update(versions_only=True), 'versions-listed')
+    self.assertEqual(path.read_text(), 'local repair')
+    self.assertEqual(self.git(self.repo, 'for-each-ref', 'refs/starpilot/local-changes'), '')
+
+  def test_backup_failure_does_not_reset_local_changes(self):
+    path = self.repo / 'openpilot/starpilot/ui/source.py'
+    path.write_text('local repair')
+    def failing(command, cwd):
+      if 'stash' in command:
+        raise RuntimeError('backup failed')
+      return owner.run(command, cwd)
+    with self.assertRaisesRegex(RuntimeError, 'backup failed'):
+      self.update(run=failing)
+    self.assertEqual(path.read_text(), 'local repair')
     self.assertFalse(self.invalidations)
+    self.assertFalse(self.params.calls)
+
+  def test_dirty_current_version_is_reinstalled_with_backup(self):
+    self.git(self.remote, 'reset', '--hard', self.previous)
+    path = self.repo / 'openpilot/starpilot/ui/source.py'
+    path.write_text('local repair')
+    self.assertEqual(self.update(), 'reboot-requested')
+    self.assertEqual(path.read_text(), 'old')
+    self.assertTrue(self.git(self.repo, 'for-each-ref', 'refs/starpilot/local-changes'))
+
+  def test_backup_ref_failure_does_not_reset_or_invalidate(self):
+    path = self.repo / 'openpilot/starpilot/ui/source.py'
+    path.write_text('local repair')
+    def failing(command, cwd):
+      if 'update-ref' in command and any('local-changes/' in item for item in command):
+        raise RuntimeError('backup ref failed')
+      return owner.run(command, cwd)
+    with self.assertRaisesRegex(RuntimeError, 'backup ref failed'):
+      self.update(run=failing)
+    self.assertEqual(path.read_text(), 'local repair')
+    self.assertFalse(self.invalidations)
+    self.assertFalse(self.params.calls)
 
   def test_reboot_write_failure_rolls_back(self):
     def failing(*args, **kwargs):

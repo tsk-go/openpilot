@@ -137,7 +137,7 @@ static uint8_t hyundai_ordinary_angle_request_mask(void) {
 static uint8_t hyundai_ordinary_angle_permission_mask(void) {
   uint8_t result = 0U;
   if (hyundai_angle_aol_enabled) {
-    result = hyundai_angle_aol_permission_mask();
+    result = hyundai_ev9_long_aol ? (hyundai_ev9_long_aol_permission_mask() & 1U) : hyundai_angle_aol_permission_mask();
     if (result == 0U) {
       hyundai_ordinary_angle_release();
     }
@@ -320,7 +320,8 @@ static uint8_t aol_ioniq6_request_mask(void) {
     aol_host_axis_mask = 0U;
   } else if (heartbeat_engaged) {
     aol_ioniq6_session_started = true;
-    if ((hyundai_canfd_ioniq6_long || hyundai_ev9_long_aol) && controls_allowed && aol_ioniq6_enable_release &&
+    if ((hyundai_canfd_ioniq6_long || hyundai_ev9_long_aol ||
+         (hyundai_canfd_torque_ev_long && !aol_optional_release_policy)) && controls_allowed && aol_ioniq6_enable_release &&
         ((aol_host_axis_mask & 0x3U) == 0x3U) &&
         (safety_get_ts_elapsed(now, aol_ioniq6_enable_release_ts) <= AOL_HOST_REQUEST_TIMEOUT_US)) {
       aol_ioniq6_lateral_latch = true;
@@ -378,10 +379,13 @@ static uint8_t hyundai_ev9_long_aol_permission_mask(void) {
   const uint8_t permitted = aol_ioniq6_permission_mask();
   uint8_t result = permitted & 2U;
   const bool lateral_authorized = ((permitted & 1U) != 0U) || (controls_allowed && ((requested & 1U) != 0U));
+  // Pedals withdraw ordinary control, while a physically armed AOL lease
+  // retains lateral only. The original gear, EPS and freshness gates remain.
+  const bool pedal_allowed = (aol_ioniq6_lateral_latch || aol_optional_release_latch) || (!brake_pressed && !gas_pressed);
   const bool gear_current = hyundai_angle_aol_gear_seen &&
     (safety_get_ts_elapsed(microsecond_timer_get(), hyundai_angle_aol_gear_ts) <= 100000U);
   if (lateral_authorized && gear_current && hyundai_angle_aol_drive && vehicle_moving &&
-      !hyundai_angle_aol_eps_fault && !hyundai_ordinary_angle_eps_fault && !brake_pressed && !gas_pressed) {
+      !hyundai_angle_aol_eps_fault && !hyundai_ordinary_angle_eps_fault && pedal_allowed) {
     result |= 1U;
   }
   return result;
@@ -575,7 +579,8 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
     const int main_policy = hyundai_canfd_ccnc_ev_long ? (hyundai_canfd_pe_long ? HYUNDAI_MAIN_WITHDRAW : HYUNDAI_MAIN_TRACK) : HYUNDAI_MAIN_NONE;
     const bool normal_main_button = hyundai_canfd_ccnc_ev_long && GET_BIT(msg, 21U);
     hyundai_common_cruise_buttons_check(cruise_button, main_button, normal_main_button, main_policy);
-    if ((hyundai_canfd_ioniq6_long || hyundai_ev9_long_aol) && aol_ioniq6_long) {
+    if ((hyundai_canfd_ioniq6_long || hyundai_ev9_long_aol ||
+         (hyundai_canfd_torque_ev_long && !aol_optional_release_policy)) && aol_ioniq6_long) {
       static uint8_t aol_ioniq6_enable_counter = 0U;
       static uint32_t aol_ioniq6_enable_ts = 0U;
       const uint8_t counter = hyundai_canfd_get_counter(msg);
@@ -972,7 +977,7 @@ static bool hyundai_canfd_tx_hook_valid(const CANPacket_t *msg) {
     uint8_t body[24] = {0};
     body[3] = ((left || right) ? 1U : 0U) | (left << 6U);
     body[4] = right;
-    body[5] = left << 1U;
+    // Retired FL_INDICATOR overlaps the right sound-warning bits; require zero.
     body[6] = right << 5U;
     body[7] = 0x80U | (SAFETY_MAX(left, right) << 3U);
     body[16] = left | (right << 2U);
@@ -1168,7 +1173,7 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
     if (independent_active) {
       const unsigned int len = GET_LEN(msg);
       const uint32_t xor_out = (len == 16U) ? 0x041DU : 0U;
-      ordinary_angle_valid = (hyundai_angle_aol_permission_mask() != 0U) &&
+      ordinary_angle_valid = (hyundai_ordinary_angle_permission_mask() != 0U) &&
         (hyundai_canfd_get_checksum(msg) == (hyundai_common_canfd_compute_checksum(msg) ^ xor_out));
       if (hyundai_ordinary_angle_counter_seen) {
         const uint8_t delta = (uint8_t)(msg->data[2] - hyundai_ordinary_angle_counter);

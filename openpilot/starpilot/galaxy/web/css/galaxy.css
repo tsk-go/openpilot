@@ -960,18 +960,22 @@ button.gx-crash-row:hover { background: var(--glass-bg-hover); transform: transl
 .gx-view h2, .gx-monitor h2 { margin-top: 0; }
 .gx-note { color: var(--text-muted); font-size: var(--fs-sm); }
 
-/* Shared notice banner (ported from the original Galaxy GxNotice). */
-.gx-alert { --notice-accent: var(--primary); align-items: flex-start; backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-left: 4px solid var(--notice-accent); border-radius: var(--radius-md); display: flex; gap: var(--sp-3); width: 100%; margin: 0 0 var(--sp-4); padding: var(--sp-4); background: color-mix(in srgb, var(--notice-accent) 12%, transparent); }
+/* Shared banners: message first, optional actions on their own row. */
+.gx-alert { --notice-accent: var(--primary); align-items: center; backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); border: 1px solid var(--glass-border); border-left: 4px solid var(--notice-accent); border-radius: var(--radius-md); display: flex; gap: var(--sp-3); width: 100%; margin: 0 0 var(--sp-4); padding: var(--sp-4); background: color-mix(in srgb, var(--notice-accent) 12%, transparent); }
 .gx-alert--warn { --notice-accent: var(--warning); }
 .gx-alert--danger { --notice-accent: var(--error); }
 .gx-alert--success { --notice-accent: var(--success); }
 .gx-alert--bluetooth { --notice-accent: var(--bluetooth); }
 .gx-alert__icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; font-size: 1.25rem; line-height: 1; color: var(--notice-accent); }
-.gx-alert__body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.gx-alert__body > strong { display: block; font-weight: var(--fw-bold); margin-bottom: var(--sp-1); }
-.gx-alert__text { color: var(--on-surface-variant); font-size: var(--fs-sm); line-height: 1.5; }
+.gx-alert__body { flex: 1; min-width: 0; display: grid; gap: var(--sp-2); overflow-wrap: anywhere; }
+.gx-alert__body > strong { display: block; font-weight: var(--fw-bold); margin: 0; line-height: 1.5; }
+.gx-alert__text { color: var(--on-surface); font-size: var(--fs-sm); line-height: 1.5; }
+.gx-alert__text > :first-child { margin-top: 0; }
+.gx-alert__text > :last-child { margin-bottom: 0; }
 .gx-alert__text p { margin: 0; }
-.gx-alert__text .gx-btn { margin-top: var(--sp-2); }
+.gx-alert__text > p + p { margin-top: var(--sp-2); }
+.gx-alert__actions { margin: 0; justify-content: flex-start; }
+.gx-alert__actions .gx-btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding-block: var(--sp-2); box-shadow: none; }
 .gx-alert .gx-spinner { border-top-color: var(--notice-accent); }
 .gx-settings > .gx-card, .gx-settings > .gx-alert, .gx-stack > .gx-card, .gx-stack > .gx-alert { margin-bottom: 0; }
 
@@ -1771,13 +1775,13 @@ progress { max-width: 100%; accent-color: var(--primary); }
 }
 
 .gx-spotify-now { display: grid; gap: var(--sp-3); }
-.gx-spotify-now__main { display: flex; gap: var(--sp-3); align-items: center; min-width: 0; }
+.gx-spotify > .gx-aa-step > h3 { margin: 0; font-size: var(--fs-lg); }
+.gx-spotify-now__main { display: flex; gap: var(--sp-3); align-items: center; justify-content: center; min-width: 0; }
 .gx-spotify-now__text { min-width: 0; }
 .gx-spotify-now__text h3, .gx-spotify-now__text p { margin: 0; }
 .gx-spotify-now__progress { display: grid; gap: 2px; }
-.gx-spotify-now__controls { align-items: center; flex-wrap: wrap; }
+.gx-spotify-now__controls { align-items: center; justify-content: center; flex-wrap: wrap; }
 .gx-spotify-now__play { min-width: 64px; font-size: 1.4rem; }
-.gx-spotify-now__volume { display: flex; flex: 1 1 160px; align-items: center; gap: var(--sp-2); min-width: 0; }
 /* Auto Learn results use existing cards and plot colors. */
 .gx-flm__facts { display: flex; flex-wrap: wrap; gap: 1rem 2rem; }
 .gx-flm__facts dd { margin: .3rem 0 0; }

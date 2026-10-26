@@ -71,7 +71,30 @@ def pool_failure(processes, detail):
   root = Path(directory).resolve()
   root.mkdir(parents=True, exist_ok=True)
   path = root / 'pool-failure.json'
-  if not path.exists():
+  if path.exists():
+    try:
+      value = json.loads(path.read_text())
+      rows = value['processes']
+      observed = {}
+      for process in processes:
+        try:
+          observed[process.pid] = process.exitcode
+        except (OSError, ValueError):
+          continue
+      changed = False
+      for row in rows:
+        code = observed.get(row['pid'])
+        if row['exitcode'] is None and code is not None:
+          row['exitcode'] = code
+          changed = True
+      if changed:
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + '\n')
+        os.replace(temporary, path)
+    except (OSError, ValueError, TypeError, KeyError):
+      # An unavailable or malformed diagnostic must not replace test outcomes.
+      pass
+  else:
     rows = [{'pid': process.pid, 'exitcode': process.exitcode} for process in processes]
     value = {'detail': detail, 'detail_sha256': hashlib.sha256(detail.encode()).hexdigest(),
              'processes': rows, 'workers': [json.loads(item.read_text()) for item in sorted(root.glob('worker-*.json'))],

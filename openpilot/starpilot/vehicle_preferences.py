@@ -206,6 +206,8 @@ class VehicleStartupPreferences:
       prepare_advert_filter_stock(cp)
       from opendbc.car.toyota.angle_control import prepare_stock as prepare_angle_stock
       prepare_angle_stock(cp)
+      from opendbc.car.toyota.dsu_bypass import prepare_stock as prepare_bypass_stock
+      prepare_bypass_stock(cp)
     self._prepare_bolt(cp, fingerprints)
     prepare_disable_longitudinal(cp, self.disable_bolt_long)
     self._prepare_camera_pedal(cp)
@@ -247,6 +249,8 @@ class VehicleStartupPreferences:
       prepare_advert_filter_stock(cp)
       from opendbc.car.toyota.angle_control import prepare_stock as prepare_angle_stock
       prepare_angle_stock(cp)
+      from opendbc.car.toyota.dsu_bypass import prepare_stock as prepare_bypass_stock
+      prepare_bypass_stock(cp)
     self._prepare_bolt(cp)
     prepare_disable_longitudinal(cp, self.disable_bolt_long)
     self._prepare_camera_pedal(cp)

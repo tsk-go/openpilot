@@ -84,7 +84,8 @@ class Soundd:
   def __init__(self, params=None, pack_root=PACK_ROOT):
     self.volume_params = params if params is not None else Params()
     migrate_removed_selection(self.volume_params, pack_root)
-    self.pack_loader = SoundPackLoader(self.volume_params, Path(__file__).resolve().parents[1] / "assets/sounds", pack_root)
+    self.pack_loader = SoundPackLoader(self.volume_params, Path(__file__).resolve().parents[1] / "assets/sounds", pack_root,
+                                       device_type=HARDWARE.get_device_type())
     self.load_sounds()
     self.saved_volumes = {key: AUTO for key, _, _ in VOLUMES}
     self.volume_read_at = 0.0
@@ -280,6 +281,7 @@ class Soundd:
         sm.update(0)
         if self.native_audio is not None:
           self.native_audio.sync_owner()
+          self.native_audio.report_underflow_timing()
         self.log_pending_stream_status(stream)
         self.refresh_saved_volumes(time.monotonic())
         self.load_sounds()
@@ -298,7 +300,10 @@ class Soundd:
 
         rk.keep_time()
 
-        assert stream.active
+        active = stream.active
+        if not active and self.native_audio is not None:
+          self.native_audio.report_underflow_timing(closing=True)
+        assert active
 
 
 def main():

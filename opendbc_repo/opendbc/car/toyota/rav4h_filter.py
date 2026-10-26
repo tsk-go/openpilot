@@ -34,6 +34,8 @@ def hardware_supported(candidate, fingerprint, car_fw):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   from opendbc.car.toyota import eps8_sdsu, legacy_sdsu
   if legacy_sdsu.configured(cp) or eps8_sdsu.configured(cp):
     return True
@@ -61,6 +63,9 @@ def enabled(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   from opendbc.car.toyota import eps8_sdsu, legacy_sdsu
   if legacy_sdsu.prepare_stock(cp) or eps8_sdsu.prepare_stock(cp):
     return True

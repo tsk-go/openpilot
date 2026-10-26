@@ -239,6 +239,10 @@ static bool ford_tx_hook(const CANPacket_t *msg) {
 
   bool tx = true;
 
+  if ((msg->addr == FORD_ACCDATA_3) || (msg->addr == FORD_IPMA_Data)) {
+    tx = ford_aol_display_tx_allowed();
+  }
+
   // Safety check for ACCDATA accel and brake requests
   if (msg->addr == FORD_ACCDATA) {
     // Signal: AccPrpl_A_Rq
@@ -502,7 +506,10 @@ static void ford_aol_bind_tx(safety_config *ret, CanMsg workspace[7]) {
 }
 
 static safety_config ford_init(uint16_t configured_param) {
-  const uint16_t param = configured_param & ~256U;
+  const uint16_t bp_param = configured_param & ~256U;
+  const bool joint_angle = ((unsigned int)alternative_experience == 32U) &&
+    ((bp_param == 146U) || (bp_param == 147U) || (bp_param == 160U) || (bp_param == 161U) || (bp_param == 194U) || (bp_param == 195U));
+  const uint16_t param = joint_angle ? (bp_param & ~128U) : bp_param;
   const bool manual = (configured_param & 256U) != 0U;
   // Manual variants are only defined for the exact registered Ford profiles.
   const bool manual_valid = !manual || ford_aol_param_valid(configured_param);
@@ -576,7 +583,7 @@ static safety_config ford_init(uint16_t configured_param) {
   const bool mach_e_namespace = GET_FLAG(param, FORD_PARAM_MACH_E_EXTENDED);
   ford_mach_e_extended = (param == 18U) && (((unsigned int)alternative_experience == 0U) || (((unsigned int)alternative_experience == 32U) && ford_aol_param_valid(param)));
   ford_mach_e_extended |= (param == 19U) && (((unsigned int)alternative_experience == 0U) || (((unsigned int)alternative_experience == 32U) && ford_aol_param_valid(param)));
-  const bool bp_config_valid = ford_bp_configure(param);
+  const bool bp_config_valid = ford_bp_configure(bp_param);
   ford_stock_switch = ((((unsigned int)alternative_experience == 0U) || (((unsigned int)alternative_experience == 32U) && ford_aol_param_valid(param))) &&
                       ((param == 2U) || (param == 8U) || (param == 10U) || (param == 12U) ||
                        ((param == 18U) && ford_mach_e_extended) ||

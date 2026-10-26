@@ -113,7 +113,7 @@ def qualified_long(cp, *, marked_only=False):
   word = _base_word(cp, experiences=(0, 32))
   if word not in (0x11, 0x91):
     return False
-  raw = int(cp.safetyConfigs[0].safetyParam)
+  raw = int(cp.safetyConfigs[config_index(cp)].safetyParam)
   return (raw == (word | 0x804) and cp.alternativeExperience == 32) or (
     not marked_only and raw == (word | 4) and cp.alternativeExperience == 0
   )

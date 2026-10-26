@@ -6,6 +6,7 @@ from opendbc.car.toyota.values import CAR, ToyotaFlags
 
 PROFILES = {
   CAR.TOYOTA_COROLLA: (0x9158, 0x9358),
+  CAR.TOYOTA_MATRIX_RETROFIT: (0x9158, 0x9358),
   CAR.TOYOTA_RAV4: (0x9149, 0x9349),
   CAR.LEXUS_ES: (0x9149, 0x9349),
   CAR.TOYOTA_PRIUS_V: (0x9164, 0x9364),
@@ -19,6 +20,9 @@ ALT_MAIN_CARS = frozenset((CAR.LEXUS_GS_F, CAR.LEXUS_IS, CAR.LEXUS_RC))
 
 
 def hardware_supported(candidate, fingerprint, car_fw):
+  if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+    from opendbc.car.toyota import matrix_filter
+    return matrix_filter.hardware_supported(candidate, fingerprint, car_fw, length=8)
   if (
     candidate not in PROFILES
     or fingerprint.get(0, {}).get(0x2FF) != 8
@@ -54,6 +58,11 @@ def apply(cp):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
+  if cp is not None and cp.carFingerprint == CAR.TOYOTA_MATRIX_RETROFIT:
+    from opendbc.car.toyota import matrix_filter
+    return matrix_filter.configured(cp, length=8)
   if (
     cp is None
     or cp.brand != "toyota"
@@ -75,6 +84,9 @@ def configured(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

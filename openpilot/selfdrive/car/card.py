@@ -228,6 +228,7 @@ class Car:
     self.ioniq6_last_preflight_at = 0.0
     self.ioniq6_panda_armed = False
     self.ioniq6_host_warmed = False
+    self.ioniq6_handoff_source_floor_ns = 0
     self.ioniq6_long_lost = False
     self.ioniq6_keepalive = None
     self.ioniq6_restore_callbacks = None
@@ -299,7 +300,7 @@ class Car:
         cp = prepare_ford_release_long(cp, self.params, is_release=is_release, enabled=openpilot_enabled_toggle)
         return self.vehicle_startup.prepare(cp, interfaces[candidate], self.can_callbacks,
                                             requested=alpha_long_allowed and not is_release and openpilot_enabled_toggle,
-                                            admission=self.startup_diagnostic_admission)
+                                            admission=self.startup_diagnostic_admission, defer_until_controls=True)
 
       self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, cached_params,
                         pre_create_hook=pre_create_hook,
@@ -1243,6 +1244,20 @@ class Car:
       }
       self.pm.send('slcCruiseEvent', event)
 
+  def ioniq6_post_handoff_sources_current(self):
+    """A parser's invalid grace is not proof of post-transaction warmup."""
+    from opendbc.can.parser import MAX_BAD_COUNTER
+    floor = getattr(self, 'ioniq6_handoff_source_floor_ns', 0)
+    if floor <= 0:
+      return False
+    now = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    sources = [source for parser in self.CI.can_parsers.values()
+               for source in parser.message_states.values() if not source.ignore_alive]
+    return bool(sources) and all(
+      source.timestamps and floor < source.timestamps[-1] <= now and
+      now - source.timestamps[-1] <= source.timeout_threshold and source.counter_fail < MAX_BAD_COUNTER
+      for source in sources)
+
   def observe_ioniq6_long_authority(self, can_list, CS):
     if getattr(self, 'ioniq6_long_selected', False) and self.ioniq6_long_lost:
       CS.canValid = False
@@ -1252,10 +1267,11 @@ class Car:
     if any((src == 1 and address in (0x1A0, 0x1BA, 0x1E5)) or (src == 0 and address == 0x100)
            for _, packet in can_list for address, _, src in packet):
       self.ioniq6_long_lost = True
-    if CS.canValid:
+    if self.ioniq6_host_warmed:
+      if not CS.canValid:
+        self.ioniq6_long_lost = True
+    elif CS.canValid and self.ioniq6_post_handoff_sources_current():
       self.ioniq6_host_warmed = True
-    elif self.ioniq6_host_warmed:
-      self.ioniq6_long_lost = True
     if self.ioniq6_long_lost:
       CS.canValid = False
       if self.ioniq6_keepalive is not None:
@@ -1470,18 +1486,27 @@ class Car:
     from opendbc.car.hyundai.ev6_startup import EV6Startup, required
     from opendbc.car.hyundai.ecu_startup import Outcome
     owner = getattr(getattr(self, 'vehicle_startup', None), 'owner', None)
-    return (isinstance(owner, EV6Startup) and owner.outcome is Outcome.SENT_UNCONFIRMED and
+    return (isinstance(owner, EV6Startup) and owner.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED) and
             owner.ready and owner.published and owner.ci is self.CI and not owner.closed and
             required(self.CP))
 
   def classic_startup_keepalive(self):
     from opendbc.car.hyundai.g90_startup import G90Startup
     from opendbc.car.hyundai.classic_long_aol import qualified
+    from opendbc.car.hyundai.legacy_long_aol import qualified as legacy_qualified
     from opendbc.car.hyundai.ecu_startup import Outcome
     owner = getattr(getattr(self, 'vehicle_startup', None), 'owner', None)
-    return (isinstance(owner, G90Startup) and owner.outcome is Outcome.SENT_UNCONFIRMED and
+    return (isinstance(owner, G90Startup) and owner.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED) and
             owner.ready and owner.published and owner.ci is self.CI and not owner.closed and
-            qualified(self.CP))
+            (qualified(self.CP) or legacy_qualified(self.CP)))
+
+  def torque_ev_startup_keepalive(self):
+    from opendbc.car.hyundai.torque_ev_startup import TorqueEVStartup, required
+    from opendbc.car.hyundai.ecu_startup import Outcome
+    owner = getattr(getattr(self, 'vehicle_startup', None), 'owner', None)
+    return (isinstance(owner, TorqueEVStartup) and owner.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED) and
+            owner.ready and owner.published and owner.ci is self.CI and not owner.closed and
+            required(self.CP))
 
   def mixed_startup_keepalive(self):
     from opendbc.car.hyundai.blended_longitudinal import BlendedStartup
@@ -1511,7 +1536,7 @@ class Car:
 
     if initialize_only:
       ev6_startup = self.ev6_startup_keepalive()
-      classic_startup = self.classic_startup_keepalive()
+      classic_startup = self.classic_startup_keepalive() or self.torque_ev_startup_keepalive()
       mixed_startup = self.mixed_startup_keepalive()
       now_ns = time.monotonic_ns()
       source_ns = int(self.sm.logMonoTime['carControl'])
@@ -1556,7 +1581,25 @@ class Car:
         self.publish_sendcan([], valid=False)
         return
       mixed = self.vehicle_startup.owner if self.mixed_startup_keepalive() else None
-      if mixed is not None and mixed.pending_target:
+      from opendbc.car.hyundai.g90_startup import G90Startup
+      from opendbc.car.hyundai.torque_ev_startup import TorqueEVStartup
+      from opendbc.car.hyundai.ev6_startup import EV6Startup
+      from opendbc.car.hyundai.ecu_startup import Outcome
+      classic = self.vehicle_startup.owner
+      if isinstance(classic, (G90Startup, TorqueEVStartup, EV6Startup)) and classic.outcome is Outcome.PENDING:
+        now = time.monotonic_ns()
+        source = int(self.sm.logMonoTime['carControl'])
+        receipt = int(self.sm.recv_time['carControl'] * 1e9)
+        current = bool(self.sm.seen['carControl'] and self.sm.alive['carControl'] and self.sm.valid['carControl'] and
+                       0 < source <= now and now - source <= 150_000_000 and
+                       0 < receipt <= now and now - receipt <= 150_000_000)
+        inactive = not (CC.enabled or CC.latActive or CC.longActive or CC.actuators.torque != 0.0 or CC.actuators.accel != 0.0)
+        sources = classic.sources_current(self.CI, time.clock_gettime_ns(time.CLOCK_BOOTTIME))
+        if not current or not inactive or not sources or CS.accFaulted or CS.cruiseState.enabled or not self.startup_diagnostic_admission():
+          self.publish_sendcan([], valid=False)
+          return
+        classic.commit_pending(self.CI, sources_current=sources, control_current=current)
+      elif mixed is not None and mixed.pending_target:
         now = time.monotonic_ns()
         current = (self.sm.seen['carControl'] and self.sm.alive['carControl'] and self.sm.valid['carControl'] and
                    0 < int(self.sm.logMonoTime['carControl']) <= now and now - int(self.sm.logMonoTime['carControl']) <= 150_000_000 and
@@ -1602,6 +1645,7 @@ class Car:
         # The transaction consumed Card's CAN cursor. Rewarm the host parser
         # from post-handoff independent inputs before its first controller TX.
         self.ioniq6_host_warmed = False
+        self.ioniq6_handoff_source_floor_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
         self.ioniq6_restore_callbacks = self.can_callbacks
       elif self.vehicle_startup.owner is None:
         self.CI.init(self.CP, *self.can_callbacks)
@@ -1731,11 +1775,11 @@ class Car:
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
     elif ((not self.ci_initialized or self.volt_startup_keepalive() or self.ev6_startup_keepalive() or
-           self.classic_startup_keepalive() or self.mixed_startup_keepalive()) and
+           self.classic_startup_keepalive() or self.torque_ev_startup_keepalive() or self.mixed_startup_keepalive()) and
           self.sm.seen['onroadEvents'] and
           any(e.name == EventName.selfdriveInitializing for e in self.sm['onroadEvents']) and
           ((self.aol_replay and native_bootstrap_supported(self.CP)) or self.ev6_startup_keepalive() or
-           self.classic_startup_keepalive() or self.mixed_startup_keepalive())):
+           self.classic_startup_keepalive() or self.torque_ev_startup_keepalive() or self.mixed_startup_keepalive())):
       self.controls_update(CS, self.sm['carControl'], initialize_only=True)
 
     radar_can = self._deferred_radar_can

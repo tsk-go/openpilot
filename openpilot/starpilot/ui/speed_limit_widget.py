@@ -14,6 +14,7 @@ from openpilot.starpilot.ui.unified_speed_presentation import displayed_adjusted
 
 INK = rl.Color(241, 246, 243, 255)
 MUTED = rl.Color(190, 208, 202, 255)
+SOURCE_LABELS = {'dashboard': 'DASH', 'map': 'OSM', 'vision': 'VISION', 'mapbox': 'NAV'}
 
 
 def draw_text(fonts, text, role, size, x, y, color=INK):
@@ -77,6 +78,7 @@ class SpeedLimitWidget:
 
   def _sign(self, state: OnroadState, bounds, now: float) -> None:
     shown, obs = resolve_unified_speed(state), state.speed_limit
+    heading = 'LAST' if str(obs.kind) != 'valid' else SOURCE_LABELS.get(shown.source, 'SPEED')
     x, top = bounds[0] + 12, bounds[1] + 12
     scale = self.scale
     pending = shown.pending and not obs.automatic_adoption_pending
@@ -88,81 +90,69 @@ class SpeedLimitWidget:
     secondary = self.pulse.color(rl.Color(223, 232, 227, 255), now)
 
     def ink(text, role, size):
-      return (*self.fonts.horizontal_ink(text, role, size * self.text_scale),
-              *self.fonts.vertical_ink(text, role, size * self.text_scale))
+      return tuple(value / scale for value in (*self.fonts.horizontal_ink(text, role, size * self.text_scale),
+                                               *self.fonts.vertical_ink(text, role, size * self.text_scale)))
 
-    def centered(text, role, size, ink_top, color, center_x=x + 59 * scale):
+    def centered(text, role, size, ink_top, color, center_x=59):
       left, right, a, b = ink(text, role, size)
-      origin = center_x - (left + right) / 2
-      self.fonts.draw(text, role, size * self.text_scale, origin, ink_top - a, color)
-      return origin + left, ink_top, origin + right, ink_top + b - a
+      # Snap only the final draw, after fitting in the shared 118 x 132 geometry.
+      origin = round(x + (center_x - (left + right) / 2) * scale)
+      y = round(top + (ink_top - a) * scale)
+      self.fonts.draw(text, role, size * self.text_scale, origin, y, color)
+      return origin + left * scale, y + a * scale, origin + right * scale, y + b * scale
 
-    if self.profile == Profile.COMPACT and state.appearance.use_vienna_sign and not shown.offset_text:
-      cx, cy = x + 59, top + 67
-      rl.draw_circle(int(cx), int(cy), 59, rl.WHITE)
-      rl.draw_ring(rl.Vector2(cx, cy), 47, 59, 0, 360, 64, self.pulse.color(rl.Color(201, 34, 49, 255), now))
-      color = self.pulse.color(rl.BLACK, now)
-      size = 58 if len(shown.posted_text) <= 2 else 48
-      measured = self.fonts.measure(shown.posted_text, FontRole.BOLD, size)
-      origin, number_top = cx - measured.width / 2, cy - measured.height / 2
-      self.fonts.draw(shown.posted_text, FontRole.BOLD, size, origin, number_top, color)
-      number = origin, number_top, origin + measured.width, number_top + measured.height
-    elif state.appearance.use_vienna_sign:
-      cx, cy = x + 59 * scale, top + 67 * scale
-      self.shapes.circle(cx, cy, self.pulse.color(rl.Color(201, 34, 49, 255), now))
-      # Keep black-on-white numerals stable; the ring carries manual confirmation pulses.
-      color = rl.Color(0, 0, 0, 255) if pending else self.pulse.color(rl.Color(0, 0, 0, 255), now)
-      size = (54 if pending else 58) if len(shown.posted_text) <= 2 else 48
-      number_center = cy - 7 * scale if shown.offset_text else cy + (7 * scale if pending else 0)
-      while True:
-        left, right, a, b = ink(shown.posted_text, FontRole.BOLD, size)
-        if ((right - left) / 2) ** 2 + (abs(number_center - cy) + (b - a) / 2) ** 2 <= (47 * scale) ** 2 or size <= 32:
-          break
-        size -= 2
-      number_top = number_center - (b - a) / 2
-      number = centered(shown.posted_text, FontRole.BOLD, size, number_top, color)
-      if shown.offset_text:
-        offset_top, size = number[3] + 4 * scale, 36
-        while True:
-          left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, size)
-          if ((right - left) / 2) ** 2 + max((offset_top - cy) ** 2, (offset_top + b - a - cy) ** 2) <= (47 * scale) ** 2 or size <= 24:
-            break
-          size -= 2
-        centered(shown.offset_text, FontRole.MEDIUM, size, offset_top, color)
+    def circle_fits(left, right, a, b):
+      return all((px - 59) ** 2 + (py - 67) ** 2 <= 46 ** 2
+                 for px in (left, right) for py in (a, b))
+
+    vienna = state.appearance.use_vienna_sign
+    color = rl.Color(0, 0, 0, 255) if vienna else white
+    if vienna:
+      self.shapes.circle(x + 59 * scale, top + 67 * scale, self.pulse.color(rl.Color(201, 34, 49, 255), now))
     else:
-      if self.profile == Profile.COMPACT:
-        rect = rl.Rectangle(x + 2, top, 116, 132 + (44 if shown.offset_text else 0))
-        rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(rect.x + 8, rect.y + 8, rect.width - 16, rect.height - 16),
-                                         .14, 16, 2, white)
-        for label, size, label_top, role in (('SPEED', 20, 18, FontRole.SEMI_BOLD),
-                                              ('LIMIT', 20, 36, FontRole.SEMI_BOLD),
-                                              (shown.posted_text, 50 if len(shown.posted_text) <= 2 else 42, 66, FontRole.BOLD)):
-          measured = self.fonts.measure(label, role, size)
-          origin = rect.x + (rect.width - measured.width) / 2
-          if arrow_direction and role == FontRole.SEMI_BOLD:
-            origin -= 6  # Keep four pixels between the measured header ink and the pending arrow.
-          self.fonts.draw(label, role, size, origin, rect.y + label_top, white)
-          if label == shown.posted_text:
-            number = origin, rect.y + label_top, origin + measured.width, rect.y + label_top + measured.height
-        if shown.offset_text:
-          measured = self.fonts.measure(shown.offset_text, FontRole.MEDIUM, 30)
-          self.fonts.draw(shown.offset_text, FontRole.MEDIUM, 30, rect.x + (rect.width - measured.width) / 2,
-                          rect.y + 118, secondary)
-      else:
-        rect = rl.Rectangle(x + 2 * scale, top + 2 * scale, 114 * scale, 128 * scale)
-        rl.draw_rectangle_rounded(rect, .1, 16, rl.Color(10, 17, 19, 230))
-        rl.draw_rectangle_rounded_lines_ex(rect, .1, 16, 2 * scale, white)
-        for label, y in (('SPEED', top + 11 * scale), ('LIMIT', top + 27 * scale)):
-          centered(label, FontRole.SEMI_BOLD, 20, y, white, x + (53 if arrow_direction else 59) * scale)
-        number = centered(shown.posted_text, FontRole.BOLD, 58, top + (50 if shown.offset_text else 61) * scale, white)
-        if shown.offset_text:
-          centered(shown.offset_text, FontRole.MEDIUM, 36, top + 98 * scale, secondary)
+      self.shapes.outline(x + 59 * scale, top + 66 * scale, white)
+
+    left, right, a, b = ink(heading, FontRole.SEMI_BOLD, 18)
+    heading_width = right - left
+    header_y = 47 if vienna else 26
+    # The small arrow's visible ink is 12 x 16, with a six-pixel label gap.
+    header_left = 59 - (heading_width + (18 if arrow_direction else 0)) / 2
+    centered(heading, FontRole.SEMI_BOLD, 18, header_y - (b - a) / 2, color, header_left + heading_width / 2)
     if arrow_direction:
-      ax, ay = ((x + 59 * scale, top + 29 * scale) if state.appearance.use_vienna_sign else (x + 99 * scale, top + 26 * scale))
-      arrow_color = color if state.appearance.use_vienna_sign else white
-      self.shapes.arrow('compact' if state.appearance.use_vienna_sign else 'large', ax, ay, arrow_direction, arrow_color)
+      self.shapes.arrow('compact', round(x + (header_left + heading_width + 12) * scale),
+                        round(top + header_y * scale), arrow_direction, color)
+
+    size = 58 if vienna else 64
+    offset_size = 30 if vienna else 27
+    number_center = (73 if shown.offset_text else 80) if vienna else (67 if shown.offset_text else 81)
+    while True:
+      left, right, a, b = ink(shown.posted_text, FontRole.BOLD, size)
+      width, height = right - left, b - a
+      number_top = number_center - height / 2
+      if vienna:
+        fits = number_top >= 57 and circle_fits(59 - width / 2, 59 + width / 2, number_top, number_top + height)
+        if shown.offset_text:
+          left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, offset_size)
+          offset_top = number_top + height + 4
+          fits = fits and circle_fits(59 - (right - left) / 2, 59 + (right - left) / 2, offset_top, offset_top + b - a)
+      else:
+        fits = width <= 96 and height <= 54
+      if fits:
+        break
+      size *= .95
+      if vienna:
+        offset_size *= .95
+    number = centered(shown.posted_text, FontRole.BOLD, size, number_top, color)
+    if shown.offset_text:
+      if not vienna:
+        left, right, a, b = ink(shown.offset_text, FontRole.MEDIUM, offset_size)
+        offset_size *= min(1, 96 / (right - left), 24 / (b - a))
+        offset_top = 97
+      centered(shown.offset_text, FontRole.MEDIUM, offset_size, offset_top, color if vienna else secondary)
     if obs.driver_override_active:
       color = rl.Color(197, 163, 255, 240)
       left, top, right, bottom = number
-      draw_line(self.profile, rl.Vector2(left - 3 * scale, top - 2 * scale), rl.Vector2(right + 3 * scale, bottom + 2 * scale), 2.5 * scale, color)
-      draw_line(self.profile, rl.Vector2(right + 3 * scale, top - 2 * scale), rl.Vector2(left - 3 * scale, bottom + 2 * scale), 2.5 * scale, color)
+      for start, end in ((rl.Vector2(left + 3 * scale, top + 3 * scale), rl.Vector2(right - 3 * scale, bottom - 3 * scale)),
+                         (rl.Vector2(right - 3 * scale, top + 3 * scale), rl.Vector2(left + 3 * scale, bottom - 3 * scale))):
+        rl.draw_line_ex(start, end, 4.5 * scale, rl.Color(6, 14, 10, 220))
+        rl.draw_line_ex(start, end, 2.5 * scale, color)

@@ -854,9 +854,11 @@ class SelfdriveD:
     previous_native = getattr(self, 'aol_published_input_native', None)
     held_brake, held_gas = self.held_axis_override_wait(CS, proof, now_ns) if final_held_override else (False, False)
     from opendbc.car.hyundai.canfd_stock_aol import qualified as qualified_stock_hkg
+    from opendbc.car.hyundai.canfd_angle_aol import qualified as qualified_angle_aol
     stock_cruise_off = bool(proof is not None and proof[8] and not proof[9] and
       not self.enabled and not self.active and not CS.cruiseState.enabled and
-      qualified_stock_hkg(self.CP, marked_only=True) and
+      (qualified_stock_hkg(self.CP, marked_only=True) or
+       qualified_angle_aol(self.CP, marked_only=True) and self.CP.pcmCruise and not self.CP.openpilotLongitudinalControl) and
       EventName.pcmDisable in self.events_prev and self.events.names == self.events_prev)
     user_disable = any(event.userDisable and
       not (held_brake and event.name == EventName.pedalPressed) and
@@ -1748,6 +1750,7 @@ class SelfdriveD:
       return False
     from openpilot.starpilot.car.gm.aol import native_accepts_cp as gm_native_accepts_cp
     from openpilot.starpilot.car.toyota.aol import qualified as toyota_aol_qualified
+    from openpilot.starpilot.car.hyundai.aol import early_native_long_withdrawal_supported
     # Pandad reads health before its final native permission read. A GM driver
     # withdrawal between those reads legitimately leaves the earlier health
     # controlsAllowed true. For an admitted OP-long GM profile, the current
@@ -1759,8 +1762,9 @@ class SelfdriveD:
     # Ioniq6 also checks the physical brake before its separately published host sample.
     # Retain only its already granted LAT; all proof, health and LONG withdrawal gates remain.
     # The exact vehicle policies and all proof/health checks above remain required.
+    from openpilot.starpilot.car.ford.aol import early_native_long_withdrawal_supported as ford_early_long
     return bool(gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
-                qualified_ioniq6(self.CP) or
+                early_native_long_withdrawal_supported(self.CP) or ford_early_long(self.CP) or
                 toyota_aol_qualified(self.CP, marked_only=True) or
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)

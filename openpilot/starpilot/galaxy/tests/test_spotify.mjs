@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import { SpotifyFeed, SpotifyPage, archivePreflight, importProblem, installChecks, releaseInfo, serviceLabel,
-  positionNow, formatTime, DOWNLOAD_PAGE } from "../web/js/spotify.js"
+  positionNow, formatTime, muteLabel, DOWNLOAD_PAGE } from "../web/js/spotify.js"
 
 const setup = {
   enabled: true, parked: true, keyPresent: true, audioReady: true,
   release: { installed: true, version: "1.3.9.32", expires: "2027-01-14T00:00:00+00:00", daysLeft: 80, level: "ok", expired: false },
-  preferences: { deviceName: "StarPilot", cacheMb: 256, initialVolume: 60, output: "bluetooth", outputAddress: "AA:BB:CC:DD:EE:FF", outputName: "Car" },
+  preferences: { deviceName: "StarPilot", cacheMb: 256, initialVolume: 100, output: "bluetooth", outputAddress: "AA:BB:CC:DD:EE:FF", outputName: "Car" },
   devices: [{ address: "AA:BB:CC:DD:EE:FF", name: "Car", connected: true }], service: null,
   import: { state: "idle" }, maxUploadBytes: 64 * 1024 * 1024, archiveName: "soloist_release_arm64.tar.gz", cacheChoices: [100, 256],
   links: { download: DOWNLOAD_PAGE, key: "https://developer.spotify.com/dashboard/soloist", help: "https://developer.spotify.com/" },
@@ -37,7 +37,13 @@ assert.match(releaseInfo({ installed: true }).label, /expiry date unavailable/)
 assert.equal(serviceLabel({ enabled: false }), "Off")
 assert.equal(serviceLabel({ enabled: true, service: { state: "waiting_output", message: "Waiting for Car to connect over Bluetooth." } }),
   "Waiting for Car to connect over Bluetooth.")
-assert.match(serviceLabel({ enabled: true, service: { state: "waiting", message: "" } }), /pick this device/)
+assert.equal(serviceLabel({ enabled: true, service: { state: "waiting", message: "" } }), "Signing in to Spotify…")
+assert.match(serviceLabel({ enabled: true, service: { state: "ready", message: "", outputWaiting: "Car" } }),
+  /Pick this device.*Audio waits for Car\./)
+assert.equal(serviceLabel({ enabled: true, service: { state: "waiting_network", message: "Waiting for the comma’s network…" } }),
+  "Waiting for the comma’s network…")
+assert.equal(serviceLabel({ enabled: true, service: { state: "retrying", message: "Couldn’t sign in to Spotify yet. Trying again…" } }),
+  "Couldn’t sign in to Spotify yet. Trying again…")
 assert.equal(serviceLabel({ enabled: true, service: { state: "ready", player: { status: "paused" } } }), "Paused")
 
 assert.equal(positionNow({ ms: 1000, at: 10_000, speed: 1 }, 5000, 12_000), 3000)
@@ -116,3 +122,25 @@ for (const [overBluetooth, expected] of [[false, 4000], [true, 15000]]) {
   slow.stop()
 }
 assert.match(SpotifyPage.template, /Pair phone/)
+
+// Pause/skip smoothing sliders: live-tunable, never gated on Park.
+assert.equal(muteLabel(0), "Off")
+assert.equal(muteLabel(0.25), "250 ms")
+assert.equal(muteLabel(undefined), "Off")
+assert.match(SpotifyPage.template, /aria-label="Pause smoothing"[^>]*:disabled="busy"/)
+assert.match(SpotifyPage.template, /aria-label="Skip smoothing"[^>]*:disabled="busy"/)
+assert.doesNotMatch(SpotifyPage.template, /Pause smoothing[^>]*parked/)
+{
+  const posts = []
+  const page = { pauseDraft: 0.9, skipDraft: 0.9, feed: { post: (path, body) => { posts.push([path, body]); return Promise.resolve() } } }
+  SpotifyPage.methods.commitMute.call(page, "pause", { target: { value: "0.3" } })
+  SpotifyPage.methods.commitMute.call(page, "skip", { target: { value: "0" } })
+  SpotifyPage.methods.commitMute.call(page, "skip", { target: { value: "not a number" } })
+  assert.deepEqual(posts, [["./api/spotify/preferences", { pauseMute: 0.3 }], ["./api/spotify/preferences", { skipMute: 0 }]])
+  assert.equal(page.pauseDraft, null)
+  assert.equal(page.skipDraft, null)
+  assert.equal(SpotifyPage.computed.pauseMuteLabel.call({ pauseDraft: 0.6, setup: { preferences: { pauseMute: 0.5 } } }), "600 ms")
+  assert.equal(SpotifyPage.computed.skipMuteLabel.call({ skipDraft: null, setup: { preferences: { skipMute: 0.25 } } }), "250 ms")
+}
+
+assert.equal(serviceLabel({ enabled: true, service: { state: "ready", player: { status: "paused" }, outputWaiting: "Car" } }), "Paused Audio waits for Car.")

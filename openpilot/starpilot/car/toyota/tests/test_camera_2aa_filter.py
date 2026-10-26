@@ -65,7 +65,7 @@ def test_twoaa_identity_topology_rejects_unqualified_owner(candidate, bad):
   elif bad == 'bus1':
     fp[1][0x2AA] = 8
   elif bad == 'pedal':
-    fp[0][0x201] = 6
+    fp[0][0x201] = 5
   elif bad in ('status8', 'advert4'):
     fp[0][0x2FF] = 8 if bad == 'status8' else 4
   elif bad.startswith('camera'):

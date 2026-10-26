@@ -709,15 +709,18 @@ class RuntimeSnapshotAdapter:
       bluetooth = value if value in ("off", "on", "connected") else "on" if value is True else "off" if value is False else ""
     except (OSError, RuntimeError, ValueError):
       bluetooth = ""
-    self._jetlink.set_enabled(mode == ShellMode.HOME)
-    jetlink_port = self._jetlink.snapshot().port
+    feed = getattr(ui, "jetlink_status_feed", None)
+    self._jetlink.set_enabled(feed is None and mode == ShellMode.HOME)
+    jetlink_status = (feed if feed is not None else self._jetlink).snapshot()
+    jetlink_port = jetlink_status.port
     jetlink = "connected" if jetlink_port == "connected" else "plugged" if jetlink_port == "device" else "off"
-    gpu_present = bool(device is not None and getattr(device, "chestnutPresent", False) and
-                       not getattr(ui, "usb_unknown", False))
+    gpu_present = bool((device is not None and getattr(device, "chestnutPresent", False) and
+                        not getattr(ui, "usb_unknown", False)) or
+                       (jetlink_status.state in ("connected", "connecting", "ready", "active")))
     gpu_active = bool(gpu_present and getattr(getattr(ui, "chestnut_state", None), "value", None) == "active")
     home = HomeState(version=DISPLAY_VERSION, commit=_text(params, "GitCommit"),
                      commit_date=_commit_date(_text(params, "GitCommitDate")),
-                     model_label="",
+                     model_label="Jetlink Model" if jetlink_status.state in ("ready", "active") else "",
                      description=home_description(_text(params, "UpdaterCurrentDescription")),
                      mode=(HomeMode.CONDITIONAL_EXPERIMENTAL if self._conditional_choice is ModeChoice.CEM else
                            HomeMode.CONDITIONAL_CHILL if self._conditional_choice is ModeChoice.CCM else

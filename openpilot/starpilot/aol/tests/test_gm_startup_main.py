@@ -233,12 +233,12 @@ def test_all_actual_gm_configuration_policies_cold_main_then_critical_recovery()
       owner.update(cs, fault_active=False)
       owner.observe_calibration(cs, events=[])
       assert owner.output(cs)[0] and not owner.startup_calibration_pending
-      # Same event after actual ready observation retains existing rearm law.
+      # A resolved fault restores the persistent GM MAIN request without a new edge.
       owner.update(cs, fault_active=True)
       owner.observe_calibration(cs, events=events.to_msg())
       owner.update(cs, fault_active=False)
       owner.observe_calibration(cs, events=[])
-      assert not owner.output(cs)[0] and owner._main_cycle_required
+      assert owner.output(cs)[0] and not owner._main_cycle_required
       cs.cruiseState.available = False
       owner.update(cs, fault_active=False)
       owner.observe_calibration(cs, events=[])
@@ -347,7 +347,7 @@ def test_cached_main_without_current_required_can_cannot_arm(index):
     assert not cs.canValid and not owner.output(cs)[0]
 
 
-def test_cold_native_transport_reset_is_not_a_readiness_recovery():
+def test_cold_native_reset_requires_explicit_healthy_observation_before_main_recovers():
   with OpenpilotPrefix():
     params = Params()
     params.put_bool('AlwaysOnLateral', True, block=True)
@@ -360,9 +360,12 @@ def test_cold_native_transport_reset_is_not_a_readiness_recovery():
     owner.update(cs, fault_active=False)
     owner.observe_calibration(cs, events=events.to_msg())
     assert owner.output(cs) == (True, True, True)
-    owner.update(cs, fault_active=True)  # Existing Card transport-reset result.
+    owner.update(cs, fault_active=True)  # Current reset still inhibits optional intent.
+    assert not owner.output(cs)[0]
+    owner.update(cs, fault_active=None)
+    assert not owner.output(cs)[0]
     owner.observe_calibration(cs, events=events.to_msg())
     owner.update(cs, fault_active=False)
     owner.observe_calibration(cs, events=[])
-    assert not owner.output(cs)[0] and owner._main_cycle_required
+    assert owner.output(cs)[0] and not owner._main_cycle_required
     assert not owner.startup_calibration_pending

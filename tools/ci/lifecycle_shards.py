@@ -92,8 +92,11 @@ def workload_policy():
   policy = json.loads(Path(__file__).with_name('lifecycle_workloads.json').read_text())
   if policy['version'] != 1 or set(policy['function_groups']) != {
       'openpilot/starpilot/car/toyota/tests/test_legacy_advert_callers.py',
+      'openpilot/starpilot/tests/test_ford_configuration_parity.py',
+      'openpilot/starpilot/aol/tests/test_stock_location_recovery.py',
       'openpilot/starpilot/car/toyota/tests/test_camera_2aa_callers.py',
-      'openpilot/starpilot/car/toyota/tests/test_prius_sdsu_callers.py'}:
+      'openpilot/starpilot/car/toyota/tests/test_prius_sdsu_callers.py',
+      'openpilot/starpilot/car/toyota/tests/test_prius_advert_callers.py'}:
     raise ValueError('Unreviewed lifecycle function grouping policy')
   if type(policy['independent_function_max_cases']) is not int or not 1 <= policy['independent_function_max_cases'] <= 60:
     raise ValueError('Invalid independent function group size')
@@ -110,7 +113,7 @@ def workload_policy():
 
 
 def partition(targets, identities, count):
-  if (not 1 <= count <= 8 or len(set(targets)) != len(targets) or len(set(identities)) != len(identities) or
+  if (not 1 <= count <= 16 or len(set(targets)) != len(targets) or len(set(identities)) != len(identities) or
       any(not target.endswith('.py') or '::' in target or Path(target).is_absolute() or '..' in Path(target).parts for target in targets)):
     raise ValueError('Invalid lifecycle catalog')
   owners = {}
@@ -164,21 +167,67 @@ def partition(targets, identities, count):
   return shards
 
 
-def aggregate(directory, count):
+def release_result_allowed(record):
+  # Preserve the unsharded RELEASE runner's original unittest/pytest skip
+  # semantics. Skipped cases stay collected, source-bound and counted as
+  # skipped, never passed. Failures, errors and xfails remain unsuccessful.
+  return record['status'] in ('passed', 'skipped')
+
+
+def release_matches(identity, target):
+  if identity.startswith('opendbc.'):
+    identity = 'opendbc_repo.' + identity
+  module, *selectors = target.split('::')
+  if not module.endswith('.py') or module.startswith('/') or '..' in module.split('/'):
+    raise ValueError('Invalid RELEASE target')
+  prefix = module.removesuffix('.py').replace('/', '.')
+  if selectors:
+    prefix += '.' + '.'.join(selectors)
+    return identity == prefix or identity.startswith((prefix + '.', prefix + '['))
+  return identity.startswith(prefix + '.')
+
+
+def release_partition(targets, identities, count):
+  """Keep every declared module/class/function intact; balance by actual case count."""
+  if type(count) is not int or not 1 <= count <= 16 or len(set(targets)) != len(targets) or len(set(identities)) != len(identities):
+    raise ValueError('Invalid RELEASE catalog')
+  groups = {target: [] for target in targets}
+  for identity in identities:
+    owners = [target for target in targets if release_matches(identity, target)]
+    if len(owners) != 1:
+      raise ValueError('RELEASE case needs exactly one declared owner')
+    groups[owners[0]].append(identity)
+  if not groups or any(not cases for cases in groups.values()):
+    raise ValueError('RELEASE target collected no cases')
+  shards, loads = [[] for _ in range(count)], [0] * count
+  for target in sorted(groups, key=lambda target: (-len(groups[target]), target)):
+    index = min(range(count), key=lambda i: (loads[i], i))
+    shards[index].append(target)
+    loads[index] += len(groups[target])
+  return shards
+
+
+def aggregate(directory, count, suite='aol-lifecycle'):
+  if suite not in ('aol-lifecycle', 'safety-release'):
+    raise ValueError('Invalid aggregate suite')
+  partitioner = release_partition if suite == 'safety-release' else partition
+  matcher = release_matches if suite == 'safety-release' else matches
+  native_kinds = ('safety',) if suite == 'safety-release' else ('safety', 'aol_protocol')
   documents = [json.loads(path.read_text()) for path in sorted(Path(directory).rglob('coverage.json'))]
   if len(documents) != count:
     raise ValueError('Missing or duplicate lifecycle shard artifacts')
   first = documents[0]
   full = first['full_catalog_test_ids']
   targets = first['full_catalog_targets']
-  expected = partition(targets, full, count)
+  expected = partitioner(targets, full, count)
   seen, indices = [], set()
+  passed_count = skipped_count = 0
   for doc in documents:
     index = doc['shard']['index']
     if index in indices or not 0 <= index < count or doc['shard']['count'] != count:
       raise ValueError('Invalid lifecycle shard index')
     indices.add(index)
-    if doc['suite'] != 'aol-lifecycle' or doc['status'] != 'completed' or doc['exit_code'] != 0:
+    if doc['suite'] != suite or doc['status'] != 'completed' or doc['exit_code'] != 0:
       raise ValueError('Lifecycle shard failed')
     if doc['collection_errors'] or doc['gate_errors']:
       raise ValueError('Lifecycle shard errors')
@@ -203,14 +252,17 @@ def aggregate(directory, count):
     capnp = doc['native'].get('pycapnp', {})
     if capnp.get('sha256') != first['native'].get('pycapnp', {}).get('sha256') or len(capnp.get('sha256', '')) != 64:
       raise ValueError('Native pycapnp import provenance changed')
-    for key in ('safety', 'aol_protocol'):
+    if suite == 'safety-release' and (doc['native']['safety'].get('variant') != 'release' or
+                                      doc['native']['safety'].get('all_output_hook_available') is not False):
+      raise ValueError('RELEASE shard must use the actual release registry')
+    for key in native_kinds:
       if not doc['native'][key]['sha256']:
         raise ValueError('Missing genuine native build evidence')
     ids = doc['selected_test_ids']
     coverage_path = next(path for path in Path(directory).rglob('coverage.json')
                          if json.loads(path.read_text())['shard']['index'] == index)
     build_input_digest = digest(json.dumps(doc['source']['build_identity']['inputs'], sort_keys=True).encode())
-    for kind in ('safety', 'aol_protocol'):
+    for kind in native_kinds:
       native = doc['native'][kind]
       if native['build_inputs_sha256'] != build_input_digest:
         raise ValueError('Native build input source provenance changed')
@@ -227,23 +279,29 @@ def aggregate(directory, count):
     records = result['results']
     if result['exit_code'] != 0 or result['collection_errors'] or result['gate_errors']:
       raise ValueError('Lifecycle outcome report failed')
-    if result['selected_test_ids'] != ids or Counter(row['id'] for row in records) != Counter(ids) or any(row['status'] != 'passed' for row in records):
+    allowed = release_result_allowed if suite == 'safety-release' else lambda row: row['status'] == 'passed'
+    if result['selected_test_ids'] != ids or Counter(row['id'] for row in records) != Counter(ids) or any(not allowed(row) for row in records):
       raise ValueError('Lifecycle missing, duplicate or unsuccessful outcomes')
-    if ids != [identity for identity in full if any(matches(identity, target) for target in expected[index])]:
+    if ids != [identity for identity in full if any(matcher(identity, target) for target in expected[index])]:
       raise ValueError('Lifecycle shard cases differ from the full catalog')
+    passed_count += sum(row['status'] == 'passed' for row in records)
+    skipped_count += sum(row['status'] == 'skipped' for row in records)
     seen.extend(ids)
   if Counter(seen) != Counter(full) or len(set(full)) != len(full):
     raise ValueError('Lifecycle aggregate does not cover every case exactly once')
-  return {'status': 'completed', 'shards': count, 'cases_passed': len(full), 'targets': len(targets), 'source_revision': first['source']['revision']}
+  return {'status': 'completed', 'shards': count, 'cases_passed': passed_count, 'cases_skipped': skipped_count,
+          'cases_total': len(full), 'targets': len(targets),
+          'source_revision': first['source']['revision']}
 
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument('directory', type=Path)
   parser.add_argument('--count', type=int, default=4)
+  parser.add_argument('--suite', choices=('aol-lifecycle', 'safety-release'), default='aol-lifecycle')
   parser.add_argument('--output', type=Path, required=True)
   args = parser.parse_args()
-  result = aggregate(args.directory, args.count)
+  result = aggregate(args.directory, args.count, args.suite)
   args.output.parent.mkdir(parents=True, exist_ok=True)
   args.output.write_text(json.dumps(result, indent=2) + '\n')
   print(json.dumps(result))

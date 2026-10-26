@@ -116,6 +116,8 @@ createApp({
   },
   watch: { 'route.path'(path, previous) {
     state.pageError = ""
+    if (path !== "/settings") state.searchPage = ""
+    else if (route.view.searchPage !== undefined) state.searchPage = route.view.searchPage
     this.routeDirection = route.direction < 0 || primaryTab(path) < primaryTab(previous) ? -1 : 1
   } },
   methods: {
@@ -227,7 +229,7 @@ createApp({
           <GxNotice v-if="authState.error" tone="danger">{{ authState.error }}</GxNotice>
 
         </section>
-        <GxNotice v-else-if="state.pageError" tone="danger">{{ state.pageError }} <button class="gx-btn" @click="reloadPage">Reload page</button></GxNotice>
+        <GxNotice v-else-if="state.pageError" tone="danger">{{ state.pageError }} <template #actions><button class="gx-btn" @click="reloadPage">Reload page</button></template></GxNotice>
         <Home v-else-if="route.path === '/'" :mode="state.monitorMode" :unauthorized="sessionExpired" :go="go" />
         <LocalRecordingsPage v-else-if="isActive('/recordings') && authState.localAccess" :mode="state.monitorMode" :unauthorized="sessionExpired" :route-path="route.path" :go="go" />
         <div v-else-if="isActive('/recordings')" class="gx-stack">
@@ -252,7 +254,7 @@ createApp({
         <LaboratoryPage v-else-if="route.path === '/model_laboratory'" :mode="state.monitorMode" :unauthorized="sessionExpired" />
         <BluetoothPage v-else-if="route.path === '/bluetooth'" :mode="state.monitorMode" :unauthorized="sessionExpired" />
         <AndroidAutoPage v-else-if="route.path === '/android-auto'" :mode="state.monitorMode" :local-access="authState.localAccess" :unauthorized="sessionExpired" />
-        <SpotifyPage v-else-if="route.path === '/spotify'" :mode="state.monitorMode" :unauthorized="sessionExpired" />
+        <SpotifyPage v-else-if="['/android-auto/audio', '/spotify'].includes(route.path)" :mode="state.monitorMode" :unauthorized="sessionExpired" />
         <VehicleControlsPage v-else-if="route.path === '/vehicle'" :mode="state.monitorMode" :unauthorized="sessionExpired" />
         <DevicePreferencesPage v-else-if="route.path === '/device-preferences'" :mode="state.monitorMode" :go="go" />
         <SettingsPage @nested="ensureBackEntry" ref="activeSettings" v-else-if="deviceSettingsPage" :key="deviceSettingsPage" :mode="state.monitorMode" :unauthorized="sessionExpired" :initial-page="deviceSettingsPage" :title="deviceSettingsPage === 'sounds' ? 'Sounds & Alerts' : 'Display'" :return-to="returnToDevice" />

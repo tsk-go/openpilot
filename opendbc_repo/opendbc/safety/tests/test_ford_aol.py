@@ -68,7 +68,7 @@ class TestFordAolDriverIntent(unittest.TestCase):
     self.assertTrue(self.safety.safety_rx_hook(libsafety_py.make_CANPacket(address, bus, data)))
 
   def pump(self, count, *, main=3, tja=False, gear=3, eps=0, mask=0, heartbeat=True, speed=10., curvature=0.):
-    base = self.word & ~257
+    base = self.word & ~(257 | 128)
     gear_name, gear_signal = ('TransGearData', 'GearLvrPos_D_Actl') if base == 8 else (
       ('Gear_Shift_by_Wire_FD1', 'TrnRng_D_RqGsm') if base == 10 else ('PowertrainData_10', 'TrnRng_D_Rq'))
     if self.word & 256:

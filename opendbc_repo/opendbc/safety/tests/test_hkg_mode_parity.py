@@ -6,6 +6,8 @@ import pytest
 from opendbc.car import CanData
 from opendbc.car.hyundai.values import CAR
 from opendbc.car.hyundai import discovery
+from opendbc.car.hyundai.canfd_angle_aol import MODELS
+from opendbc.car.hyundai.tests.test_stock_angle_aol import source_profile
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.starpilot.aol.tests import test_hkg_cancel_joined as joined
 from openpilot.starpilot.aol.tests import test_ioniq_availability as callers
@@ -23,15 +25,18 @@ def test_gv70_physical_lkas_and_cancel_preserve_independent_lateral(alpha, monke
                         monkeypatch, shared_long=alpha)
 
 
-@pytest.mark.parametrize('family', ['gv70', 'lka', 'lka_alt', 'camera', 'radar', 'camera_buttons_alt'])
+@pytest.mark.parametrize('family', ['gv70', 'lka', 'lka_alt', 'camera', 'radar', 'camera_buttons_alt'] +
+                         ['angle:' + str(identity) for identity in sorted(MODELS)])
 @pytest.mark.parametrize('socket_timeout', [False, True])
-@pytest.mark.parametrize('age_ns,published_offset_ns', [(31_428_438, 5_014_375), (31_627_188, 5_542_344)])
+@pytest.mark.parametrize('age_ns,published_offset_ns', [(31_428_438, 5_014_375), (31_627_188, 5_542_344),
+                                                        (33_086_408, 5_833_377)])
 def test_stock_hkg_recorded_cutoff_keeps_original_proof(family, socket_timeout, age_ns, published_offset_ns):
   case = callers.IoniqAvailabilityTests(methodName='runTest')
   with ExitStack() as cleanup:
     cleanup.callback(case.doCleanups)
     cleanup.enter_context(OpenpilotPrefix())
-    cp = params(CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN) if family == 'gv70' else topology_params(family)
+    cp = (source_profile(CAR(family.removeprefix('angle:'))) if family.startswith('angle:') else
+          params(CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN) if family == 'gv70' else topology_params(family))
     sd, controls, drive = case._authority_callers(False, cp=cp, genuine_events=True)
     source = 10_020_000_000
     for tick in (0, 1):
@@ -124,12 +129,14 @@ def test_gv70_recorded_cutoff_baseline():
 
 @pytest.mark.parametrize('fault', ['can', 'epsTemporary', 'epsPermanent', 'acc', 'brake',
                                  'pandaRx', 'relay', 'nativeInvalid'])
-def test_stock_hkg_original_proof_wait_never_defers_new_fault(fault):
+@pytest.mark.parametrize('identity', [CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN, CAR.HYUNDAI_IONIQ_5_PE, CAR.KIA_EV9])
+def test_stock_hkg_original_proof_wait_never_defers_new_fault(fault, identity):
   case = callers.IoniqAvailabilityTests(methodName='runTest')
   with ExitStack() as cleanup:
     cleanup.callback(case.doCleanups)
     cleanup.enter_context(OpenpilotPrefix())
-    sd, _, drive = case._authority_callers(False, cp=params(CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN), genuine_events=True)
+    cp = params(identity) if identity == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN else source_profile(identity)
+    sd, _, drive = case._authority_callers(False, cp=cp, genuine_events=True)
     source = 10_020_000_000
     for tick in (0, 1, 2):
       stamp = 10_000_000_000 + tick * 10_000_000

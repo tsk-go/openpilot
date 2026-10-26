@@ -1,4 +1,5 @@
 from dataclasses import replace
+from functools import lru_cache
 
 from opendbc.car.hyundai.ev9_long_aol import qualified as qualified_ev9_long_aol, WORDS as EV9_LONG_AOL_WORDS
 from opendbc.car.hyundai.pe_long_aol import qualified as qualified_pe_long_aol, WORDS as PE_LONG_AOL_WORDS
@@ -159,6 +160,7 @@ def _policy_for(CP) -> AolVehiclePolicy:
     )
   if qualified_non_scc(CP):
     return AolVehiclePolicy(
+      cruise_main_required=False,
       intent_supported=True,
       settings_supported=True,
       runtime_supported=True,
@@ -317,12 +319,41 @@ def retain_on_native_denial(CP, native, state):
               native.requestedLateral and not native.lateralAllowed and temporary_restriction(CP, state))
 
 
-def source_deadline_supported(CP) -> bool:
+def early_native_long_withdrawal_supported(CP) -> bool:
+  """Exact LONG profiles whose native policy grants lateral independently."""
+  return bool(CP.openpilotLongitudinalControl and
+              (qualified_ioniq6(CP) or qualified_canfd_long(CP, marked_only=True)))
+
+
+def _source_deadline_supported_uncached(CP) -> bool:
   """Admit only an already marked HKG axis owner to original-proof waits."""
+  from openpilot.starpilot.aol.vehicle import policy_for as vehicle_policy_for
+
   config = aol_safety_config(CP)
-  policy = policy_for(CP)
+  policy = vehicle_policy_for(CP)
   return bool(policy.runtime_supported and policy.full_axis_runtime_required and config is not None and
               native_accepts_cp(CP, int(config.safetyModel.raw), int(config.safetyParam)))
+
+
+@lru_cache(maxsize=64)
+def _source_deadline_for_bytes(key: bytes) -> bool:
+  with car.CarParams.from_bytes(key) as CP:
+    return _source_deadline_supported_uncached(CP)
+
+
+def source_deadline_supported(CP) -> bool:
+  """Reuse only exact static eligibility; live source/native leases stay current."""
+  from openpilot.starpilot.aol.vehicle import _car_params_bytes
+
+  if CP.brand != 'hyundai':
+    return False
+  key = _car_params_bytes(CP)
+  if key is not None:
+    try:
+      return _source_deadline_for_bytes(key)
+    except Exception:
+      pass  # Snapshot/cache failures retain the complete original evaluation.
+  return _source_deadline_supported_uncached(CP)
 
 
 def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
@@ -431,11 +462,13 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
             event.userDisable and event.name != log.OnroadEvent.EventName.buttonCancel for event in sm['onroadEvents'])):
       return False
     native = independent_lateral_health(sm, CP, CS, feedback.session, now_ns)
+    owner_index = 0 if len(CP.safetyConfigs) == 1 else config_index(CP)
     if (native is None or not native.pandaInventory or not native.requestedLateral or not native.lateralAllowed or
         not native.requestedLongitudinal or native.longitudinalAllowed or
         native.observedMonoTime < feedback.healthy_native_ns or
         (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != feedback.healthy_inventory or
-        len(native.pandaInventory) != 1 or native.pandaInventory[0].controlsAllowed):
+        owner_index is None or len(native.pandaInventory) != len(CP.safetyConfigs) or
+        native.pandaInventory[owner_index].controlsAllowed):
       return False
     return True
   except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):

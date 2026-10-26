@@ -97,13 +97,44 @@ class LiveTrackingIngress:
           self.optimizer.observe_episode(episode, now_ns=now_ns)
     return accepted
 
-  def observe_original_pose(self, pose, collector, *, now_ns, current_native):
+  def original_pose_pair(self, ready, pose):
     lag = self.optimizer.lag_ns
-    lower = [(c, o) for c, o in collector.ready if o.apply_ns <= pose.source_lower_ns-lag]
-    upper = [(c, o) for c, o in collector.ready if o.apply_ns <= pose.source_upper_ns-lag]
-    if not lower or not upper or lower[-1][1].apply_ns != upper[-1][1].apply_ns:
+    lower = [(c, o) for c, o in ready if o.apply_ns <= pose.source_lower_ns - lag]
+    upper = [(c, o) for c, o in ready if o.apply_ns <= pose.source_upper_ns - lag]
+    if not lower or not upper:
       return None
-    return self.observe_pose(pose, *lower[-1], now_ns=now_ns, current_native=current_native)
+    pair = lower[-1]
+    if not 0 <= pose.source_upper_ns - lag - pair[1].apply_ns <= 30_000_000:
+      return None
+    if pair[1].apply_ns != upper[-1][1].apply_ns:
+      if not self.episodes.source_tracking:
+        return None  # A plant response still requires one unambiguous input.
+      # Source-only tracking compares desired and measured acceleration at the
+      # pose time, not a fitted command->response. Retain the genuine earlier
+      # causal emission across clock uncertainty within one source lineage.
+      # A known slow map ramp must not withdraw physical-source freshness;
+      # the episode builder independently discards windows across map changes. Never interpolate a command or replace its clocks.
+      binding = self.binding
+      lineage = (binding.identity, binding.source_epoch, binding.baseline_revision,
+                 binding.controller_revision, binding.native_identity, binding.native_required)
+      try:
+        self.profile(pair[0])  # Require the actual complete consumed map, not equality.
+        for control, output in ready:
+          if pair[1].apply_ns <= output.apply_ns <= upper[-1][1].apply_ns:
+            if ((control.identity, control.source_epoch, control.baseline_revision,
+                 control.controller_revision, control.native_identity, control.native_required) != lineage
+                or control.generation != pair[0].generation):
+              return None
+          self.profile(control)  # Unknown consumption still fails closed.
+      except (AttributeError, TypeError, ValueError):
+        return None
+    return pair
+
+  def observe_original_pose(self, pose, collector, *, now_ns, current_native):
+    pair = self.original_pose_pair(collector.ready, pose)
+    if pair is None:
+      return None
+    return self.observe_pose(pose, *pair, now_ns=now_ns, current_native=current_native)
 
   def observe_pose(self, pose, control, output, *, now_ns, current_native):
     # The caller passes the collector's original lag-associated pair. Neither
@@ -149,6 +180,23 @@ class LiveTrackingIngress:
         self.latest_offer is None or application.version != 1 or not 0 < application.sequence <= self.latest_offer.sequence):
       return False
     state = self.optimizer.offer_state
+    if application.status == 'rejected':
+      if (application.reason != 'pending_trial_interrupted' or application.binding != self.binding
+          or state['phase'] not in ('trial', 'confirmed') or state.get('accepted', False)
+          or application.trial_id != state['trial_id']
+          or application.target_sequence != state.get('target_sequence', self.optimizer.sequence)
+          or application.confirmed_target_sha256
+          or not state['started_ns'] < application.control_ns <= now_ns <= application.control_ns+100_000_000):
+        return False
+      try:
+        if full_profile_sha256(self.binding.baseline_revision, application.applied) != application.applied_sha256:
+          return False
+      except (TypeError, ValueError):
+        return False
+      # Withdraw the wire trial and retain only the existing inert-study rules.
+      # A fresh baseline ACK and new ID are still required; no lease is renewed.
+      self.interrupt('consumer_pending_trial_interrupted')
+      return False
     return self.optimizer.acknowledge_application(trial_id=application.trial_id,
       target_sequence=application.target_sequence, phase=state['phase'],
       target_sha256=application.applied_sha256, applied_full30=application.applied,

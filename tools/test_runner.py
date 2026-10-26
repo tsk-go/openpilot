@@ -280,6 +280,7 @@ def run_batch(test_ids, capture_output):
 
 
 def run_parallel(batches, workers, warning_action, capture_output):
+  failure_detail = None
   with ProcessPoolExecutor(max_workers=workers, initializer=worker_diagnostics.initialize, initargs=(warning_action,)) as pool:
     futures = {pool.submit(run_batch, batch, capture_output): batch for batch in batches}
     processes = tuple(pool._processes.values())
@@ -288,10 +289,18 @@ def run_parallel(batches, workers, warning_action, capture_output):
         yield future.result()
       except Exception:
         detail = traceback.format_exc(chain=False)
+        failure_detail = detail
         witness = worker_diagnostics.pool_failure(processes, detail)
         if witness is not None:
           detail = f"Worker batch failed; original exception and observed exits/current tests: {witness}"
         yield [make_record(test_id, "error", detail) for test_id in futures[future]]
+  if failure_detail is not None:
+    # Existing executor shutdown has joined the workers; no new wait is added.
+    # Keep the first failure/identities and fill only previously unknown exits.
+    try:
+      worker_diagnostics.pool_failure(processes, failure_detail)
+    except (OSError, ValueError, TypeError, KeyError) as error:
+      print(f"Worker exit evidence refresh unavailable ({type(error).__name__})", file=sys.stderr)
 
 
 def report(records, errors, duration_count, elapsed):

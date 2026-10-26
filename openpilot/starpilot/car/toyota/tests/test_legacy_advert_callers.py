@@ -128,7 +128,11 @@ def run(candidate, stock, bridge, scenario='nominal', *, aol=True, fault=None):
     helpers.run_case(stock, scenario, candidate=candidate, bridge=bridge, input_clock=True,
       aol=aol, sdsu_words=legacy_advert_filter.PROFILES[candidate], alpha_long=False,
       physical_frames=physical, filter_advert=True, on_sample=observe, brake_stop_check_start=355,
-      brake_pause_mps=25.0 if fault == 'configured-brake' else None, native_rx_expected=native_rx_expected, on_state=parsed_state)
+      brake_pause_mps=25.0 if fault == 'configured-brake' else None, native_rx_expected=native_rx_expected, on_state=parsed_state,
+      firmware_override=[] if candidate == CAR.TOYOTA_MATRIX_RETROFIT else None,
+      manual_selection=candidate == CAR.TOYOTA_MATRIX_RETROFIT,
+      manual_filter_length=4 if candidate == CAR.TOYOTA_MATRIX_RETROFIT else None,
+      fingerprint_frames=[(0x2FF, bytes(4), 0)] if candidate == CAR.TOYOTA_MATRIX_RETROFIT else None)
 
 
 

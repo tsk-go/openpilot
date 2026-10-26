@@ -24,7 +24,7 @@ def exercise(*, control_offset=10_000_000, callback_offset=20_000_000,
   adapter = mock.Mock(event_collection=False, raw_storage=False,
                       source_plant_protocol=None, original_feedback_archive=None)
   adapter.prepare_control.return_value = evidence
-  collector = mock.Mock(adapter=adapter)
+  collector = mock.Mock(adapter=adapter, controls={evidence.control_ns: evidence}, recent_controls={})
   receipt_clock = [NOW]
   source_reader = mock.Mock(return_value=source)
   fitter = mock.Mock()
@@ -32,7 +32,7 @@ def exercise(*, control_offset=10_000_000, callback_offset=20_000_000,
     starpilotLateralState=SimpleNamespace(learningEvidence=SimpleNamespace(version=1)))
   applied = SimpleNamespace(which=lambda: 'starpilotCarState',
     starpilotCarState=SimpleNamespace(appliedEvidence=SimpleNamespace(version=1)))
-  output_value = object()
+  output_value = SimpleNamespace(control_ns=evidence.control_ns)
 
   def drain(socket, callback, receive, sink, captured_now):
     assert captured_now == NOW  # Original outer loop snapshot really is older.

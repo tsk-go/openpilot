@@ -541,7 +541,7 @@ export const ReplayViewer = {
       </div>
     </div>
     </div>
-    <GxNotice v-if="replayError" tone="danger">{{ replayError }}<button v-if="!playing" class="gx-btn gx-btn--tonal" :disabled="replayBusy" @click="client.open(routeId, startSegment)">Retry replay</button><button v-else class="gx-btn gx-btn--tonal" :disabled="controlsBusy || !replay.codec || replay.mediaReady === false" @click="client.beginMedia(replay)">Retry video</button></GxNotice>
+    <GxNotice v-if="replayError" tone="danger">{{ replayError }}<template #actions><button v-if="!playing" class="gx-btn gx-btn--tonal" :disabled="replayBusy" @click="client.open(routeId, startSegment)">Retry replay</button><button v-else class="gx-btn gx-btn--tonal" :disabled="controlsBusy || !replay.codec || replay.mediaReady === false" @click="client.beginMedia(replay)">Retry video</button></template></GxNotice>
     <GxNotice v-if="replay && !replay.offroad" tone="warn">Turn off the vehicle before replaying a drive.</GxNotice>
     <GxNotice v-if="replay?.errorCode" tone="warn">Replay stopped: {{ replay.errorCode.replaceAll('_', ' ') }}</GxNotice>
     <GxNotice v-if="replay?.sessionId && !playing && !canStart" tone="info">Another replay is active. Close it in its viewer before starting this route.</GxNotice>

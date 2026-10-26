@@ -54,6 +54,8 @@ def apply(cp):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   try:
     if (cp is None or cp.brand != 'toyota' or cp.carFingerprint not in CARS or cp.notCar or cp.passive or cp.dashcamOnly or
         cp.secOcRequired or not cp.pcmCruise or len(cp.safetyConfigs) != 1 or
@@ -74,6 +76,9 @@ def enabled(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

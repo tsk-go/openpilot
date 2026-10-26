@@ -94,7 +94,8 @@ def native_matches_cp(CP, model: int, param: int) -> bool:
       config = volkswagen.aol_safety_config(CP)
       return bool(config is not None and volkswagen.native_accepts_cp(CP, model, param) and
                   model == int(config.safetyModel.raw) and param == int(config.safetyParam))
-    return bool(any(port.native_accepts_cp(CP, model, param) for port in _PORTS.values()) and
+    port = _PORTS.get(CP.brand)
+    return bool(port is not None and port.native_accepts_cp(CP, model, param) and
                 model == int(CP.safetyConfigs[0].safetyModel.raw) and
                 param == int(CP.safetyConfigs[-1].safetyParam))
   except (AttributeError, TypeError, ValueError, OverflowError, IndexError):
@@ -102,9 +103,19 @@ def native_matches_cp(CP, model: int, param: int) -> bool:
 
 
 def native_admission_key(CP):
-  """Observation reuse is scoped to the exact Ioniq single-Panda contract."""
+  """Bind structural reuse to the complete mutable vehicle configuration."""
   try:
-    return hyundai.native_admission_key(CP) if CP.brand == 'hyundai' else None
+    if CP.brand == 'hyundai':
+      existing = hyundai.native_admission_key(CP)
+      if existing is not None:
+        return existing
+    if CP.brand in _PORTS:
+      # Reuse only one exact packet's structural admission, for every owner.
+      # Full CP bytes invalidate every mutable field; live gates stay per call.
+      key = _car_params_bytes(CP)
+      if key is not None:
+        return ('vehicle-full-cp', key)
+    return None
   except (AttributeError, TypeError, ValueError, OverflowError, IndexError):
     return None
 

@@ -29,6 +29,8 @@ def hardware_supported(candidate, fingerprint):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   profile = PROFILES.get(cp.carFingerprint) if cp is not None else None
   return bool(profile is not None and cp.brand == 'toyota' and
               cp.flags & ToyotaFlags.RADAR_CAN_FILTER and not cp.flags & ToyotaFlags.DISABLE_RADAR and
@@ -38,6 +40,9 @@ def configured(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   if not configured(cp):
     return False
   cp.openpilotLongitudinalControl = False

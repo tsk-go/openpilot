@@ -12,6 +12,7 @@ from opendbc.car.isotp_parallel_query import IsoTpParallelQuery
 
 
 class PreparedSafetyConfig(TypedDict):
+  safetyModel: str
   safetyParam: int
 
 
@@ -21,6 +22,7 @@ class PreparedParams(TypedDict):
 
 
 class Outcome(Enum):
+  PENDING = 'pending'
   STOCK_UNTOUCHED = 'stock_untouched'
   SENT_UNCONFIRMED = 'sent_unconfirmed'
   STOCK_RESTORED = 'stock_restored'
@@ -166,7 +168,7 @@ class HyundaiECUStartup:
     if not self.prepared_for(ci.CP):
       raise RuntimeError(f'{self.label} prepared startup does not match constructed CP')
     self.ci = ci
-    if self.outcome is Outcome.SENT_UNCONFIRMED:
+    if self.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED):
       self.ready = True
       return  # Preserve ordinary controller commands and1Hz tester cadence.
     self._warm_stock(ci)

@@ -9,6 +9,7 @@ installed-hardware scheduling or timing acceptance.
 """
 
 import json
+import hashlib
 import ctypes
 import gc
 import time
@@ -76,6 +77,9 @@ def deliver(sm, messages):
 
 
 def firmware(candidate=CAR.TOYOTA_RAV4H):
+  # Manual Matrix has no acquired firmware catalog; keep its fixed selection explicit.
+  if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+    return []
   return [
     structs.CarParams.CarFw(ecu=e, address=a, subAddress=s or 0, fwVersion=v[0], brand='toyota', bus=0)
     for (e, a, s), v in FW_VERSIONS[candidate].items()
@@ -213,7 +217,7 @@ def control_inputs(controls, published, state, sd_events, native, now):
       if name == 'modelV2':
         v.from_dict(model().to_dict())
       elif name == 'lateralManeuverPlan':
-        v.desiredCurvature = .00005
+        v.desiredCurvature = .0002 if controls.CP.steerControlType == structs.CarParams.SteerControlType.angle else .00005
       elif name == 'vehicleParameters':
         v.stiffnessFactor, v.steerRatio = 1.0, controls.CP.steerRatio
       elif name == 'longitudinalPlan':
@@ -227,7 +231,8 @@ def control_inputs(controls, published, state, sd_events, native, now):
 def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H, bridge=None, input_clock=False, brake_stop_check_start=350,
              sdsu_words=(0x9049, 0x9249), alpha_long=False, disable_setting=None, physical_frames=None, angle=False,
              firmware_override=None, assert_hybrid_release=False, sdsu_mirror=False, on_sample=None, camera_messages=False, filter_advert=False,
-             brake_pause_mps=None, native_rx_expected=None, on_state=None, fingerprint_frames=None):
+             brake_pause_mps=None, native_rx_expected=None, on_state=None, fingerprint_frames=None, manual_selection=False, native_tx_expected=None,
+             manual_filter_length=None, manual_bypass=False, bypass_owner=False, manual_pedal=False, auto_hold=False):
   SYNTHETIC_LAST.clear()
   NATIVE_LAST.clear()
   safety = libsafety_py.libsafety
@@ -240,14 +245,52 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       ('AlwaysOnLateral', aol),
       ('DisableOpenpilotLongitudinal', stock if disable_setting is None else disable_setting),
       ('AlphaLongitudinalEnabled', alpha_long),
-      ('ToyotaAutoHold', False),
+      ('ToyotaAutoHold', auto_hold),
     ):
       params.put_bool(k, v, block=True)
     if brake_pause_mps is not None:
       params.put('AolBrakePauseSpeedMps', float(brake_pause_mps), block=True)
     fw = firmware(candidate) if firmware_override is None else firmware_override
-    exact, found = match_fw_to_car(fw, '', log=False)
-    assert exact and found == {candidate}
+    if manual_selection:
+      if manual_pedal:
+        from opendbc.car.toyota import pedal_composite
+        assert candidate in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT, CAR.TOYOTA_MATRIX_RETROFIT)
+        assert fingerprint_frames is not None
+        acquired_fp = gen_empty_fingerprint()
+        for address, data, bus in fingerprint_frames:
+          acquired_fp[bus][address] = len(data)
+        assert acquired_fp[0].get(0x201) == 6
+        assert pedal_composite.hardware_supported(candidate, acquired_fp, fw)
+      elif manual_bypass:
+        assert fingerprint_frames is not None
+        assert candidate in (CAR.TOYOTA_MATRIX_RETROFIT, CAR.TOYOTA_PRIUS_RETROFIT) and bypass_owner
+        assert any(bus == 2 and address in (0x343, 0x4CB) and len(data) == 8 for address, data, bus in fingerprint_frames)
+        assert not any(address in (0x201, 0x2FF, 0x2AA) for address, _, _ in fingerprint_frames)
+        if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+          assert not fw and firmware_override == []
+        else:
+          assert any(f.ecu == structs.CarParams.Ecu.eps and f.address == 0x7A1 and f.bus == 0 and bytes(f.fwVersion) == b'8965B47070' + bytes(6) for f in fw)
+      elif manual_filter_length is not None:
+        if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+          assert manual_filter_length in (4, 8) and not fw and firmware_override == []
+        else:
+          assert candidate in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT) and manual_filter_length == 4
+          observed_eps = [entry for entry in fw if entry.ecu == structs.CarParams.Ecu.eps]
+          assert len(observed_eps) == 1 and observed_eps[0].address == 0x7A1 and observed_eps[0].bus == 0
+          assert bytes(observed_eps[0].fwVersion) == b'8965B47070' + bytes(6)
+          assert all(entry.brand == 'toyota' and not entry.logging and entry.bus == 0 for entry in fw)
+        assert fingerprint_frames == [(0x2FF, bytes(manual_filter_length), 0)]
+      else:
+        assert stock and fingerprint_frames == []
+        if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
+          assert not fw and firmware_override == []
+        else:
+          assert candidate == CAR.TOYOTA_PRIUS_RETROFIT and len(fw) == 1
+          assert fw[0].ecu == structs.CarParams.Ecu.eps and fw[0].address == 0x7A1 and fw[0].bus == 0
+          assert bytes(fw[0].fwVersion) == b'8965B47070' + bytes(6)
+    else:
+      exact, found = match_fw_to_car(fw, '', log=False)
+      assert exact and found == {candidate}
     fp = gen_empty_fingerprint()
     if fingerprint_frames is None:
       fp[0][0x2FF] = 4 if filter_advert else 8
@@ -258,7 +301,8 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       fp[2][0x2FF] = 8
     if camera_messages:
       fp[2].update({0x343: 8, 0x4CB: 8})
-    observed = (candidate, fp, '0' * 17, fw, structs.CarParams.FingerprintSource.fw, True)
+    source = structs.CarParams.FingerprintSource.fixed if manual_selection else structs.CarParams.FingerprintSource.fw
+    observed = (candidate, fp, '0' * 17, fw, source, True)
     with (
       patch.object(car_helpers, 'fingerprint', return_value=observed),
       patch.object(card_module, 'can_comm_callbacks', return_value=(lambda *a: [], lambda x: None)),
@@ -267,7 +311,8 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       host = card_module.Car()
     assert host.CP.openpilotLongitudinalControl == (not stock)
     assert host.CP.safetyConfigs[0].safetyParam == sdsu_words[stock]
-    assert host.CP.alternativeExperience == 32
+    from opendbc.car.toyota.values import uses_toyota_auto_hold_aeb
+    assert host.CP.alternativeExperience == (32 | ((256 if uses_toyota_auto_hold_aeb(host.CP) else 128) if auto_hold else 0))
     controls, sd = Controls(), sd_module.SelfdriveD(CP=host.CP)
     assert controls.CP.to_dict() == host.CP.to_dict()
     safety.init_tests()
@@ -301,7 +346,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       )
     )
     rows = {r.key: r for r in wheel.rows()}
-    if candidate == CAR.TOYOTA_RAV4H:
+    if candidate == CAR.TOYOTA_RAV4H and not bypass_owner:
       assert 'Bookmark' in rows['wheel:LKASButtonControl'].choices
       assert 'Toggle AOL' not in rows['wheel:LKASButtonControl'].choices
     assert not any('Cancel' in k or 'MainCruise' in k for k in rows)
@@ -322,7 +367,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
       )
     try:
       duration = {
-        'nominal': 251, 'physical': 601, 'faults': 801, 'bad_dlc': 801,
+        'hold': 501, 'nominal': 251, 'physical': 601, 'faults': 801, 'bad_dlc': 801,
         'off': 401, 'cold_low': 251, 'hybrid_stop': 251, 'main_lease': 501, 'identity_refusal': 501,
       }[scenario]
       for tick in range(1, duration):
@@ -426,13 +471,45 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
         cc_event = published['carControl']
         cc = cc_event.carControl
         deliver(host.sm, [cc_event, *native, *sd_events.values()])
+        # A valid previous publication is not a new producer event. Card may
+        # deliberately emit nothing when the current control message is invalid.
+        previous_sendcan = published.pop('sendcan', None)
         host.controls_update(cs, cc)
         outgoing = published.get('sendcan')
-        assert outgoing is not None
-        if not outgoing.valid:
-          assert not outgoing.sendcan and not cs.canValid, ('startup must stay neutral until real CAN health', tick, cs.canValid)
-        for f in outgoing.sendcan:
-          assert safety.safety_tx_hook(libsafety_py.make_CANPacket(f.address, f.src, bytes(f.dat))), (tick, hex(f.address), bytes(f.dat).hex())
+        if outgoing is None:
+          assert not cs.canValid or cs.canTimeout
+          assert not host.sm.valid['carControl']
+          assert not cc.latActive and not cc.longActive
+          assert safety.aol_get_request_mask() == safety.aol_get_permission_mask() == 0
+          outgoing_frames = ()
+        else:
+          outgoing_frames = outgoing.sendcan
+          if not outgoing.valid:
+            assert not outgoing_frames and not cs.canValid, ('startup must stay neutral until real CAN health', tick, cs.canValid)
+        native_tx_accepted = native_tx_rejected = 0
+        for f in outgoing_frames:
+          before_tx = {
+            'nativePermission': int(safety.aol_get_permission_mask()), 'nativeRequest': int(safety.aol_get_request_mask()),
+            'controlsAllowed': bool(safety.get_controls_allowed()), 'configValid': bool(safety.safety_config_valid()),
+            'heartbeatEngaged': ctypes.c_bool.in_dll(native_globals, 'heartbeat_engaged').value,
+            'globals': {name: ctypes.c_int.in_dll(native_globals, name).value for name in
+                        ('desired_torque_last', 'rt_torque_last', 'valid_steer_req_count', 'invalid_steer_req_count')},
+          }
+          expected_tx = True if native_tx_expected is None else native_tx_expected(tick, f, host.CP, safety)
+          assert type(expected_tx) is bool
+          accepted_tx = bool(safety.safety_tx_hook(libsafety_py.make_CANPacket(f.address, f.src, bytes(f.dat))))
+          native_tx_accepted += int(accepted_tx)
+          native_tx_rejected += int(not accepted_tx)
+          if accepted_tx != expected_tx:
+            refusal = {'tick': tick, 'candidate': str(candidate), 'scenario': scenario, 'address': f.address,
+                       'data': bytes(f.dat).hex(), 'bus': f.src, 'outgoingValid': bool(outgoing.valid),
+                       'CP': host.CP.to_dict(), 'CS': cs.to_dict(), 'CC': cc.to_dict(), 'beforeNativeTX': before_tx,
+                       'controllerLastTorque': host.CI.CC.last_torque,
+                       'nativeAfterPermission': int(safety.aol_get_permission_mask()),
+                       'axis': {'lateral': wanted.desired_lateral, 'longitudinal': wanted.desired_longitudinal},
+                       'state': str(sd.state_machine.state), 'fault': sd.aol_fault_reason}
+            (OUT / 'matrix-native-tx-refusal.json').write_text(json.dumps(refusal, indent=2, default=str) + '\n')
+          assert accepted_tx == expected_tx, (tick, hex(f.address), bytes(f.dat).hex(), accepted_tx, expected_tx)
           if f.address == 0x2E4:
             decoded = decode(host.CP, (f.address, bytes(f.dat), f.src), 'STEERING_LKA')
             positive_steering |= bool(decoded['STEER_REQUEST'] and decoded['STEER_TORQUE_CMD'])
@@ -449,6 +526,12 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
           {
             'tick': tick,
             'canValid': cs.canValid,
+            'freshSendcan': outgoing is not None,
+            'actualSendcanFrames': len(outgoing_frames),
+            'nativeAcceptedFrames': native_tx_accepted,
+            'nativeRejectedFrames': native_tx_rejected,
+            'previousSendcanMonoTime': int(previous_sendcan.logMonoTime) if previous_sendcan is not None else 0,
+            'previousSendcanSha256': hashlib.sha256(previous_sendcan.as_builder().to_bytes()).hexdigest() if previous_sendcan is not None else '',
             'lat': cc.latActive,
             'long': cc.longActive,
             'sd': str(sd.state_machine.state),
@@ -468,7 +551,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
           }
         )
         nominal = tick >= 220 and (
-          scenario in ('nominal', 'cold_low', 'hybrid_stop')
+          scenario in ('nominal', 'cold_low', 'hybrid_stop') or scenario == 'hold' and tick < 250
           or scenario == 'identity_refusal' and tick < 250
           or scenario == 'main_lease' and (tick < 250 or tick >= 480)
           or scenario == 'off'
@@ -510,11 +593,13 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
             assert not host.CP.openpilotLongitudinalControl and not cc.longActive
             assert host.CP.safetyConfigs[0].safetyParam == sdsu_words[1]
           else:
-            preference = host.CI.CC.prius_filter_input if candidate == CAR.TOYOTA_PRIUS else (
+            from opendbc.car.toyota import pedal_composite
+            preference = (host.CI.CC.pedal_input if pedal_composite.configured(host.CP) else
+              host.CI.CC.bypass_input if bypass_owner else host.CI.CC.prius_filter_input if candidate == CAR.TOYOTA_PRIUS else (
               host.CI.CC.advert_filter_input if filter_advert or fingerprint_frames is not None and any(
-                address == 0x2AA for address, _, _ in fingerprint_frames) else host.CI.CC.rav4h_filter_input)
+                address == 0x2AA for address, _, _ in fingerprint_frames) else host.CI.CC.rav4h_filter_input))
             assert preference is not None and not preference.update(time.monotonic_ns())
-            for f in outgoing.sendcan:
+            for f in outgoing_frames:
               if f.address == 0x343:
                 acc = decode(host.CP, (f.address, bytes(f.dat), f.src), 'ACC_CONTROL')
                 assert acc['ACCEL_CMD'] == 0 and acc['CANCEL_REQ'] and not acc['RELEASE_STANDSTILL']

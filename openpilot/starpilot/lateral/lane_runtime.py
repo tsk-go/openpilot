@@ -58,27 +58,43 @@ class LaneCenteringHost:
     self.settings = LaneCenteringSettings()
     self.last_refresh_ns: int | None = None
     self.last_tick_ns: int | None = None
+    self.last_refusal = 'inactive'
     from openpilot.starpilot.system.starview.advice import Advice
     self.advice = Advice()   # fork patch 39: the tablet may shift us a little inside the lane
 
   def sample(self, sm, *, now_ns: int, lateral_active: bool, longitudinal_active: bool) -> LaneCenteringRequest | None:
+    self.last_refusal = 'inactive'
     previous = self.last_tick_ns
     self.last_tick_ns = now_ns
     discontinuity = previous is not None and not 0 < now_ns - previous <= self.MAX_TICK_NS
     if now_ns <= 0:
       self.settings = LaneCenteringSettings()
       self.last_refresh_ns = None
+      self.last_refusal = 'host_clock'
       return None
     if self.last_refresh_ns is None or now_ns < self.last_refresh_ns or now_ns - self.last_refresh_ns >= self.REFRESH_NS:
       self.settings = read_settings(self.params)
       self.last_refresh_ns = now_ns
-    if not self.settings.enabled or not sm['carState'].canValid or sm['carState'].canTimeout:
+    if not self.settings.enabled:
+      self.last_refusal = 'host_disabled'
       return None
-    if not sm.all_checks(list(self.REQUIRED)) or any(
-      int(sm.logMonoTime[name]) <= 0 or not 0 <= now_ns - int(sm.logMonoTime[name]) <= int(2.5e9 / SERVICE_LIST[name].frequency)
-      for name in self.REQUIRED
-    ):
+    if not sm['carState'].canValid:
+      self.last_refusal = 'host_can_invalid'
       return None
+    if sm['carState'].canTimeout:
+      self.last_refusal = 'host_can_timeout'
+      return None
+    if not sm.all_checks(list(self.REQUIRED)):
+      self.last_refusal = self._unhealthy_reason(sm)
+      return None
+    for name in self.REQUIRED:
+      stamp = int(sm.logMonoTime[name])
+      if stamp <= 0:
+        self.last_refusal = f'host_{name}_missing_time'
+        return None
+      if not 0 <= now_ns - stamp <= int(2.5e9 / SERVICE_LIST[name].frequency):
+        self.last_refusal = f'host_{name}_future' if stamp > now_ns else f'host_{name}_stale'
+        return None
     mode = (ControlMode.COMBINED if longitudinal_active else ControlMode.LATERAL_ONLY) if lateral_active else (
       ControlMode.LONGITUDINAL_ONLY if longitudinal_active else ControlMode.OFF)
     dt = DT_CTRL if previous is None or discontinuity else (now_ns - previous) / 1e9
@@ -87,3 +103,13 @@ class LaneCenteringHost:
     if shift:
       settings = replace(settings, offset_m=min(0.3, max(-0.3, settings.offset_m + shift)))
     return LaneCenteringRequest(mode, settings, dt, discontinuity)
+
+  def _unhealthy_reason(self, sm) -> str:
+    # Reuse the subscriber checks so their ignored-service policy stays intact.
+    for method, reason in (('all_alive', 'not_alive'), ('all_freq_ok', 'frequency'), ('all_valid', 'invalid')):
+      check = getattr(sm, method, None)
+      if check is not None:
+        for name in self.REQUIRED:
+          if not check([name]):
+            return f'host_{name}_{reason}'
+    return 'host_checks'

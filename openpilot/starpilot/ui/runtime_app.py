@@ -88,14 +88,14 @@ from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.conditional_mode.preferences import PreferenceError, SavedPreferences, decode_preferences
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.conditional_mode.ui_action import ConditionalUiActionOwner
-from openpilot.starpilot.ui.settings_state import compact_menu, Destination, SettingsAction, SettingsActionKind, SettingsState
+from openpilot.starpilot.ui.settings_state import Destination, SettingsAction, SettingsActionKind
 from openpilot.starpilot.ui.shell import ShellInput, ShellMode, ShellRequest, ShellSnapshot, ShellView
 from openpilot.starpilot.ui.software_state import DownloadLabel, SoftwareAction, SoftwareRequest
 from openpilot.starpilot.ui.toggles_state import Personality, ToggleKey, ToggleRequest
 from openpilot.system.ui.lib.application import MouseEvent, MousePos, gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import button_item, text_item
-from openpilot.system.ui.widgets.nav_widget import NavWidget
+from openpilot.starpilot.ui.compact_settings_page import StarCompactSettings
 
 NATIVE_SETTINGS_PANELS = (Destination.DEVICE, Destination.SOFTWARE, Destination.BLUETOOTH, Destination.TOGGLES, Destination.DEVELOPER)
 _FEATURE_SETTINGS_PANES = {
@@ -191,6 +191,8 @@ class StarShellSession:
         self.view.onroad.stock_confidence_reset = camera_owner.reset_stock_confidence_layer
         self.view.onroad.extra_overlays = lambda rect, state: camera_owner.render_model_source_layer(rect, show_long_indicator=None)
         self.view.onroad.compact_sidebar.personality_renderer = self._render_personality
+      else:
+        self.view.onroad.extra_overlays = lambda rect, state: camera_owner.render_model_source_layer(rect)
     except Exception:
       self.fonts.close()
       raise
@@ -309,7 +311,6 @@ class StarShellSession:
     if getattr(ui_state, "replay_clock", None) is not None:
       return False
     if getattr(self, "_projection_tap", False):
-      # Projected taps need live onroad state, regardless of this screen's page or visibility.
       return bool(ui_state.started and display_message(ui_state.sm, 'carState', time.monotonic_ns(),
                                                        after_frame=ui_state.started_frame) is not None)
     if self._mode != ShellMode.ONROAD:
@@ -1309,7 +1310,8 @@ class StarShellSession:
         except (OSError, RuntimeError, ValueError):
           label = "Driving model unavailable"
         self._home_model = (now, label)
-      snapshot = replace(snapshot, home=replace(snapshot.home, model_label=label if previous is None or not 0 <= now - previous[0] < 1.0 else previous[1]))
+      local_label = label if previous is None or not 0 <= now - previous[0] < 1.0 else previous[1]
+      snapshot = replace(snapshot, home=replace(snapshot.home, model_label=snapshot.home.model_label or local_label))
     preview_flags = getattr(self, "_visual_preview_flags", frozenset())
     if mode == ShellMode.ONROAD and preview_flags:
       visual = preview_at(preview_flags,
@@ -1791,49 +1793,6 @@ class StarShellPage(Widget):
     super().hide_event()
 
 
-class StarCompactSettings(NavWidget):
-  def __init__(self, session: StarShellSession):
-    NavWidget.__init__(self)
-    self.session, self.mode = session, ShellMode.SETTINGS
-    from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2
-    self._panel = GuiScrollPanel2(horizontal=True)
-
-  def covers_camera(self, rect: rl.Rectangle) -> bool:
-    return bool(gui_app.get_active_widget() is self and self.enabled and self.is_visible and
-                not gui_app.mouse_events and not self.is_dismissing and self._drag_start_pos is None and
-                self._shown_callback is None and self._y_pos_filter.x == 0 and self._y_pos_filter.velocity.x == 0 and
-                self.rect.x == rect.x == 0 and self.rect.y == rect.y == 0 and
-                self.rect.width == rect.width == gui_app.width and self.rect.height == rect.height == gui_app.height)
-
-  def _update_state(self) -> None:
-    NavWidget._update_state(self)
-    target = -422 * round(-self._panel.get_offset() / 422)
-    # Project the pairing snapshot after rendering updates the panel offset.
-    paired = bool(self.session.adapter.ui_state.prime_state.is_paired())
-    self.session.compact_scroll_x = self._panel.update(self.rect, 20 + len(compact_menu(SettingsState(paired=paired))) * 422,
-                                                        snap_target=target)
-
-  def _render(self, rect) -> None:
-    self.session.render(self.mode, rect)
-
-  def _handle_mouse_event(self, mouse_event: MouseEvent) -> None:
-    NavWidget._handle_mouse_event(self, mouse_event)
-    if mouse_event.left_down and not mouse_event.left_pressed:
-      self.session.move(self.mode, mouse_event.pos.x - self.rect.x, mouse_event.pos.y - self.rect.y)
-    elif mouse_event.left_released and not rl.check_collision_point_rec(mouse_event.pos, self.rect):
-      self.session.cancel()
-
-  def _handle_mouse_press(self, mouse_pos: MousePos) -> None:
-    self.session.press(self.mode, mouse_pos.x - self.rect.x, mouse_pos.y - self.rect.y)
-
-  def _handle_mouse_release(self, mouse_pos: MousePos) -> None:
-    self.session.release(self.mode, mouse_pos.x - self.rect.x, mouse_pos.y - self.rect.y)
-
-  def hide_event(self) -> None:
-    self.session.cancel()
-    super().hide_event()
-
-
 class StarMainLayout(MainLayout):
   """Large existing app transitions/onboarding with full-canvas StarPilot views."""
 
@@ -1869,9 +1828,14 @@ class StarMainLayout(MainLayout):
     toggle_items = self._large_panels[Destination.TOGGLES]._scroller._items
     toggle_items.insert(2, text_item("Safe Mode", "N/A"))
     toggle_items.insert(7, text_item("Right Hand Driving", "N/A"))
+    from openpilot.common.hardware import HARDWARE
     from openpilot.starpilot.ui.starpilot_settings_adapter_large import StarPilotSettingsAdapterLarge
     for destination, owner in self._large_panels.items():
-      self._large_panels[destination] = StarPilotSettingsAdapterLarge(owner, self.star.fonts, destination.value.title(), self._settings_back)
+      if destination == Destination.DEVELOPER and HARDWARE.get_device_type() in ('mici', 'tici', 'tizi'):
+        from openpilot.starpilot.ui.spacepilot.large import SpacePilotDeveloperAdapter
+        self._large_panels[destination] = SpacePilotDeveloperAdapter(owner, self.star.fonts, self._settings_back, self._exit_spacepilot)
+      else:
+        self._large_panels[destination] = StarPilotSettingsAdapterLarge(owner, self.star.fonts, destination.value.title(), self._settings_back)
     self._network_bridge.presentation = StarPilotSettingsAdapterLarge(native_network, self.star.fonts, "Network", self._settings_back)
     self.star.set_navigation(on_settings=lambda: self._set_current_layout(MainState.SETTINGS),
                              on_home=self._set_mode_for_state,
@@ -1880,6 +1844,10 @@ class StarMainLayout(MainLayout):
     self.star.set_request_owner(self._deliver_settings_request)
     self.star._native_favorite_actions = self._native_favorites
     self.star._publish_bookmark = self._on_bookmark_clicked
+
+  def _exit_spacepilot(self) -> None:
+    gui_app.pop_widgets_to(self, instant=True)
+    self._set_mode_for_state()
 
   def _native_favorites(self):
     from openpilot.selfdrive.ui.layouts.settings.settings import PanelType
@@ -2118,6 +2086,12 @@ class StarMiciMainLayout(MiciMainLayout):
                                              lambda index: panel().request_personality(index),
                                              lambda: panel().request_experimental())
 
+  def _exit_spacepilot(self) -> None:
+    # An unsafe game exit must reveal the existing road/alert presentation now,
+    # including when engagement/alerts change while the car still reports Park.
+    gui_app.pop_widgets_to(self, instant=True)
+    self._scroller.scroll_to(self._onroad_layout.rect.x if ui_state.started else self._home_layout.rect.x, smooth=False)
+
   def _open_compact_destination(self, destination: Destination) -> None:
     if destination == Destination.NETWORK and not self.star.connectivity_allowed():
       from openpilot.selfdrive.ui.mici.widgets.button import GreyBigButton
@@ -2175,7 +2149,7 @@ class StarMiciMainLayout(MiciMainLayout):
       return
     panel = self._compact_panels.get(destination)
     if panel is None:
-      panel = panel_type()
+      panel = DeveloperLayoutMici(on_spacepilot_exit=self._exit_spacepilot) if destination == Destination.DEVELOPER else panel_type()
       if destination == Destination.DEVICE:
         from openpilot.starpilot.ui.display_compact import DisplayCompact
         from openpilot.starpilot.ui.replay_settings import replay_entry

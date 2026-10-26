@@ -865,6 +865,7 @@ export const AndroidAutoPage = {
             <div><h3>Customize Your Dashboard</h3><p>Once connected, customize your dashboard setup.</p></div>
           </div>
           <div class="gx-aa-step__body">
+            <a class="gx-btn gx-btn--tonal gx-aa-cta" href="#/android-auto/audio"><i class="bi bi-spotify" aria-hidden="true"></i> Spotify and Phone Audio</a>
             <a class="gx-btn gx-btn--tonal gx-aa-cta" href="#/theme_maker/android_auto">Customize Layout</a>
             <a class="gx-btn gx-btn--tonal gx-aa-cta" href="#/navigation/maps"><i class="bi bi-map" aria-hidden="true"></i> Offline Road Maps</a>
             <p class="gx-note">Save road lines for the map overlay so it keeps drawing roads with no signal.</p>
@@ -1003,7 +1004,7 @@ export const AndroidAutoPage = {
                   </ul>
                   <GxNotice v-if="installState === 'failed'" tone="danger">
                     <p>{{ problem }}</p>
-                    <button class="gx-btn gx-btn--tonal" @click="chooseAgain">Choose Another File</button>
+                    <template #actions><button class="gx-btn gx-btn--tonal" @click="chooseAgain">Choose Another File</button></template>
                   </GxNotice>
                   <GxNotice v-if="error && installState === 'choose' && installAttempted" tone="danger">{{ error }}</GxNotice>
                 </div>

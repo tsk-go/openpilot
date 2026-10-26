@@ -86,7 +86,8 @@ const STATE_TEXT = {
   waiting_output: "Waiting for your speaker to connect.",
   starting: "Starting…",
   connecting: "Starting…",
-  waiting: "Ready to pair. Open Spotify on your phone and pick this device.",
+  waiting_network: "Waiting for the comma’s network…",
+  waiting: "Signing in to Spotify…",
   ready: "Ready. Pick this device in Spotify to play.",
   playing: "Playing",
   retrying: "Restarting…",
@@ -98,8 +99,9 @@ export function serviceLabel(setup) {
   if (!setup?.enabled) return "Off"
   const service = setup.service
   if (!service) return "Starting…"
-  if (service.state === "ready" && service.player?.status === "paused") return "Paused"
-  return service.message && !["ready", "playing", "waiting"].includes(service.state) ? service.message : STATE_TEXT[service.state] || "Starting…"
+  const text = service.state === "ready" && service.player?.status === "paused" ? "Paused" :
+    service.message && !["ready", "playing", "waiting"].includes(service.state) ? service.message : STATE_TEXT[service.state] || "Starting…"
+  return service.outputWaiting ? `${text} Audio waits for ${service.outputWaiting}.` : text
 }
 
 // Where the track is now, from Soloist's anchor and the browser time elapsed since it.
@@ -120,6 +122,11 @@ export function onBrowserClock(setup, now = Date.now()) {
 export function formatTime(ms) {
   const seconds = Math.floor((ms || 0) / 1000)
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+}
+
+export function muteLabel(seconds) {
+  const ms = Math.round((Number(seconds) || 0) * 1000)
+  return ms === 0 ? "Off" : `${ms} ms`
 }
 
 export class SpotifyFeed {
@@ -251,7 +258,7 @@ export const SpotifyPage = {
     setup: null, busy: false, error: "", uploadProgress: null, now: Date.now(),
     installOpen: false, removeOpen: false, resetOpen: false, showSetup: false, downloadStarted: false,
     archiveFile: null, archiveMagicError: "", archiveChecking: false, archiveSelection: 0, installAttempted: false, installBaseline: null,
-    keyValue: "", keyEditing: false, nameValue: "", volumeDraft: null,
+    keyValue: "", keyEditing: false, nameValue: "", pauseDraft: null, skipDraft: null,
   }),
   mounted() {
     this.feed = new SpotifyFeed({ publish: (value) => Object.assign(this, value, { now: Date.now() }), unauthorized: this.unauthorized })
@@ -278,6 +285,8 @@ export const SpotifyPage = {
       return !!prefs && (["test", "android_auto"].includes(prefs.output) || ADDRESS.test(prefs.outputAddress))
     },
     phoneSource() { return this.setup?.preferences.source === "phone" },
+    pauseMuteLabel() { return muteLabel(this.pauseDraft ?? this.setup?.preferences.pauseMute) },
+    skipMuteLabel() { return muteLabel(this.skipDraft ?? this.setup?.preferences.skipMute) },
     setupDone() { return this.phoneSource ? !!(ADDRESS.test(this.setup?.preferences.phoneAddress || "") && this.outputChosen) :
       !!(this.installed && this.setup?.keyPresent && this.outputChosen) },
     player() { return this.setup?.service?.player || null },
@@ -369,10 +378,10 @@ export const SpotifyPage = {
     async removeAll() { this.removeOpen = false; return this.feed.removeAll() },
     control(action, args) { return this.feed.control(action, args) },
     togglePlay() { return this.control(this.playing ? "pause" : "play") },
-    commitVolume(event) {
-      const volume = Math.round(Number(event.target.value))
-      this.volumeDraft = null
-      if (Number.isInteger(volume) && volume >= 0 && volume <= 100) return this.control("volume", { volume })
+    commitMute(kind, event) {
+      const value = Number(event.target.value)
+      this[`${kind}Draft`] = null
+      if (Number.isFinite(value)) return this.feed.post("./api/spotify/preferences", { [`${kind}Mute`]: value })
     },
     openInstall() { this.chooseAgain(); Object.assign(this, { installOpen: true, downloadStarted: false }) },
     closeInstall() { this.installOpen = false },
@@ -418,6 +427,8 @@ export const SpotifyPage = {
         <p>Soloist expires 90 days after Spotify builds it, regardless of when you install it.</p>
         <template v-if="release.level === 'soon' || release.level === 'expired'">
           <p>{{ release.level === 'expired' ? 'Install a newer build to resume Spotify playback.' : 'Install a newer build before this one expires to keep Spotify playing.' }}</p>
+        </template>
+        <template #actions v-if="release.level === 'soon' || release.level === 'expired'">
           <button type="button" class="gx-btn" :disabled="busy || installBlocked" @click="openInstall">Update Soloist</button>
         </template>
       </GxNotice>
@@ -425,7 +436,7 @@ export const SpotifyPage = {
       <section v-if="setup" class="gx-card gx-aa-step" aria-labelledby="gx-music-source-title">
         <h3 id="gx-music-source-title">Music Source</h3>
         <label class="gx-stack"><span>Play music from</span>
-          <select class="gx-field" :value="setup.preferences.source || 'spotify'" :disabled="busy || !setup.parked" @change="chooseSource">
+          <select class="gx-field" :value="setup.preferences.source || 'spotify'" :disabled="busy" @change="chooseSource">
             <option value="spotify">Spotify Connect on the comma</option>
             <option value="phone">Phone over Bluetooth</option>
           </select>
@@ -441,6 +452,13 @@ export const SpotifyPage = {
           <GalaxySettingRow :row="switchRow('Phone Audio', setup.enabled, 'Forward music from the selected phone. Playback and volume stay on your phone.')"
             :index="0" :busy="busy" :save-value="(index, value) => setEnabled(value === 'On')" />
           <p class="gx-note" role="status">{{ statusText }}</p>
+          <label class="gx-stack"><span>Pause smoothing · {{ pauseMuteLabel }}</span>
+            <input type="range" class="gx-slider" min="0" :max="setup.preferences.muteMax || 1.5" step="0.05" :value="pauseDraft ?? setup.preferences.pauseMute"
+              aria-label="Pause smoothing" :disabled="busy" @input="pauseDraft = Number($event.target.value)" @change="commitMute('pause', $event)" /></label>
+          <label class="gx-stack"><span>Skip smoothing · {{ skipMuteLabel }}</span>
+            <input type="range" class="gx-slider" min="0" :max="setup.preferences.muteMax || 1.5" step="0.05" :value="skipDraft ?? setup.preferences.skipMute"
+              aria-label="Skip smoothing" :disabled="busy" @input="skipDraft = Number($event.target.value)" @change="commitMute('skip', $event)" /></label>
+          <p class="gx-note">Briefly mutes incoming audio after pause or skip. Increase if the old song lingers; decrease if the next song starts clipped. Changes apply immediately.</p>
           <p class="gx-note">Music only. Calls and microphone audio are not forwarded.</p>
         </template>
         <template v-if="setupDone && !phoneSource && !showSetup">
@@ -454,7 +472,7 @@ export const SpotifyPage = {
             <option value="test">Silent test (no speaker)</option>
           </select></label>
         </template>
-        <small v-if="!setup.parked" class="gx-note">Put the car in Park or use offroad mode to change the source.</small>
+        <small v-if="phoneSource && !setup.parked" class="gx-note">Put the car in Park or use offroad mode to change the phone.</small>
       </section>
 
       <section v-if="setup && setupDone && !phoneSource" class="gx-card gx-aa-step gx-aa-home gx-spotify-now" aria-labelledby="gx-spotify-now-title">
@@ -466,7 +484,7 @@ export const SpotifyPage = {
           </div>
         </div>
         <div v-if="track && track.durationMs" class="gx-spotify-now__progress">
-          <input type="range" class="gx-slider" min="0" :max="track.durationMs" step="1000" :value="elapsed" :disabled="!can.has('seek')" aria-label="Position"
+          <input type="range" class="gx-slider gx-slider--galaxy" min="0" :max="track.durationMs" step="1000" :value="elapsed" :style="{ '--fill': Math.min(100, elapsed / track.durationMs * 100) + '%' }" :disabled="!can.has('seek')" aria-label="Position"
             @change="control('seek', { positionMs: Math.round(Number($event.target.value)) })" />
           <small class="gx-note">{{ formatTime(elapsed) }} / {{ formatTime(track.durationMs) }}</small>
         </div>
@@ -475,12 +493,13 @@ export const SpotifyPage = {
           <button type="button" class="gx-btn gx-spotify-now__play" :aria-label="playing ? 'Pause' : 'Play'" :disabled="!can.has(playing ? 'pause' : 'play') && !!track" @click="togglePlay">
             <i :class="playing ? 'bi bi-pause-fill' : 'bi bi-play-fill'" aria-hidden="true"></i></button>
           <button type="button" class="gx-icon-btn" aria-label="Next" :disabled="!can.has('skip_next')" @click="control('next')"><i class="bi bi-skip-end-fill"></i></button>
-          <label v-if="player.volume !== null" class="gx-spotify-now__volume"><i class="bi bi-volume-up" aria-hidden="true"></i>
-            <input type="range" class="gx-slider" min="0" max="100" step="1" :value="volumeDraft ?? player.volume" aria-label="Volume"
-              @input="volumeDraft = Number($event.target.value)" @change="commitVolume" /></label>
         </div>
-        <button v-if="setup.enabled && player?.loggedIn && !player.active" type="button" class="gx-btn gx-btn--tonal" @click="control('activate')">
-          <i class="bi bi-broadcast" aria-hidden="true"></i> Play Here</button>
+        <small v-if="setup.enabled && player?.loggedIn && player.volume !== null" class="gx-note">Volume {{ player.volume }}% - change in Spotify app if needed, otherwise use car volume</small>
+        <div v-if="setup.enabled && player?.loggedIn && !player.active" class="gx-stack">
+          <button type="button" class="gx-btn gx-btn--tonal" @click="control('activate')">
+            <i class="bi bi-broadcast" aria-hidden="true"></i> Move Spotify to {{ setup.preferences.deviceName || 'StarPilot' }}</button>
+          <small class="gx-note">Takes over from the phone or speaker Spotify is playing on now. Music plays through {{ outputName }}. You might need to confirm the switch in the Spotify app.</small>
+        </div>
         <GalaxySettingRow :row="switchRow('Spotify', setup.enabled, 'Turn off to stop playing and free up the comma. Your setup stays saved.')"
           :index="0" :busy="busy" :save-value="(index, value) => setEnabled(value === 'On')" />
         <div class="gx-actions">
@@ -571,7 +590,7 @@ export const SpotifyPage = {
             <GalaxySettingRow :row="switchRow('Spotify', setup.enabled, 'Runs Spotify on your comma. Turn off to stop playing; your setup stays saved.')"
               :index="0" :busy="busy" :save-value="(index, value) => setEnabled(value === 'On')" />
             <p v-if="setup.enabled" class="gx-note" role="status">{{ statusText }}</p>
-            <p class="gx-note">The first time, your phone has to be on the same Wi‑Fi or hotspot as your comma. After that, Spotify remembers it.</p>
+            <p class="gx-note">Pair once on the same Wi‑Fi or hotspot. After pairing, keep Spotify enabled and both devices online; your comma can use cellular or a phone hotspot. Use the same Spotify account on your phone.</p>
             <form class="gx-stack" @submit.prevent="saveName">
               <label class="gx-stack"><span>Name in Spotify</span>
                 <input class="gx-field" type="text" v-model="nameValue" maxlength="40" autocomplete="off" /></label>
@@ -601,10 +620,16 @@ export const SpotifyPage = {
         </details>
         <details class="gx-aa-wiki"><summary>Spotify doesn’t show my comma</summary>
           <ol>
-            <li>Make sure step 4 says <strong>Ready to pair</strong>.</li>
+            <li>Keep Spotify enabled in step 4. A disconnected Bluetooth speaker can wait while you pair; music will be silent until it connects.</li>
             <li>Put your phone on the same Wi‑Fi or hotspot as your comma. Some hotspots and guest networks block devices from seeing each other.</li>
+            <li>For cellular or different networks after pairing, turn off <strong>Local device visibility</strong> in Spotify → Settings → Apps and devices. Both devices need internet access.</li>
+            <li>On iPhone, allow Spotify’s <strong>Local Network</strong> permission in iPhone Settings. If your phone’s hotspot blocks initial pairing, pair once on another shared Wi‑Fi network.</li>
+            <li>If it still does not appear, turn Spotify off and back on here. This reconnects using your saved account; you do not need to clear the account or cache.</li>
             <li>In Spotify, tap the device icon and look for <strong>{{ setup?.preferences.deviceName || 'StarPilot' }}</strong>.</li>
           </ol>
+        </details>
+        <details class="gx-aa-wiki"><summary>Can I use the comma hotspot or wireless Android Auto?</summary>
+          <p>The comma hotspot can provide the local connection for pairing, but the comma also needs internet access to stream. A wireless Android Auto connection alone does not guarantee Spotify discovery or internet access. After pairing, Spotify can use the saved account over the comma’s cellular connection.</p>
         </details>
         <details class="gx-aa-wiki"><summary>Does it use my data plan?</summary>
           <p>Yes, when your comma streams over cellular. Music usually uses about 40–150 MB an hour depending on quality. Songs you’ve played recently come from the cache instead.</p>
@@ -708,7 +733,7 @@ export const SpotifyPage = {
                   </ul>
                   <GxNotice v-if="installState === 'failed'" tone="danger">
                     <p>{{ problem }}</p>
-                    <button class="gx-btn gx-btn--tonal" @click="chooseAgain">Choose Another File</button>
+                    <template #actions><button class="gx-btn gx-btn--tonal" @click="chooseAgain">Choose Another File</button></template>
                   </GxNotice>
                   <p v-if="error && installState === 'choose' && installAttempted" class="gx-aa-bad" role="alert">{{ error }}</p>
                 </div>

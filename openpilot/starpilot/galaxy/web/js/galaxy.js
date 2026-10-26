@@ -4,6 +4,7 @@ import { requestJson } from "./startup.js"
 import { InstallApp, isIosDevice } from "./install-app.js"
 import { GalaxyCompanion, newerCompanionVersion } from "./companion.js"
 import { GalaxyHotspot } from "./hotspot.js"
+import { LocalAccess } from "./local-access.js"
 import { BluetoothNotice, bluetoothConnection } from "./bluetooth-notice.js"
 
 const DISMISSED_UPDATE = 'galaxy.companion.dismissedUpdateVersion'
@@ -11,7 +12,7 @@ const dismissedUpdate = () => { try { return localStorage.getItem(DISMISSED_UPDA
 
 export const GalaxyPage = {
   name: "GalaxyPage",
-  components: { GxState, GxNotice, BluetoothNotice, InstallApp, GalaxyHotspot, GalaxyCompanion },
+  components: { GxState, GxNotice, BluetoothNotice, InstallApp, GalaxyHotspot, GalaxyCompanion, LocalAccess },
   props: { mode: { type: String, required: true }, unauthorized: { type: Function, required: true } },
   data: () => ({ loading: true, paired: false, url: "", tunnelClientAvailable: false, legacyPassword: false,
     legacyPairingAvailable: false, password: "", busy: false, error: "", companionStatus: null,
@@ -89,9 +90,9 @@ export const GalaxyPage = {
       </BluetoothNotice>
       <GxNotice v-else-if="showAppUpdate && !ios" tone="warn" title="Android app update available">
         Version {{ availableAppVersion }} is available. Installed: {{ installedAppVersion }}.
-        <div class="gx-actions"><button v-if="nativeInstallerAvailable" type="button" class="gx-btn" @click="installAppUpdate">Update app</button>
+        <template #actions><button v-if="nativeInstallerAvailable" type="button" class="gx-btn" @click="installAppUpdate">Update app</button>
           <a v-else class="gx-btn" href="./app.apk">Update app</a>
-          <button type="button" class="gx-btn gx-btn--tonal" aria-label="Dismiss app update notice" @click="dismissAppUpdate">Dismiss</button></div>
+          <button type="button" class="gx-btn gx-btn--tonal" aria-label="Dismiss app update notice" @click="dismissAppUpdate">Dismiss</button></template>
       </GxNotice>
       <GxState v-if="mode !== 'local'">Connect to your comma to set up remote access.</GxState>
       <GxState v-else-if="loading" loading>Checking pairing status…</GxState>
@@ -123,6 +124,7 @@ export const GalaxyPage = {
           <div class="gx-aa-step__body"><InstallApp :url="url" :update-available="appUpdateAvailable" />
             <p v-if="availableAppVersion && !ios">Android offline app version: <strong>{{ availableAppVersion }}</strong><span v-if="installedAppVersion"> · {{ nativeVersion ? 'Installed' : 'Connected phone' }}: {{ installedAppVersion }}</span></p>
             <p v-if="!ios"><strong>Download Android APK</strong> to use Galaxy over Galaxy Wi-Fi or your local network without Internet. Download it while connected locally from this page.</p>
+            <LocalAccess v-if="!ios" :mode="mode" :on-unauthorized="unauthorized" />
             <p class="gx-note">Your remote link needs Internet and an active tunnel. For offline local access, bookmark your hotspot or local address.</p>
           </div>
         </li>

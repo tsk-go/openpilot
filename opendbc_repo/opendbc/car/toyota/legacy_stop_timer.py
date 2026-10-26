@@ -6,6 +6,9 @@ CARS = frozenset((CAR.TOYOTA_CAMRY, CAR.TOYOTA_CHR, CAR.TOYOTA_AVALON_2019,
 
 
 def enabled(cp):
+  from opendbc.car.toyota import dsu_bypass
+  if dsu_bypass.enabled(cp):
+    return cp.carFingerprint not in dsu_bypass.AUTO_RESUME_CARS
   if cp is None or cp.carFingerprint not in CARS or not cp.openpilotLongitudinalControl:
     return False
   from opendbc.car.toyota import rav4h_filter, advert_filter, radar_filter

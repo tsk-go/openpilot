@@ -2,6 +2,7 @@ import hashlib
 import re
 import secrets
 from dataclasses import dataclass
+from functools import lru_cache
 
 from opendbc.car import structs
 from openpilot.starpilot.conditional_mode.manual import Button, ButtonTracker, Press, ioniq6_media_eligible
@@ -94,9 +95,18 @@ def paddle_bookmark_available(params, cp):
   return bool(readable and raw in (None, b"0"))
 
 
+@lru_cache(maxsize=64)
+def _cp_fingerprint(serialized):
+  # Default substructures can materialize without changing any CarParams values.
+  # Rebuild every field so allocation layout cannot invalidate a wheel command.
+  with structs.CarParams.from_bytes(serialized) as reader:
+    canonical = structs.CarParams.new_message(**reader.to_dict())
+    return hashlib.sha256(canonical.to_bytes()).hexdigest()
+
+
 def cp_fingerprint(cp):
   reader = cp.as_reader() if hasattr(cp, "as_reader") else cp
-  return hashlib.sha256(reader.as_builder().to_bytes()).hexdigest()
+  return _cp_fingerprint(reader.as_builder().to_bytes())
 
 
 def capture(params):

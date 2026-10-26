@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import pytest
 from opendbc.car import gen_empty_fingerprint, structs
-from opendbc.car.toyota import prius_sdsu, prius_longitudinal
+from opendbc.car.toyota import prius_sdsu, prius_longitudinal, prius_advert_filter
 from opendbc.car.toyota.carstate import CarState
 from opendbc.car.toyota.interface import CarInterface
 from opendbc.car.toyota.values import CAR, ToyotaFlags
@@ -28,7 +28,7 @@ def factory(version=ORIGINAL[0], *, hardware='2FF8', alpha=False, mirror=False):
   if hardware != 'none':
     fp[0][0x2FF] = int(hardware[-1])
   if mirror:
-    fp[2][0x2FF] = 8
+    fp[2][0x2FF] = int(hardware[-1])
   return CarInterface.get_params(CAR.TOYOTA_PRIUS, fp, original_firmware(version), alpha, False, False)
 
 
@@ -39,25 +39,28 @@ def test_full_factory_cp_and_numeric_tunes(label):
   alpha = alpha == 'alpha=True'
   cp = factory(version, hardware=hardware, alpha=alpha)
   expected = deepcopy(BASE[label])
-  if version in ORIGINAL and hardware == '2FF8':
+  owner = prius_sdsu if hardware == '2FF8' else prius_advert_filter
+  if version in ORIGINAL and hardware in ('2FF4', '2FF8'):
     expected['flags'] |= int(ToyotaFlags.HYBRID | ToyotaFlags.LONG_FILTER | ToyotaFlags.RAISED_ACCEL_LIMIT)
     expected['openpilotLongitudinalControl'] = True
-    expected['safetyConfigs'][0]['safetyParam'] = prius_sdsu.LONG_WORD
-    assert prius_sdsu.configured(cp) and prius_longitudinal.enabled(cp)
-    assert factory(version, alpha=alpha, mirror=True).to_dict() == cp.to_dict()
+    expected['safetyConfigs'][0]['safetyParam'] = owner.LONG_WORD
+    assert owner.configured(cp) and prius_longitudinal.enabled(cp)
+    assert factory(version, hardware=hardware, alpha=alpha, mirror=True).to_dict() == cp.to_dict()
     assert CarState(cp).eps_torque_scale == .66
     actual = cp.to_dict()
     assert actual == expected
     assert prius_longitudinal.prepare_stock(cp)
     expected['openpilotLongitudinalControl'] = False
-    expected['safetyConfigs'][0]['safetyParam'] = prius_sdsu.STOCK_WORD
-    assert cp.to_dict() == expected and prius_sdsu.configured(cp)
+    expected['safetyConfigs'][0]['safetyParam'] = owner.STOCK_WORD
+    assert cp.to_dict() == expected and owner.configured(cp)
     assert CarState(cp).eps_torque_scale == .66
   else:
     assert not prius_sdsu.configured(cp)
+    if version == prius_sdsu.RETROFIT_EPS and hardware != 'none':
+      expected['safetyConfigs'][0]['safetyParam'] = 0xD049 if hardware == '2FF4' else 0x8049
     assert cp.to_dict() == expected
     if version == prius_sdsu.RETROFIT_EPS and hardware != 'none':
-      assert cp.safetyConfigs[0].safetyParam == 4169
+      assert cp.safetyConfigs[0].safetyParam == (0xD049 if hardware == '2FF4' else 0x8049)
       assert CarState(cp).eps_torque_scale == .73
 
 
@@ -80,7 +83,7 @@ def test_real_source_identity_cannot_be_replaced_by_a_preference(bad):
       if item.ecu == structs.CarParams.Ecu.eps:
         item.logging = True
   elif bad == 'pedal':
-    fp[0][0x201] = 6
+    fp[0][0x201] = 5
   elif bad == 'twoaa':
     fp[0][0x2AA] = 8
   else:

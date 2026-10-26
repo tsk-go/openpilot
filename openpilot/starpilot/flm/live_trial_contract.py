@@ -6,7 +6,7 @@ import math
 from openpilot.starpilot.flm.canonical_surface_adapter import NAMES, canonical_names, coordinate_bounds, full_profile_sha256
 
 VERSION = 'live-tracking-trial-v1'
-MAX_STEP = 0.005
+MAX_STEP = 0.05
 MAX_LEASE_NS = 500_000_000
 SLEW_PER_SECOND = 0.005
 MAX_TRIAL_NS = 120_000_000_000

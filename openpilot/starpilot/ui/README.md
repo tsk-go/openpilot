@@ -56,6 +56,20 @@ Use `--profile large` for C3. `preview_typography`, `preview_home`,
 with `--help`. Previews require a graphics context. They do not launch driving
 services, operate a vehicle or establish device performance.
 
+## Arabesque Files
+
+The large UI's Developer panel opens Arabesque. Its dock offers Terminal and
+Files; Desktop closes the active tool. Files provides touch navigation, small
+UTF-8 text previews, new folders, rename, copy, move and confirmed permanent
+deletion. Copy and move use a destination picker, one item at a time.
+
+Writes are limited to Home and Data, with the running software, Params,
+persistence and recording roots protected. Links and special files are
+read-only; folders containing them cannot be copied. Moves require the same
+filesystem; use Copy between filesystems. Text previews stop at 256 KiB.
+File work requires confirmed off-road access. Closing Files cancels pending
+work; an interrupted recursive deletion can already have removed some items.
+
 ## Performance diagnostics
 
 `UI_FRAME_TIMING=1 ./c4` (or `./c3`) enables phase timing. UI Debug Mode also

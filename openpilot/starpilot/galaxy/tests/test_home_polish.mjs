@@ -21,7 +21,7 @@ assert.ok(GalaxyPage.template.indexOf('<h3>Remote pairing</h3>') < GalaxyPage.te
 assert.ok(GalaxyPage.template.includes('class="gx-aa__steps"'))
 assert.ok(GalaxyPage.template.includes('<InstallApp :url="url"'))
 assert.ok(GalaxyPage.template.indexOf('<InstallApp') < GalaxyPage.template.indexOf('<GalaxyHotspot'))
-assert.ok(!GalaxyPage.template.includes('<LocalAccess'))
+assert.ok(GalaxyPage.template.includes('<LocalAccess v-if="!ios" :mode="mode" :on-unauthorized="unauthorized" />'))
 assert.ok(!GalaxyPage.template.includes('PWA'))
 assert.ok(DriveStatePanel.template.includes('gx-card gx-force-drive'))
 const css = readFileSync(new URL('../web/css/galaxy.css', import.meta.url), 'utf8')

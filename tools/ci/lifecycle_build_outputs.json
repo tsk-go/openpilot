@@ -167,6 +167,10 @@
     "recipe": "openpilot/system/loggerd/SConscript",
     "required_tracked": true
   },
+  "openpilot/system/loggerd/tests/test_model_metadata": {
+    "recipe": "openpilot/system/loggerd/SConscript",
+    "required_tracked": false
+  },
   "openpilot/tools/replay/libmedia_mux.so": {
     "recipe": "openpilot/tools/replay/SConscript",
     "required_tracked": true

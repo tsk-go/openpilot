@@ -1,4 +1,6 @@
 """Actual child death must preserve the last test and failed selected outcomes."""
+from concurrent.futures import Future
+import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +13,8 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from tools.ci import run_host_tests
+from tools import test_runner
+from tools.ci import run_host_tests, worker_diagnostics
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -51,6 +54,83 @@ class TestHostFailureDiagnostics(unittest.TestCase):
       fault = '\n'.join(path.read_text() for path in diagnostics.glob('*.fault.log'))
       self.assertIn('Aborted', fault)
       self.assertIn('signal_fixture.py', fault)
+
+  @unittest.skipUnless(os.name == 'posix', 'actual POSIX child signal evidence')
+  def test_initial_unknown_exit_refreshes_only_from_actual_child_exit(self):
+    with tempfile.TemporaryDirectory() as directory:
+      child = subprocess.Popen([sys.executable, '-c',
+        'import resource,signal; resource.setrlimit(resource.RLIMIT_CORE,(0,0)); print("ready",flush=True); signal.pause()'],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+      class Observation:
+        pid = child.pid
+        @property
+        def exitcode(self):
+          return child.poll()
+      try:
+        self.assertEqual(child.stdout.readline().strip(), 'ready')
+        with patch.dict(os.environ, {'STARPILOT_TEST_DIAGNOSTICS': directory}):
+          path = worker_diagnostics.pool_failure([Observation()], 'first exception')
+          initial = json.loads(path.read_text())
+          self.assertIsNone(initial['processes'][0]['exitcode'])
+          child.send_signal(signal.SIGABRT)
+          self.assertEqual(child.wait(timeout=5), -signal.SIGABRT)
+          worker_diagnostics.pool_failure([Observation()], 'later exception')
+          final = json.loads(path.read_text())
+          self.assertEqual(final['processes'], [{'pid': child.pid, 'exitcode': -signal.SIGABRT}])
+          self.assertEqual(final['detail'], initial['detail'])
+          self.assertEqual(final['detail_sha256'], initial['detail_sha256'])
+          self.assertEqual(final['workers'], initial['workers'])
+      finally:
+        if child.poll() is None:
+          child.kill()
+        child.wait(timeout=5)
+        child.stdout.close()
+
+  def test_final_exit_observation_follows_shutdown_and_preserves_failure(self):
+    future = Future()
+    future.set_exception(RuntimeError('original batch failure'))
+    shutdown = []
+    observations = []
+    def observe(processes, detail):
+      observations.append(bool(shutdown))
+      if shutdown:
+        raise ValueError('malformed diagnostics')
+      return None
+    with patch.object(test_runner, 'ProcessPoolExecutor') as executor, \
+         patch.object(worker_diagnostics, 'pool_failure', side_effect=observe), \
+         patch.object(test_runner.sys, 'stderr', io.StringIO()) as errors:
+      executor.return_value.__enter__.return_value.submit.return_value = future
+      executor.return_value.__exit__.side_effect = lambda *args: shutdown.append(True)
+      records = list(test_runner.run_parallel([['first', 'second']], 2, 'error', False))[0]
+    self.assertEqual(observations, [False, True])
+    self.assertEqual([record['id'] for record in records], ['first', 'second'])
+    self.assertTrue(all(record['status'] == 'error' and 'original batch failure' in record['detail'] for record in records))
+    self.assertIn('ValueError', errors.getvalue())
+
+  def test_still_live_worker_stays_unknown_without_waiting(self):
+    with tempfile.TemporaryDirectory() as directory:
+      child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+      class Observation:
+        pid = child.pid
+        @property
+        def exitcode(self):
+          return child.poll()
+      try:
+        with patch.dict(os.environ, {'STARPILOT_TEST_DIAGNOSTICS': directory}):
+          path = worker_diagnostics.pool_failure([Observation()], 'original')
+          started = time.monotonic()
+          worker_diagnostics.pool_failure([Observation()], 'again')
+          self.assertLess(time.monotonic() - started, 1.0)
+          self.assertIsNone(child.poll())
+          self.assertEqual(json.loads(path.read_text())['processes'], [{'pid': child.pid, 'exitcode': None}])
+          path.write_text('{malformed')
+          self.assertEqual(worker_diagnostics.pool_failure([Observation()], 'third'), path)
+          self.assertEqual(path.read_text(), '{malformed')
+        with patch.dict(os.environ, {}, clear=True):
+          self.assertIsNone(worker_diagnostics.pool_failure([object()], 'no diagnostics'))
+      finally:
+        child.kill()
+        child.wait(timeout=5)
 
   @unittest.skipUnless(os.name == 'posix', 'actual POSIX interruption evidence')
   def test_pytest_interruption_retains_collection_reports_and_active_node(self):

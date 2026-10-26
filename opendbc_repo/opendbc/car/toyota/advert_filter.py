@@ -57,6 +57,8 @@ def apply(cp, *, camera_twoaa=False):
 
 
 def configured(cp):
+  from opendbc.car.toyota.pedal_composite import parent_cp
+  cp = parent_cp(cp)
   from opendbc.car.toyota import camera_2aa_filter
   if camera_2aa_filter.configured(cp):
     return True
@@ -94,6 +96,9 @@ def enabled(cp):
 
 
 def prepare_stock(cp):
+  from opendbc.car.toyota import pedal_composite
+  if pedal_composite.marked(cp):
+    return pedal_composite.prepare_stock(cp)
   from opendbc.car.toyota import camera_2aa_filter
   if camera_2aa_filter.configured(cp):
     return camera_2aa_filter.prepare_stock(cp)

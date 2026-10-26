@@ -47,6 +47,18 @@ class _SourceDelivery:
     return header
 
 
+def source_receiver(services):
+  # Full-rate control/application tapes are drained separately. This optional
+  # process conflates CarState, so its receive count cannot measure the 100Hz
+  # publisher rate while it processes a batch. Keep the actual envelope,
+  # source-age, state-bracket and native checks; do not fabricate freq_ok.
+  # Wake on the actual motion/native/state delivery rather than waiting for
+  # another CarState. All envelope, source-age and current authority checks
+  # still run on the real received messages.
+  return messaging.SubMaster(services, ignore_alive=['aolSafetyWire'],
+    ignore_valid=['aolSafetyWire'], ignore_avg_freq=['aolSafetyWire', 'carState'])
+
+
 MAX_OBJECTIVES = 12
 MAX_CACHED_PROFILES = 14  # Six FF cells and four independently qualified centre speed bands.
 
@@ -85,6 +97,27 @@ def _collect_source_control(collector, prepared, sm, cp, now_ns):
   collector._learning_current_native_allowed = current_native_health(sm, cp, prepared, now_ns)
   return collector.control(prepared, now_ns)
 
+
+def _collect_applied_output(collector, applied, sm, cp, now_ns):
+  """Each emission rechecks current native health for its original consumed CC."""
+  from openpilot.starpilot.flm.native_health import current_native_health
+
+  control = collector.controls.get(applied.control_ns, collector.recent_controls.get(applied.control_ns))
+  collector._learning_current_native_allowed = bool(control is not None and current_native_health(sm, cp, control, now_ns))
+  return collector.output(applied, now_ns)
+
+
+def _configuration_calibration(sm, calibration_lifecycle, now):
+  # Calibration describes the vehicle frame, not a per-message command lease.
+  # Like torqued's PoseCalibrator, retain a valid calibrated transform between
+  # deliveries. Sample freshness and current native authority are checked
+  # independently when admitting physical observations and applying offers.
+  stamp = int(sm.logMonoTime['extrinsicsCalibration'])
+  receipt = int(round(sm.recv_time['extrinsicsCalibration'] * 1e9))
+  if not (sm.seen['extrinsicsCalibration'] and sm.valid['extrinsicsCalibration'] and
+          0 < stamp <= now and 0 < receipt <= now):
+    return calibration_lifecycle.observe(None, current=False)
+  return calibration_lifecycle.observe(sm['extrinsicsCalibration'], current=True)
 
 def _source_config_binding(source):
   return (source.cp_sha256, source.source_epoch, source.reset, source.calibration_generation,
@@ -334,6 +367,7 @@ def run(
   live_offer = None
   previous_tracking_pose_header = 0
   next_tracking_status_ns = 0
+  study_health_control = None
   saved_live_targets = set()
   live_history = _LiveHistoryRestore(confirmed_history)
   import gc
@@ -341,6 +375,7 @@ def run(
   trial_gc_deferred = False
 
   def clear(reason):
+    nonlocal study_health_control
     nonlocal collector, raw_context, active_key, pending_key, pending_token, unavailable_reason, retained_event, pending_event, live_offer
     unavailable_reason = reason
     retained_event = pending_event = None
@@ -348,6 +383,7 @@ def run(
       if reporter is not None:
         reporter.reset(reason)
       collector.split(reason, reset=True)
+    study_health_control = None
     collector = None
     cached_reports.clear()
     prior_attached.clear()
@@ -419,6 +455,9 @@ def run(
     source_rejected = False
     return True, now
 
+  def study_native_current(now_ns):
+    return study_health_control is not None and current_native_health(sm, CP, study_health_control, now_ns)
+
   class Sink:
     def split(self, reason, **kwargs):
       if collector is not None:
@@ -462,8 +501,25 @@ def run(
         # Geometry arrives at100Hz independently of the actual native emission
         # cadence. This Boolean is current owner health, never a fabricated CAN.
         previous = collector.ready[-1][0] if collector.ready else None
+        if previous is not None:
+          study_health_control = previous
         collector._learning_current_native_allowed = bool(source_valid and previous is not None and
           current_native_health(sm, CP, previous, now))
+
+      native_refreshed = False
+
+      def ingest_current(evidence):
+        nonlocal native_refreshed
+        valid_source, stamp = source_current()
+        if (valid_source and evidence is not None and not native_refreshed and
+            not current_native_health(sm, CP, evidence, stamp)):
+          # A queued native delivery may already revoke or renew the received
+          # state. Consume it once for this bounded batch before excluding an
+          # original tick; the final post-drain refresh remains mandatory.
+          native_refreshed = True
+          source_delivery.refresh(sm)
+          valid_source, stamp = source_current(read=True)
+        return valid_source, stamp
 
       def control(event, current, stamp, offered=live_offer):
         nonlocal collector, raw_context, active_key, unavailable_reason
@@ -472,7 +528,9 @@ def run(
           return
         if event.which() == 'starpilotLateralState' and event.starpilotLateralState.learningEvidence.version == 0:
           if collector is not None:
-            collector.split('no_current_learning_evidence')
+            collector.split('learning_evidence_delayed' if event.starpilotLateralState.active and
+              study_native_current(received_now)
+              else 'no_current_learning_evidence')
           return
         evidence = read_control(event)
         if (
@@ -521,6 +579,11 @@ def run(
               from openpilot.starpilot.flm.source_plant_runtime import start_original_capture
               if not start_original_capture(collector):
                 unavailable_reason = adapter.source_plant_capture_error
+                if live_actor is not None:
+                  # Preserve the actual startup refusal instead of the previous identity-reset status.
+                  live_actor.reason = unavailable_reason
+                  from openpilot.starpilot.flm.source_stall_log import log_source_stall
+                  log_source_stall(live_actor, collector, now_ns=received_now, bootstrap_allowed=True)
                 collector = None
                 return
           else:
@@ -545,6 +608,11 @@ def run(
           # The pre-drain reference can have expired while fresh controls were
           # queued; inheriting its Boolean rejects the fresh batch as well.
           # No old receipt or deadline is renewed by this current check.
+          if live_actor is not None:
+            original_collector = collector
+            valid_source, received_now = ingest_current(prepared)
+            if not valid_source or collector is not original_collector:
+              return
           _collect_source_control(collector, prepared, sm, CP, received_now)
           if live_actor is not None and offered is not None:
             from openpilot.starpilot.flm.live_trial_wire import read_application
@@ -568,7 +636,14 @@ def run(
           if event.which() == 'starpilotCarState' and event.starpilotCarState.appliedEvidence.version == 0:
             collector.split('no_current_applied_evidence')
             return
-          collector.output(read_applied(event), received_now)
+          applied = read_applied(event)
+          if live_actor is not None:
+            original_collector = collector
+            consumed = collector.controls.get(applied.control_ns, collector.recent_controls.get(applied.control_ns))
+            valid_source, received_now = ingest_current(consumed)
+            if not valid_source or collector is not original_collector:
+              return
+          _collect_applied_output(collector, applied, sm, CP, received_now)
 
       drain(control_socket, control, messaging.recv_one_or_none, sink, now)
       drain(applied_socket, output, messaging.recv_one_or_none, sink, now)
@@ -675,6 +750,7 @@ def run(
         # delay delivery. This neutral status is not a new physical witness;
         # the original settings lease and all trial/restore leases stay fixed.
         if (source_valid and live_offer is None and live_history.offer is None and
+            not (publication_source_reader is not None and now >= next_publish_ns) and
             now + 10_000_000 >= next_tracking_status_ns):
           pm.send('starpilotSteeringTracking', tracking_message(source, now_ns=now,
             current_native=False, offer=None, restore=None))
@@ -688,7 +764,8 @@ def run(
             current_native=current_native, native_key=native_key, hardware_inventory=hardware_inventory)
         latest = live_actor.tick(collector, source if source_valid else None, now_ns=now,
           current_native=current_native, native_key=native_key, hardware_inventory=hardware_inventory,
-          allow_bootstrap=live_history.requalifier is None)
+          allow_bootstrap=live_history.requalifier is None,
+          evidence_delay_only=bool(source_valid and study_native_current(now)))
         if live_history.observe_response_recovery(live_actor):
           # Clear cached trial/restore publication in this SAME parent tick.
           # No old history or accepted target is silently promoted afterward.
@@ -711,14 +788,18 @@ def run(
         current_native = bool(source_valid and collector is not None and collector.ready and
                               current_native_health(sm, CP, collector.ready[-1][0], now))
         new_restore = live_history.offer is not None and live_history.offer is not prior_restore_offer
-        # The transport/source status has its own20Hz cadence. Waiting for a
-        # new admitted offer can starve service health and prevent fresh raw
-        # collection from recovering after a withdrawal. A cached offer keeps
-        # its ORIGINAL observed time, sequence, witness and expiry; the writer
-        # omits it when expired or current permission is absent.
+        # A genuinely newer qualified witness must reach its consumer now,
+        # preserving its original short lease. Raw-pose delivery alone does not
+        # renew that witness and must not create a second publication stream.
+        # After a proposal expires, independently paced neutral status keeps
+        # source health recoverable without granting any current correction.
+        current_proposal = any(value is not None and value.observed_ns <= now <= value.expires_ns
+          for value in (live_offer, live_history.offer))
+        defer_idle_refresh = (publication_source_reader is not None and now >= next_publish_ns and
+                              live_offer is None and live_history.offer is None)
+        idle_status = source_valid and not current_proposal and not defer_idle_refresh and now + 10_000_000 >= next_tracking_status_ns
         source_withdrawal = not source_valid and _source_config_known(source, now)
-        publish_tracking = (latest is not None or new_restore or
-                            new_raw_pose and (source_withdrawal or live_offer is not None or live_history.offer is not None))
+        publish_tracking = latest is not None or new_restore or idle_status or new_raw_pose and source_withdrawal
         if publish_tracking:
           message = tracking_message(source, now_ns=now, current_native=current_native,
             offer=live_offer, restore=live_history.offer)
@@ -726,6 +807,12 @@ def run(
               hasattr(live_actor, 'mark_publication')):
             live_actor.mark_publication(live_offer)
           pm.send('starpilotSteeringTracking', message)
+          if latest is not None or new_restore:
+            next_tracking_status_ns = now + 50_000_000
+          else:
+            if next_tracking_status_ns == 0:
+              next_tracking_status_ns = now
+            next_tracking_status_ns += max(1, (now - next_tracking_status_ns) // 50_000_000 + 1) * 50_000_000
         if live_persistence is not None:
           inputs = live_actor.persistence_inputs(now)
           if inputs is not None:
@@ -750,6 +837,17 @@ def run(
         publication_sequence += 1
         if publication_source_reader is not None:
           source_valid, now = source_current(read=True, publication=True)
+          # Forward the genuine settings read in the existing neutral-status
+          # slot. An extra4Hz stream can exceed Controls' rolling frequency
+          # bound. If earlier work crossed the publication deadline after a
+          # status was already sent, preserve its next slot instead of doubling.
+          if (source_valid and live_actor is not None and live_offer is None and live_history.offer is None and
+              now + 10_000_000 >= next_tracking_status_ns):
+            pm.send('starpilotSteeringTracking', tracking_message(source, now_ns=now,
+              current_native=False, offer=None, restore=None))
+            if next_tracking_status_ns == 0:
+              next_tracking_status_ns = now
+            next_tracking_status_ns += max(1, (now - next_tracking_status_ns) // 50_000_000 + 1) * 50_000_000
         if live_actor is not None:
           message = result_message(None, 'live-tracking', publication_sequence, now)
           value = message.autoSteeringLearning.learning
@@ -892,7 +990,7 @@ def main():
     'onroadEvents',
     'aolSafetyWire',
   ]
-  sm = messaging.SubMaster(services, poll='carState', ignore_alive=['aolSafetyWire'], ignore_valid=['aolSafetyWire'], ignore_avg_freq=['aolSafetyWire'])
+  sm = source_receiver(services)
   control_socket = messaging.sub_sock('starpilotLateralState', conflate=False)
   applied_socket = messaging.sub_sock('starpilotCarState', conflate=False)
   pm = messaging.PubMaster(['autoSteeringLearning', 'starpilotSteeringTracking'])
@@ -903,14 +1001,7 @@ def main():
   calibration_lifecycle = ProducerCalibrationLifecycle()
 
   def calibration_frame(now):
-    stamp = int(sm.logMonoTime['extrinsicsCalibration'])
-    receipt = int(sm.recv_time['extrinsicsCalibration'] * 1e9)
-    current = bool(sm.all_checks(['extrinsicsCalibration']) and
-      0 < stamp <= now <= stamp + 500_000_000 and
-      0 < receipt <= now <= receipt + 500_000_000)
-    if not sm.valid['extrinsicsCalibration'] or stamp > now or receipt > now:
-      return calibration_lifecycle.observe(None, current=False)
-    return calibration_lifecycle.observe(sm['extrinsicsCalibration'], current=current)
+    return _configuration_calibration(sm, calibration_lifecycle, now)
 
   def current_source(now, frame):
     return read_source(CP, params, now_ns=now, cp_sha256=cp_sha256,
