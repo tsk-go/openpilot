@@ -172,6 +172,10 @@ Paths are under `openpilot/` unless noted.
     Sienna it ignores "return control" and sounds until the session ends). Panda safety allows those exact on frames
     behind the stationary gate and their off frames always. The answer goes back as soon as the doors move; card checks
     for a request 4x a second (20x while one runs).
+    Patch 48: the answer is the car's own confirmation - while a request runs, card hands the Main Body module's
+    replies on 0x758 to `DoorLocks.response`; its "done" (6F 28 1x 03) gives "lock: confirmed", a 7F gives "refused by
+    the car (code xx)", none within 0.3 s gives "sent, no answer from the car". starviewd's `door` is ok only when
+    confirmed.
 30. StarLock, the phone's Lock / Unlock (patch 47): `starview/ble_door.py` advertises one Bluetooth LE GATT service
     (bluez over dbus-python, GLib loop via ctypes) only while openpilot is started; same pairing key and proofs as the
     tablet (pairing.py, peer "ble"), then starviewd's `door` action. The phone also tries Wi-Fi (starviewd /hello,
