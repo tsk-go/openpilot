@@ -448,3 +448,14 @@ def test_slc_action_kinds_match_the_native_ui():
   from openpilot.starpilot.system.android_auto.projection_slc_action import DEFAULT_SOCKET
   assert set(starviewd.SLC_ACTION_KINDS) == {k.value for k in SlcActionKind}
   assert starviewd.SLC_ACTION_SOCKET == DEFAULT_SOCKET
+
+
+def test_storage_shows_the_running_copy_and_ignores_a_dead_one(tmp_path, monkeypatch):
+  import json
+  import os
+  prog = tmp_path / "progress.json"
+  monkeypatch.setattr(starviewd, "LOG_ARCHIVE_PROGRESS", str(prog))
+  prog.write_text(json.dumps({"pid": os.getpid(), "phase": "copying", "total_bytes": 10, "done_bytes": 4}))
+  assert starviewd.storage_info()["stick"]["progress"]["done_bytes"] == 4
+  prog.write_text(json.dumps({"pid": 2 ** 22 + 12345, "phase": "copying"}))
+  assert "progress" not in starviewd.storage_info()["stick"]
