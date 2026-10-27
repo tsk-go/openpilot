@@ -1,5 +1,6 @@
 from openpilot.starpilot.gps.publisher import CarGpsPublisher
 #!/usr/bin/env python3
+import json
 import os
 import time
 import threading
@@ -97,6 +98,9 @@ from openpilot.starpilot.controllers.cruise_action import CruiseActionConsumer, 
 from openpilot.starpilot.schema_cache import get_cache, prewarm_cache_contracts, put_cache
 
 REPLAY = "REPLAY" in os.environ
+# StarView: the tablet's lock / unlock button (starviewd writes the request, card answers in the result) - RAM only
+DOOR_REQUEST = "/dev/shm/starview_door_request"
+DOOR_RESULT = "/dev/shm/starview_door_result"
 
 EventName = log.OnroadEvent.EventName
 DISTANCE_GESTURE_KEYS = {Press.SHORT: ('DistanceButtonControl', 0),
@@ -470,6 +474,37 @@ class Car:
                 feature_enabled(self.params, self.CP, 'slc', os.environ))
     return bool(admitted), settings
 
+  def poll_door_request(self) -> None:
+    """StarView: a lock / unlock from the tablet (starviewd writes DOOR_REQUEST). Checked twice a second - one stat()
+    when nothing is asked - and handed to the Toyota controller, which sends it once over the normal link (no pandad
+    pause, so cruise never sees a gap). What happened goes to DOOR_RESULT for the tablet."""
+    self._door_poll = getattr(self, '_door_poll', 0) + 1
+    if self._door_poll % 50:
+      return
+    door_locks = getattr(self.CI.CC, 'door_locks', None) if self.CI.CC is not None else None
+    if door_locks is None:
+      return
+    if door_locks.manual_result:
+      try:
+        with open(DOOR_RESULT + '.tmp', 'w') as f:
+          f.write(json.dumps({'result': door_locks.manual_result, 'time': time.time()}))  # noqa: TID251  shown on the tablet
+        os.replace(DOOR_RESULT + '.tmp', DOOR_RESULT)
+      except OSError:
+        pass
+      door_locks.manual_result = ''
+    try:
+      age = time.time() - os.stat(DOOR_REQUEST).st_mtime  # noqa: TID251  file mtime is wall clock
+    except OSError:
+      return
+    try:
+      with open(DOOR_REQUEST) as f:
+        cmd = f.read().strip()
+      os.unlink(DOOR_REQUEST)
+    except OSError:
+      return
+    if cmd in ('lock', 'unlock') and 0 <= age < 5:
+      door_locks.manual = cmd
+
   def refresh_slc_configuration(self, now_ns: int) -> None:
     configuration = getattr(self, 'slc_requested_configuration', None)
     if configuration is None or configuration == getattr(self, 'slc_configuration', None):
@@ -552,6 +587,7 @@ class Car:
     self._aol_can_observation = (CS, can_received_ns,
                                  max((stamp for stamp, _ in can_list), default=0), cancel_boot_ns)
     self.refresh_slc_configuration(now_ns)
+    self.poll_door_request()
     evidence = getattr(self.CI.CS, 'dashboard_limit', None) if self.slc_replay else None
     observation = evidence.observation if evidence is not None else None
     floor_ns = getattr(self, 'slc_source_floor_ns', 0)

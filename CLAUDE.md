@@ -28,6 +28,29 @@
 && git merge --no-edit -m "Merge upstream StarPilot SecretGoodStarPilot" FETCH_HEAD`), then a normal push.
 Never rebase or force-push for a sync: the local commits must be kept as they are. On a conflict, stop and ask.
 
+# Panda firmware (ours, not upstream's)
+
+This fork ships its own panda firmware: its Toyota safety lets through the 4th-gen Sienna's UDS door lock / unlock
+frames (fork history 29). The app images in `panda/board/obj/*.bin.signed` (and `gitversion.h`, `version`) are built
+from this repo's own source, not taken from upstream. The comma flashes whatever is in that folder at boot, so a sync
+that lands upstream's images there silently removes the door lock.
+
+- On a sync, if the merge touches `opendbc_repo/opendbc/safety/`, `panda/` or `panda/board/obj/`: never keep upstream's
+  `*.bin.signed`. After the merge, rebuild the app images from the merged source and commit them:
+  ```
+  pip install --break-system-packages comma-deps-gcc-arm-none-eabi scons   # arm-none-eabi-gcc 13.2.1
+  cd panda && PATH=$(python3 -c "import gcc_arm_none_eabi,os;print(os.path.dirname(gcc_arm_none_eabi.__file__))")/toolchain/bin:$PATH \
+    PYTHONPATH=$PWD/../opendbc_repo:$PWD/.. scons -j8
+  git checkout -- board/obj/bootstub.* board/obj/body_h7.bin.signed tests/libpanda/libpanda.so   # bootstubs stay
+  ```
+  Then commit `panda/board/obj/*.bin.signed`, `gitversion.h`, `version`. Don't change the bootstubs.
+- Before committing, check the safety change is still in the merged source (`uds_door_start` in
+  `opendbc_repo/opendbc/safety/modes/toyota.h`), and that `pytest opendbc/safety/tests/test_toyota.py -k uds_door`
+  (from `opendbc_repo`) passes.
+- The build is reproducible: rebuilding unchanged source gives the committed image except the version string and the
+  signature. A diff bigger than that means the source isn't what was built.
+- The comma four uses `panda_h7.bin.signed`.
+
 # Fork fixes to drop when upstream fixes them
 
 After every sync, check whether upstream now fixes any of these on its own. If it does, remove our fix in a
@@ -132,6 +155,18 @@ Paths are under `openpilot/` unless noted.
     up to 0.6 s added to the follow time (`mpc_follow`), Lane Centering's offset shifted by up to 0.3 m
     (`lane_runtime.LaneCenteringHost.sample`). Everything that decides (speed bumps, potholes, cut-ins, lights...) runs
     on the tablet (StarView 2.67).
+
+29. Door lock / unlock while running (patch 46): the 4th-gen Sienna's Main Body module (0x750, sub-address 0x40)
+    refuses StarPilot's KWP door command (`7F 30 11`) and takes Toyota's UDS active test instead (GTS+ "Door Lock" DID
+    2810, "Door Unlock" 2811). `opendbc/car/toyota/door_locks.py` `DoorLocks.manual` runs it over openpilot's own link:
+    10 03 -> 0.1 s -> 2F 28xx 03 01 80 -> 1 s -> 2F 28xx 00 80 -> 0.1 s -> 10 01, only in Park, stopped, no gas,
+    handing back at once if that changes. Panda safety (`opendbc/safety/modes/toyota.h`, the 0x750 block) allows
+    those exact frames: the start frames behind the existing stationary gate, the hand-back frames always (relay OK).
+    Trigger: `/dev/shm/starview_door_request` ("lock" / "unlock"), read by `selfdrive/car/card.py`
+    `poll_door_request` every 50th frame; answer in `/dev/shm/starview_door_result`; starviewd action `door` for the
+    tablet. Pausing pandad for the same test (TechStream's way) faulted the Sienna's cruise onroad, so never do that.
+    Rebuilt panda firmware ships with it (see "Panda firmware"). Touches upstream card.py and door_locks.py: re-check
+    after each sync. Confirmed on the car Oct 27 (both lock and unlock, every step answered positively).
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

@@ -384,3 +384,25 @@ def test_storage_shows_the_running_copy_and_ignores_a_dead_one(tmp_path, monkeyp
   assert starviewd.storage_info()["stick"]["progress"]["done_bytes"] == 4
   prog.write_text(json.dumps({"pid": 2 ** 22 + 12345, "phase": "copying"}))
   assert "progress" not in starviewd.storage_info()["stick"]
+
+
+def test_door_asks_card_and_reports_its_answer(tmp_path, monkeypatch):
+  import json
+  import threading as th
+  import time as tm
+  req, res = tmp_path / "req", tmp_path / "res"
+  monkeypatch.setattr(starviewd, "DOOR_REQUEST", str(req))
+  monkeypatch.setattr(starviewd, "DOOR_RESULT", str(res))
+  hub = make_hub(onroad=True, started=True)
+  def card():
+    for _ in range(50):
+      if req.exists():
+        assert req.read_text() == "lock"
+        req.unlink()
+        res.write_text(json.dumps({"result": "lock: sent", "time": tm.time()}))
+        return
+      tm.sleep(0.02)
+  th.Thread(target=card).start()
+  assert hub.control({"action": "door", "cmd": "lock"}) == {"ok": True, "result": "lock: sent"}
+  assert not hub.control({"action": "door", "cmd": "open"})["ok"]
+  assert not make_hub(onroad=False, started=False).control({"action": "door", "cmd": "lock"})["ok"]
