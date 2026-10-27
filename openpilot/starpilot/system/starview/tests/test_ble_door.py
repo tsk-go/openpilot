@@ -13,7 +13,7 @@ def key(tmp_path, monkeypatch):
 
 
 def handler(calls):
-  return ble_door.Handler(lambda: "6e453c4b", lambda cmd, sound: calls.append((cmd, sound)) or {"ok": True, "result": f"{cmd}: sent"})
+  return ble_door.Handler(lambda: "6e453c4b", lambda cmd, sound, beeps=None: calls.append((cmd, sound) + ((beeps,) if beeps else ())) or {"ok": True, "result": f"{cmd}: sent"})
 
 
 def ask(h, **req):
@@ -36,6 +36,10 @@ def test_hello_then_door_runs_the_command_once():
   assert ask(h, op="door", cmd="unlock", sound="horn", sn=hello["sn"], cn=cn,
              proof=pairing.client_proof("6e453c4b", hello["sn"], cn))["ok"]
   assert calls[-1] == ("unlock", "horn")
+  hello = ask(h, op="hello", cn=cn)       # StarLock's own horn pattern is handed on to starviewd, which checks it
+  assert ask(h, op="door", cmd="unlock", sound="horn", beeps=[3, 100, 200], sn=hello["sn"], cn=cn,
+             proof=pairing.client_proof("6e453c4b", hello["sn"], cn))["ok"]
+  assert calls[-1] == ("unlock", "horn", [3, 100, 200])
 
 
 def test_wrong_key_or_command_is_refused():

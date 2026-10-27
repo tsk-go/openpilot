@@ -1544,16 +1544,29 @@ class Hub:
   def _door(self, req: dict) -> dict:
     """The tablet's / phone's Lock / Unlock: card hands it to the Toyota controller, which runs the door active test
     (door_locks.py) over the normal link - nothing paused, so no cruise fault. sound: "horn" (default), "none", "buzzer".
-    Only in Park and standing still; Panda safety checks stationary + no gas again. Waits up to 3 s for card's answer."""
+    Only in Park and standing still; Panda safety checks stationary + no gas again. Waits up to 3 s for card's answer.
+    beeps (optional, StarLock's horn pattern): [beeps 1-5, ms on 30-1000, ms between 50-1000] - a short list, so the
+    Bluetooth request still fits one packet."""
     cmd, sound = str(req.get("cmd", "")), str(req.get("sound") or "horn")
     if cmd not in ("lock", "unlock") or sound not in ("buzzer", "horn", "none"):
       return {"ok": False, "error": "bad door command"}
+    pattern = ""
+    beeps = req.get("beeps")
+    if beeps is not None and sound != "none":
+      try:
+        n, on_ms, gap_ms = beeps
+        n, on, gap = int(n), round(float(on_ms) / 10), round(float(gap_ms) / 10)
+      except (TypeError, ValueError):
+        return {"ok": False, "error": "bad horn pattern"}
+      if not (1 <= n <= 5 and 3 <= on <= 100 and 5 <= gap <= 100):
+        return {"ok": False, "error": "bad horn pattern"}
+      pattern = f" {n}x{on}x{gap}"
     if not self.started:
       return {"ok": False, "error": "Lock / unlock works while openpilot is on (car on, in Park)."}
     t0 = time.time()  # noqa: TID251  compared with card's wall-clock answer
     try:
       with open(DOOR_REQUEST + ".tmp", "w") as f:
-        f.write(f"{cmd} {sound}")
+        f.write(f"{cmd} {sound}{pattern}")
       os.replace(DOOR_REQUEST + ".tmp", DOOR_REQUEST)
     except OSError as e:
       return {"ok": False, "error": f"couldn't ask openpilot: {e}"}
@@ -2865,7 +2878,7 @@ def start_ble_door(hub):
     return
   try:
     from openpilot.starpilot.system.starview import ble_door
-    ble_door.start(hub.ops.dongle_id, lambda cmd, sound: hub._door({"cmd": cmd, "sound": sound}), lambda: hub.started)
+    ble_door.start(hub.ops.dongle_id, lambda cmd, sound, beeps=None: hub._door({"cmd": cmd, "sound": sound, "beeps": beeps}), lambda: hub.started)
   except Exception as e:
     cloudlog.warning(f"starview: ble door: {e}")
 

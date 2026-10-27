@@ -176,6 +176,10 @@ Paths are under `openpilot/` unless noted.
     replies on 0x758 to `DoorLocks.response`; its "done" (6F 28 1x 03) gives "lock: confirmed", a 7F gives "refused by
     the car (code xx)", none within 0.3 s gives "sent, no answer from the car". starviewd's `door` is ok only when
     confirmed.
+    Patch 49: StarLock's own horn pattern - `door` takes optional `beeps` [n 1-5, ms on 30-1000, ms between 50-1000] (a
+    list so the BLE request stays inside one 244-byte write; BLE passes it through); starviewd writes it to card as frames ("unlock horn 3x15x30"). `schedule` places one output per
+    frame (a clash moves to the next free frame), adds tester present (40 02 3E 00, already a return frame) every 1.5 s
+    in a long pattern, and ends the session 0.1 s after the last beep. No firmware change.
 30. StarLock, the phone's Lock / Unlock (patch 47): `starview/ble_door.py` advertises one Bluetooth LE GATT service
     (bluez over dbus-python, GLib loop via ctypes) only while openpilot is started; same pairing key and proofs as the
     tablet (pairing.py, peer "ble"), then starviewd's `door` action. The phone also tries Wi-Fi (starviewd /hello,

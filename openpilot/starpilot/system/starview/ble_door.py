@@ -5,7 +5,8 @@ The comma advertises one GATT service (bluez, via dbus-python) while openpilot i
   TX 5a1c0003-... (notify)  comma -> phone, JSON
 Same key and proofs as the tablet's Wi-Fi pairing (pairing.py), with "ble" as the peer address:
   {"op":"hello","cn"}                        -> {"op":"hello","dongle","sn","proof"}     (comma proves it has the key)
-  {"op":"door","cmd","sound","sn","cn","proof"} -> {"op":"door","ok","result"/"error"}  (phone proves it; sn single-use)
+  {"op":"door","cmd","sound","beeps"?,"sn","cn","proof"} -> {"op":"door","ok","result"/"error"}  (phone proves it;
+                                                                                                sn single-use)
 Costs nothing while idle: bluez advertises from the controller; this thread sleeps in a GLib loop that checks every 2 s
 whether openpilot is started.
 """
@@ -25,7 +26,7 @@ class Handler:
   """The protocol, without Bluetooth: bytes in, bytes out (unit-tested)."""
   def __init__(self, dongle_id, door):
     self.dongle_id = dongle_id     # () -> str
-    self.door = door               # (cmd, sound) -> {"ok", "result"/"error"}
+    self.door = door               # (cmd, sound, beeps) -> {"ok", "result"/"error"}
 
   def handle(self, data: bytes) -> bytes:
     try:
@@ -44,7 +45,7 @@ class Handler:
         return json.dumps({"op": "door", "ok": False, "error": "bad door command"}).encode()
       if pairing.open_session(PEER, self.dongle_id(), req.get("sn"), req.get("cn"), req.get("proof")) is None:
         return json.dumps({"op": "door", "ok": False, "error": "not paired - pair StarLock again"}).encode()
-      ack = self.door(cmd, sound)
+      ack = self.door(cmd, sound, req.get("beeps"))
       return json.dumps({"op": "door", "ok": bool(ack.get("ok")), "result": ack.get("result", ""),
                          **({"error": ack["error"]} if "error" in ack else {})}).encode()
     return json.dumps({"op": "error", "error": "unknown op"}).encode()
