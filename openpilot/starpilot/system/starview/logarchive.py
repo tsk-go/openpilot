@@ -12,6 +12,7 @@ always records to internal storage, and this script mirrors the finished segment
   * never deletes anything on internal storage (openpilot's deleter keeps managing that, uploads keep working)
   * when the stick gets full, the oldest drives ON THE STICK are removed (keeps ~10 % free)
   * any stick error: unmount and give up until next time - nothing else is affected
+  * while it runs, its progress is in /dev/shm (RAM, no flash writes) for the tablet's storage card
 
 starviewd starts it by itself every few minutes while parked (turn that off: touch /data/starview/no_log_archive).
 By hand:
@@ -31,6 +32,8 @@ SRC = "/data/media/0/realdata"
 MNT = "/data/extstorage/mnt"
 STATUS = "/data/starview/log_archive_status.json"
 LOCK = "/dev/shm/starview_logarchive.lock"
+PROGRESS = "/dev/shm/starview_logarchive_progress.json"
+PROGRESS_EVERY_S = 2.0
 KEEP_FREE = 0.10
 
 
@@ -80,6 +83,53 @@ def mounted(mp):
     return False
 
 
+class Progress:
+  """Live progress of this run for the tablet: one small JSON in /dev/shm, rewritten at most every 2 s."""
+  def __init__(self):
+    self.p = {"pid": os.getpid(), "started": time.time(), "phase": "starting",  # noqa: TID251  shown as a time on the tablet
+              "total_bytes": 0, "done_bytes": 0, "total_files": 0, "done_files": 0, "segment": ""}
+    self.last = 0.0
+    self.rate_t0 = None
+
+  def set(self, force=False, **kw):
+    self.p.update(kw)
+    now = time.monotonic()
+    if not force and now - self.last < PROGRESS_EVERY_S:
+      return
+    self.last = now
+    if self.p["phase"] == "copying":
+      if self.rate_t0 is None:
+        self.rate_t0 = (now, self.p["done_bytes"])
+      dt = now - self.rate_t0[0]
+      rate = (self.p["done_bytes"] - self.rate_t0[1]) / dt if dt > 1 else 0.0
+      self.p["rate_MBps"] = round(rate / 1e6, 1)
+      left = self.p["total_bytes"] - self.p["done_bytes"]
+      self.p["eta_s"] = round(left / rate) if rate > 0 else None
+    try:
+      with open(PROGRESS + ".tmp", "w") as f:
+        json.dump(self.p, f)
+      os.replace(PROGRESS + ".tmp", PROGRESS)
+    except Exception:
+      pass
+
+  @staticmethod
+  def clear():
+    try:
+      os.unlink(PROGRESS)
+    except Exception:
+      pass
+
+
+def read_progress():
+  """This run's progress, or None when no copy is running (a file left by a killed run doesn't count)."""
+  try:
+    p = json.load(open(PROGRESS))
+    os.kill(int(p["pid"]), 0)
+    return p
+  except Exception:
+    return None
+
+
 def save(st):
   st["time"] = time.strftime("%Y-%m-%d %H:%M:%S")
   try:
@@ -116,62 +166,79 @@ def prune(st):
       return
 
 
-def copy_all(st):
-  copied = 0
-  files = 0
-  skipped = 0
+def plan():
+  """What still has to go to the stick: [(segment, name, size)], and how many files are already there."""
+  todo, skipped = [], 0
   for seg in sorted(os.listdir(SRC)):
     sp = os.path.join(SRC, seg)
     if not os.path.isdir(sp):
       continue
     dp = os.path.join(MNT, seg)
     for name in sorted(os.listdir(sp)):
-      if onroad():
-        st["stopped"] = "car turned on"
-        return copied, files
       s = os.path.join(sp, name)
-      d = os.path.join(dp, name)
       if not os.path.isfile(s) or name.endswith(".lock") or name.startswith("."):
         continue
       size = os.path.getsize(s)
+      d = os.path.join(dp, name)
       if os.path.exists(d) and os.path.getsize(d) == size:
         skipped += 1
-        continue
-      u = shutil.disk_usage(MNT)
-      if u.free < size + 256 * 1024 * 1024:
-        prune(st)
-        if shutil.disk_usage(MNT).free < size + 256 * 1024 * 1024:
-          st["stopped"] = "stick full"
-          return copied, files
-      os.makedirs(dp, exist_ok=True)
-      tmp = d + ".part"
-      with open(s, "rb") as fi, open(tmp, "wb") as fo:
-        t0, sent = time.monotonic(), 0
-        while True:
-          b = fi.read(1024 * 1024)
-          if not b:
-            break
-          fo.write(b)
-          sent += len(b)
-          ahead = sent / MAX_BYTES_PER_S - (time.monotonic() - t0)
-          if ahead > 0:
-            time.sleep(ahead)
-          if onroad():
-            break
-      if onroad():
-        os.remove(tmp)
-        st["stopped"] = "car turned on"
+      else:
+        todo.append((seg, name, size))
+  return todo, skipped
+
+
+def copy_all(st, prog=None):
+  prog = prog or Progress()
+  copied = 0
+  files = 0
+  prog.set(force=True, phase="looking for new drives")
+  todo, skipped = plan()
+  prog.set(force=True, phase="copying", total_bytes=sum(t[2] for t in todo), total_files=len(todo))
+  for seg, name, size in todo:
+    if onroad():
+      st["stopped"] = "car turned on"
+      return copied, files
+    sp, dp = os.path.join(SRC, seg), os.path.join(MNT, seg)
+    s, d = os.path.join(sp, name), os.path.join(dp, name)
+    if not os.path.isfile(s) or os.path.getsize(s) != size:   # deleted or still growing since the plan
+      continue
+    u = shutil.disk_usage(MNT)
+    if u.free < size + 256 * 1024 * 1024:
+      prune(st)
+      if shutil.disk_usage(MNT).free < size + 256 * 1024 * 1024:
+        st["stopped"] = "stick full"
         return copied, files
-      os.replace(tmp, d)
-      try:  # keep the drive's own times, so "newest on the stick" means the newest drive, not the newest copy
-        sst = os.stat(s)
-        os.utime(d, (sst.st_atime, sst.st_mtime))
-        pst = os.stat(sp)
-        os.utime(dp, (pst.st_atime, pst.st_mtime))
-      except OSError:
-        pass
-      copied += size
-      files += 1
+    os.makedirs(dp, exist_ok=True)
+    tmp = d + ".part"
+    with open(s, "rb") as fi, open(tmp, "wb") as fo:
+      t0, sent = time.monotonic(), 0
+      while True:
+        b = fi.read(1024 * 1024)
+        if not b:
+          break
+        fo.write(b)
+        sent += len(b)
+        prog.set(done_bytes=copied + sent, done_files=files, segment=seg)
+        ahead = sent / MAX_BYTES_PER_S - (time.monotonic() - t0)
+        if ahead > 0:
+          time.sleep(ahead)
+        if onroad():
+          break
+    if onroad():
+      os.remove(tmp)
+      st["stopped"] = "car turned on"
+      return copied, files
+    os.replace(tmp, d)
+    try:  # keep the drive's own times, so "newest on the stick" means the newest drive, not the newest copy
+      sst = os.stat(s)
+      os.utime(d, (sst.st_atime, sst.st_mtime))
+      pst = os.stat(sp)
+      os.utime(dp, (pst.st_atime, pst.st_mtime))
+    except OSError:
+      pass
+    copied += size
+    files += 1
+    prog.set(done_bytes=copied, done_files=files, segment=seg)
   st["already_there"] = skipped
   return copied, files
 
@@ -194,6 +261,7 @@ def run_once():
       os.unlink(LOCK)
       return run_once()
   st = {"result": "?"}
+  prog = Progress()
   try:
     dev = stick()
     if not dev:
@@ -203,6 +271,7 @@ def run_once():
     st["device"] = dev
     os.makedirs(MNT, exist_ok=True)
     if not mounted(MNT):
+      prog.set(force=True, phase="checking the stick")
       sh(f"e2fsck -p {dev}", timeout=600)       # clean up after a power cut / the earlier drop-outs
       rc, o = sh(f"mount -t ext4 -o noatime,nodiratime,errors=remount-ro {dev} {MNT}", timeout=60)
       if rc != 0:
@@ -211,7 +280,8 @@ def run_once():
         return 1
       sh(f"chown 1000:1000 {MNT}", timeout=15)
     t0 = time.time()  # noqa: TID251  wall-clock run times, shown on the tablet
-    copied, files = copy_all(st)
+    copied, files = copy_all(st, prog)
+    prog.set(force=True, phase="making room" if not st.get("stopped") else "stopping")
     prune(st)
     # what's on the stick now: count and the newest / oldest drive, for the tablet's storage card
     segs = [e for e in os.scandir(MNT) if e.is_dir() and e.name != "lost+found"]
@@ -237,8 +307,10 @@ def run_once():
     print(st["result"])
     return 1
   finally:
+    prog.set(force=True, phase="finishing (sync and unmount)")
     unmount()
     save(st)
+    Progress.clear()
     try:
       os.unlink(LOCK)
     except Exception:
@@ -250,6 +322,12 @@ def status():
   print(f"internal logs   : {SRC}  (openpilot records here; the stick is never in the recording path)")
   print(f"stick mounted   : {'yes (copying)' if mounted(MNT) else 'no (only mounted while copying)'}")
   print(f"auto archive    : {'OFF (/data/starview/no_log_archive)' if os.path.exists('/data/starview/no_log_archive') else 'on, while parked'}")
+  p = read_progress()
+  if p:
+    tot = max(1, p.get("total_bytes", 0))
+    print(f"copying now     : {p.get('phase')}  {100 * p.get('done_bytes', 0) // tot}%  "
+          f"({p.get('done_bytes', 0) / 1e9:.1f} of {p.get('total_bytes', 0) / 1e9:.1f} GB, "
+          f"{p.get('done_files', 0)}/{p.get('total_files', 0)} files, {p.get('rate_MBps', 0)} MB/s)")
   try:
     print("last run        :", open(STATUS).read().strip())
   except Exception:

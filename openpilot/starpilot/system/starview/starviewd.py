@@ -2473,6 +2473,11 @@ def storage_info():
     stick.update(json.load(open("/data/starview/log_archive_status.json")))
   except Exception:
     pass
+  p = log_archive_progress()
+  if p:
+    stick["progress"] = p
+  if LOG_ARCHIVE_LAST:
+    stick["auto_last"] = dict(LOG_ARCHIVE_LAST)
   out["stick"] = stick
   return out
 
@@ -2681,6 +2686,22 @@ def tablet_flag_thread(hub):
     time.sleep(1.0)
 
 
+LOG_ARCHIVE_PROGRESS = "/dev/shm/starview_logarchive_progress.json"
+LOG_ARCHIVE_LAST: dict = {}   # the auto copy's last start: when, exit code, last line of output (for the storage page)
+
+
+def log_archive_progress():
+  """The running copy's progress (logarchive.py writes it to RAM every 2 s), or None. A file left by a killed copy
+  is ignored: its pid is gone."""
+  try:
+    with open(LOG_ARCHIVE_PROGRESS) as f:
+      p = json.load(f)
+    os.kill(int(p["pid"]), 0)
+    return p
+  except Exception:
+    return None
+
+
 def log_archive_thread():
   """Parked only: copy finished drives from internal storage to the USB stick (logarchive.py mounts, copies, unmounts).
   loggerd itself always records to internal storage - a stalling stick can never reach the driving processes."""
@@ -2692,9 +2713,16 @@ def log_archive_thread():
     try:
       if os.path.exists(script) and not os.path.exists("/data/starview/no_log_archive") and \
          not compat.is_onroad(Params()):
-        subprocess.run(["nice", "-n", "19", "ionice", "-c3", "python3", script, "--once"],
-                       capture_output=True, timeout=4 * 3600)
+        t = time.time()  # noqa: TID251  shown as a time on the tablet
+        LOG_ARCHIVE_LAST.clear()
+        LOG_ARCHIVE_LAST.update(time=t, running=True)
+        r = subprocess.run(["nice", "-n", "19", "ionice", "-c3", "python3", script, "--once"],
+                           capture_output=True, text=True, timeout=4 * 3600)
+        tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
+        LOG_ARCHIVE_LAST.update(running=False, rc=r.returncode, out=(tail[-1] if tail else "")[:300])
     except Exception as e:
+      if LOG_ARCHIVE_LAST.get("running"):
+        LOG_ARCHIVE_LAST.update(running=False, rc=None, out=f"stopped: {e}"[:300])
       cloudlog.warning(f"starview: log archive: {e}")
     time.sleep(300)
 
