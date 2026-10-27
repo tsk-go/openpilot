@@ -505,7 +505,7 @@ class Car:
       os.unlink(DOOR_REQUEST)
     except OSError:
       return
-    if cmd.split(' ')[0] in ('lock', 'unlock') and len(cmd) <= 16 and 0 <= age < 5:   # "lock" / "unlock horn" ...
+    if cmd.split(' ')[0] in ('lock', 'unlock') and len(cmd) <= 32 and 0 <= age < 5:   # "lock" / "unlock horn 2x8x17" ...
       door_locks.manual = cmd
 
   def refresh_slc_configuration(self, now_ns: int) -> None:

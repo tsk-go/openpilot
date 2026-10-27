@@ -62,7 +62,7 @@ def test_defaults_off_and_starting_in_drive_never_create_transition():
   assert body_commands(controller, command, state) == []
 
 
-from opendbc.car.toyota.door_locks import UDS_DEFAULT, UDS_EXTENDED, UDS_OFF, UDS_ON  # noqa: E402
+from opendbc.car.toyota.door_locks import UDS_DEFAULT, UDS_EXTENDED, UDS_OFF, UDS_ON, UDS_TESTER_PRESENT  # noqa: E402
 
 
 def door_frames(controller, command, state, frames):
@@ -182,3 +182,39 @@ def test_bad_sound_is_refused():
   controller.door_locks.manual = "lock siren"
   assert door_frames(controller, command, state, 20) == {}
   assert controller.door_locks.manual_result == "lock: not sent (bad request)"
+
+
+def test_starlock_horn_pattern():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = "unlock horn 3x15x30"     # three 0.15 s beeps, 0.3 s apart
+  frames = door_frames(controller, command, state, 200)
+  horn = {n: f == UDS_ON["horn"] for n, f in frames.items() if f in (UDS_ON["horn"], UDS_OFF["horn"])}
+  assert horn == {20: True, 35: False, 65: True, 80: False, 111: True, 125: False}   # 110 is the unlock's hand-back
+  assert frames[110] == UDS_OFF["unlock"] and frames[135] == UDS_DEFAULT
+  # a long pattern keeps the session alive and ends 0.1 s after the last beep
+  controller.door_locks.manual = "lock horn 5x100x100"
+  frames = door_frames(controller, command, state, 1000)
+  assert frames[150] == UDS_TESTER_PRESENT and frames[900] == UDS_TESTER_PRESENT
+  assert max(frames) == 930 and frames[930] == UDS_DEFAULT
+  assert sum(f == UDS_ON["horn"] for f in frames.values()) == 5
+
+
+@pytest.mark.parametrize('request_', ["lock horn 6x15x30", "lock horn 2x2x30", "lock horn 2x15x200", "lock horn 2x15",
+                                      "lock horn 2x15x30 extra", "lock horn axbxc"])
+def test_bad_horn_pattern_is_refused(request_):
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = request_
+  assert door_frames(controller, command, state, 20) == {}
+  assert controller.door_locks.manual_result == "lock: not sent (bad request)"
+
+
+def test_pattern_with_silent_is_silent():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = "lock none 3x15x30"
+  assert set(door_frames(controller, command, state, 140)) == {0, 10, 110, 120}

@@ -7,7 +7,8 @@ StarView: the 4th-gen Sienna's Main Body module refuses that KWP command (7F 30 
 Toyota's UDS active test instead (GTS+ "Door Lock" / "Door Unlock": 2F 2810 / 2F 2811). A request from the tablet runs
 it as a short sequence over the normal link - nothing is paused, so cruise never sees a gap:
   extended session (10 03) -> 0.1 s -> lock / unlock on -> answer-back (horn chirp by default: one for lock, two for
-  unlock) -> 1 s after "on": back to the module -> 0.1 s -> default session (10 01)
+  unlock; StarLock can set how many, how long and how far apart) -> 1 s after "on": back to the module -> 0.1 s after
+  the last beep (at least): default session (10 01)
 The wireless buzzer (2F 284A) is allowed too, but on the Sienna it doesn't stop on "return control" - it sounds until
 the session ends, so its beeps merge into one long one; the horn is what StarLock offers.
 Only started in Park and standing still with no gas (Panda safety checks stationary + no gas again). If that stops
@@ -36,13 +37,52 @@ SOUNDS = ("buzzer", "horn", "none")
 STEP_ON, STEP_OFF, STEP_DEFAULT = 10, 110, 120
 NO_ANSWER_FRAMES = 30   # 0.3 s without the module's reply to "on": answered as sent but unconfirmed
 BEEPS = {"buzzer": ((20, 35), (50, 65)), "horn": ((20, 28), (45, 53)), "none": ()}
+# StarLock can set its own pattern per lock / unlock (see parse_pattern); it starts at the same frame as the default
+BEEP_START = 20
+PATTERN_LIMITS = {"n": (1, 5), "on": (3, 100), "gap": (5, 100)}
+UDS_TESTER_PRESENT = b"\x40\x02\x3e\x00\x00\x00\x00\x00"
+KEEPALIVE = 150
 
 
-def schedule(cmd, sound):
-  """{frame: (action, output)} for one request; action "on" / "off" / "ext" / "default"."""
-  plan = {0: ("ext", None), STEP_ON: ("on", cmd), STEP_OFF: ("off", cmd), STEP_DEFAULT: ("default", None)}
-  for on, off in BEEPS[sound][:1 if cmd == "lock" else 2]:
-    plan[on], plan[off] = ("on", sound), ("off", sound)
+def parse_pattern(text):
+  """StarLock's own horn pattern, "2x8x17": beeps x frames on x frames between (100 Hz); None if malformed or out of
+  range. 1-5 beeps of 0.03-1 s, 0.05-1 s apart."""
+  try:
+    n, on, gap = (int(v) for v in text.split("x"))
+  except ValueError:
+    return None
+  if not (PATTERN_LIMITS["n"][0] <= n <= PATTERN_LIMITS["n"][1] and PATTERN_LIMITS["on"][0] <= on <= PATTERN_LIMITS["on"][1]
+          and PATTERN_LIMITS["gap"][0] <= gap <= PATTERN_LIMITS["gap"][1]):
+    return None
+  return n, on, gap
+
+
+def schedule(cmd, sound, pattern=None):
+  """{frame: (action, output)} for one request; action "on" / "off" / "ext" / "tp" / "default". One output per frame:
+  anything landing on a taken frame moves to the next free one. A long horn pattern gets a tester present every 1.5 s
+  so the module keeps the session."""
+  if sound == "none":
+    beeps = ()
+  elif pattern is None:
+    beeps = BEEPS[sound][:1 if cmd == "lock" else 2]
+  else:
+    n, on, gap = pattern
+    beeps = tuple((BEEP_START + i * (on + gap), BEEP_START + i * (on + gap) + on) for i in range(n))
+  events = [(0, "ext", None), (STEP_ON, "on", cmd), (STEP_OFF, "off", cmd)]
+  for on, off in beeps:
+    events += [(on, "on", sound), (off, "off", sound)]
+  plan = {}
+
+  def put(frame, action, out):
+    while frame in plan:
+      frame += 1
+    plan[frame] = (action, out)
+
+  for frame, action, out in sorted(events, key=lambda e: e[0]):
+    put(frame, action, out)
+  for frame in range(KEEPALIVE, max(plan), KEEPALIVE):
+    put(frame, "tp", None)
+  put(max(STEP_DEFAULT, max(plan) + 10), "default", None)
   return plan
 
 
@@ -50,7 +90,8 @@ class DoorLocks:
   def __init__(self):
     self.lock = self.unlock = False
     self.previous_gear = None
-    # StarView: "lock" / "unlock" (+ " horn" (default) / " buzzer" / " none") asked for from the tablet or phone;
+    # StarView: "lock" / "unlock" (+ " horn" (default) / " buzzer" / " none", + optional pattern " 2x8x17") asked for
+    # from the tablet or phone;
     # manual_result says what happened to it
     self.manual = None
     self.manual_result = ""
@@ -109,6 +150,8 @@ class DoorLocks:
     action, out = s["plan"].get(n, (None, None))
     if action == "ext":
       return UDS_EXTENDED
+    if action == "tp":
+      return UDS_TESTER_PRESENT
     if action == "on":
       s["held"].append(out)
       if out == s["cmd"]:
@@ -124,14 +167,16 @@ class DoorLocks:
   def update(self, state):
     manual, self.manual = self.manual, None
     if manual is not None:
-      cmd, _, sound = manual.partition(" ")
-      sound = sound or "horn"
-      why = ("bad request" if cmd not in ("lock", "unlock") or sound not in SOUNDS else
+      parts = manual.split(" ")
+      cmd, sound = parts[0], (parts[1] if len(parts) > 1 else "horn")
+      pattern = parse_pattern(parts[2]) if len(parts) == 3 else None
+      why = ("bad request" if cmd not in ("lock", "unlock") or sound not in SOUNDS or len(parts) > 3 or
+             (len(parts) == 3 and pattern is None) else
              "busy" if self.sequence is not None else self._blocker(state))
       if why:
         self.manual_result = f"{cmd}: not sent ({why})"
       else:
-        self.sequence = {"cmd": cmd, "plan": schedule(cmd, sound), "n": 0, "held": [], "aborted": ""}
+        self.sequence = {"cmd": cmd, "plan": schedule(cmd, sound, pattern), "n": 0, "held": [], "aborted": ""}
     if self.sequence is not None:
       self.previous_gear = state.gearShifter
       return self._step(self._blocker(state))

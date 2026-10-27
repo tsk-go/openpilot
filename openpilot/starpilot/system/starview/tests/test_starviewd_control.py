@@ -469,15 +469,24 @@ def test_door_asks_card_and_reports_its_answer(tmp_path, monkeypatch):
   monkeypatch.setattr(starviewd, "DOOR_REQUEST", str(req))
   monkeypatch.setattr(starviewd, "DOOR_RESULT", str(res))
   hub = make_hub(onroad=True, started=True)
+  seen = []
   def card():
     for _ in range(50):
       if req.exists():
-        assert req.read_text() == "lock horn"
+        seen.append(req.read_text())
         req.unlink()
         res.write_text(json.dumps({"result": "lock: confirmed", "time": tm.time()}))
         return
       tm.sleep(0.02)
   th.Thread(target=card).start()
   assert hub.control({"action": "door", "cmd": "lock"}) == {"ok": True, "result": "lock: confirmed"}
+  assert seen == ["lock horn"]
+  # StarLock's horn pattern, in ms, goes to card in 10 ms frames
+  th.Thread(target=card).start()
+  assert hub.control({"action": "door", "cmd": "lock", "beeps": [3, 150, 300]})["ok"]
+  assert seen[-1] == "lock horn 3x15x30"
+  assert hub.control({"action": "door", "cmd": "lock", "beeps": [9, 150, 300]})["error"] == "bad horn pattern"
+  assert hub.control({"action": "door", "cmd": "lock", "beeps": [2, 5000, 300]})["error"] == "bad horn pattern"
+  assert hub.control({"action": "door", "cmd": "lock", "beeps": {"n": 2}})["error"] == "bad horn pattern"
   assert not hub.control({"action": "door", "cmd": "open"})["ok"]
   assert not make_hub(onroad=False, started=False).control({"action": "door", "cmd": "lock"})["ok"]
