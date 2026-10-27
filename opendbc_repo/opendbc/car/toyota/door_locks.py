@@ -34,6 +34,7 @@ SOUNDS = ("buzzer", "horn", "none")
 # controller frames (100 Hz) after the request: the door output, then the answer-back - one beep for lock, two for
 # unlock (buzzer 0.15 s each, horn a 0.08 s chirp) - then the door goes back to the module and the session ends
 STEP_ON, STEP_OFF, STEP_DEFAULT = 10, 110, 120
+NO_ANSWER_FRAMES = 30   # 0.3 s without the module's reply to "on": answered as sent but unconfirmed
 BEEPS = {"buzzer": ((20, 35), (50, 65)), "horn": ((20, 28), (45, 53)), "none": ()}
 
 
@@ -69,9 +70,24 @@ class DoorLocks:
       return "car sensors not ready"
     return ""
 
+  def response(self, dat: bytes):
+    """The Main Body module's reply on 0x758 (card hands these over only while a request runs): its "done" to the door
+    output (6F 28 1x 03) is the answer - the car itself confirming it took the lock / unlock."""
+    s = self.sequence
+    if s is None or s.get("on_at") is None or s.get("answered") or len(dat) < 5 or dat[0] != 0x40:
+      return
+    did = 0x10 if s["cmd"] == "lock" else 0x11
+    if dat[2] == 0x6F and dat[3] == 0x28 and dat[4] == did and (len(dat) < 6 or dat[5] == 0x03):
+      s["answered"] = s["final"] = True
+      self.manual_result = f"{s['cmd']}: confirmed"
+    elif dat[2] == 0x7F and dat[3] == 0x2F:
+      s["answered"] = s["final"] = True
+      self.manual_result = f"{s['cmd']}: refused by the car (code {dat[4]:02X})"
+      s["aborted"] = s["aborted"] or "refused by the car"
+
   def _finish(self):
     s, self.sequence = self.sequence, None
-    if s["aborted"]:
+    if s["aborted"] and not s.get("final"):       # the car's own answer stands; otherwise say why it stopped
       self.manual_result = f"{s['cmd']}: stopped ({s['aborted']})"
     return UDS_DEFAULT
 
@@ -87,13 +103,16 @@ class DoorLocks:
       return self._finish()
     n = s["n"]
     s["n"] += 1
+    if s.get("on_at") is not None and not s.get("answered") and n - s["on_at"] >= NO_ANSWER_FRAMES:
+      s["answered"] = True
+      self.manual_result = f"{s['cmd']}: sent, no answer from the car"
     action, out = s["plan"].get(n, (None, None))
     if action == "ext":
       return UDS_EXTENDED
     if action == "on":
       s["held"].append(out)
       if out == s["cmd"]:
-        self.manual_result = f"{out}: sent"     # the doors move now: answer without waiting for the hand-back
+        s["on_at"] = n                          # the answer is the module's reply to this (see response())
       return UDS_ON[out]
     if action == "off":
       s["held"].remove(out)

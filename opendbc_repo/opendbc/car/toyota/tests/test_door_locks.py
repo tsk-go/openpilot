@@ -82,7 +82,7 @@ def test_tablet_lock_runs_the_uds_active_test_in_park():
   controller.door_locks.manual = "lock buzzer"
   assert door_frames(controller, command, state, 140) == {0: UDS_EXTENDED, 10: UDS_ON["lock"], 20: UDS_ON["buzzer"],
                                                           35: UDS_OFF["buzzer"], 110: UDS_OFF["lock"], 120: UDS_DEFAULT}
-  assert controller.door_locks.manual_result == "lock: sent"
+  assert controller.door_locks.manual_result == "lock: sent, no answer from the car"   # nobody replied in this test
   controller.door_locks.manual = "unlock buzzer"
   assert door_frames(controller, command, state, 140) == {0: UDS_EXTENDED, 10: UDS_ON["unlock"], 20: UDS_ON["buzzer"],
                                                           35: UDS_OFF["buzzer"], 50: UDS_ON["buzzer"], 65: UDS_OFF["buzzer"],
@@ -118,14 +118,32 @@ def test_tablet_request_is_refused_out_of_park_moving_or_on_gas(fault, why):
   assert controller.door_locks.manual_result == f"lock: not sent ({why})"
 
 
-def test_answer_is_ready_as_soon_as_the_doors_move():
+def test_answer_is_the_cars_own_confirmation():
   _, controller, command, state = setup_hold(enabled=False)
   state.out.gearShifter = Gear.park
   step_hold(controller, command, state)
   controller.door_locks.manual = "unlock"
   door_frames(controller, command, state, 11)        # extended session, then unlock on at frame 10
-  assert controller.door_locks.manual_result == "unlock: sent"
+  assert controller.door_locks.manual_result == ""   # nothing until the car answers
+  controller.door_locks.response(b"\x40\x05\x6f\x28\x10\x03\x01\x00")   # a reply to lock, not this unlock
+  controller.door_locks.response(b"\x40\x05\x6f\x28\x02\x03\x01\x00")   # the horn's reply
+  assert controller.door_locks.manual_result == ""
+  controller.door_locks.response(b"\x40\x05\x6f\x28\x11\x03\x01\x00")   # the body module: unlock done
+  assert controller.door_locks.manual_result == "unlock: confirmed"
   assert controller.door_locks.sequence is not None  # the hand-back still follows
+  door_frames(controller, command, state, 130)
+  assert controller.door_locks.manual_result == "unlock: confirmed"
+
+
+def test_car_refusing_is_reported_and_handed_back():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = "lock none"
+  door_frames(controller, command, state, 11)
+  controller.door_locks.response(b"\x40\x03\x7f\x2f\x22\x00\x00\x00")   # conditions not correct
+  assert controller.door_locks.manual_result == "lock: refused by the car (code 22)"
+  assert door_frames(controller, command, state, 5) == {0: UDS_OFF["lock"], 1: UDS_DEFAULT}
 
 
 

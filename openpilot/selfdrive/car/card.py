@@ -551,6 +551,14 @@ class Car:
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
+    # StarView door request running (about a second, rarely): hand the body module's replies to it, so the answer is the
+    # car's own confirmation. Nothing is scanned otherwise.
+    door_locks = getattr(self.CI.CC, 'door_locks', None) if self.CI.CC is not None else None
+    if door_locks is not None and getattr(door_locks, 'sequence', None) is not None:
+      for _, frames in can_list:
+        for address, dat, src in frames:
+          if address == 0x758 and src == 0:
+            door_locks.response(dat)
     from openpilot.starpilot.car.gm.aol import f1_conventional_lateral_owner
     cancel_boot_ns = (time.clock_gettime_ns(time.CLOCK_BOOTTIME)
                       if (getattr(self.CI.CS, 'ev6_aol_source_healthy', False) or

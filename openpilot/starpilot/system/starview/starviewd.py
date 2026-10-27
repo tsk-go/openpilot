@@ -1600,7 +1600,8 @@ class Hub:
         continue
       if float(r.get("time", 0)) >= t0 - 0.05:
         result = str(r.get("result", ""))
-        return {"ok": result.endswith(": sent"), "result": result, **({} if result.endswith(": sent") else {"error": result})}
+        ok = result.endswith(": confirmed")       # the car's own body module said it did it
+        return {"ok": ok, "result": result, **({} if ok else {"error": result})}
     try:
       os.unlink(DOOR_REQUEST)
     except OSError:

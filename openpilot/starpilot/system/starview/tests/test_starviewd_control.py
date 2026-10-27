@@ -474,10 +474,10 @@ def test_door_asks_card_and_reports_its_answer(tmp_path, monkeypatch):
       if req.exists():
         assert req.read_text() == "lock horn"
         req.unlink()
-        res.write_text(json.dumps({"result": "lock: sent", "time": tm.time()}))
+        res.write_text(json.dumps({"result": "lock: confirmed", "time": tm.time()}))
         return
       tm.sleep(0.02)
   th.Thread(target=card).start()
-  assert hub.control({"action": "door", "cmd": "lock"}) == {"ok": True, "result": "lock: sent"}
+  assert hub.control({"action": "door", "cmd": "lock"}) == {"ok": True, "result": "lock: confirmed"}
   assert not hub.control({"action": "door", "cmd": "open"})["ok"]
   assert not make_hub(onroad=False, started=False).control({"action": "door", "cmd": "lock"})["ok"]
