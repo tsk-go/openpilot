@@ -173,6 +173,16 @@ Paths are under `openpilot/` unless noted.
     tablet. Pausing pandad for the same test (TechStream's way) faulted the Sienna's cruise onroad, so never do that.
     Rebuilt panda firmware ships with it (see "Panda firmware"). Touches upstream card.py and door_locks.py: re-check
     after each sync. Confirmed on the car Oct 27 (both lock and unlock, every step answered positively).
+    Patch 47: the answer-back - the horn (2F 2802) chirps once for lock, twice for unlock, inside the same session;
+    the request can say "horn" (default), "none" or "buzzer" (the wireless buzzer 2F 284A is allowed too, but on the
+    Sienna it ignores "return control" and sounds until the session ends). Panda safety allows those exact on frames
+    behind the stationary gate and their off frames always. The answer goes back as soon as the doors move; card checks
+    for a request 4x a second (20x while one runs).
+30. StarLock, the phone's Lock / Unlock (patch 47): `starview/ble_door.py` advertises one Bluetooth LE GATT service
+    (bluez over dbus-python, GLib loop via ctypes) only while openpilot is started; same pairing key and proofs as the
+    tablet (pairing.py, peer "ble"), then starviewd's `door` action. The phone also tries Wi-Fi (starviewd /hello,
+    /auth, `door` over /data) at the same time; whichever reaches the comma first does it. Off with
+    /data/starview/no_ble_door. The app's source is in the StarView repo (module `starlock`).
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

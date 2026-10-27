@@ -476,14 +476,16 @@ class Car:
     return bool(admitted), settings
 
   def poll_door_request(self) -> None:
-    """StarView: a lock / unlock from the tablet (starviewd writes DOOR_REQUEST). Checked twice a second - one stat()
+    """StarView: a lock / unlock from the tablet or phone (starviewd writes DOOR_REQUEST). Checked 4x a second - one stat()
     when nothing is asked - and handed to the Toyota controller, which sends it once over the normal link (no pandad
     pause, so cruise never sees a gap). What happened goes to DOOR_RESULT for the tablet."""
     self._door_poll = getattr(self, '_door_poll', 0) + 1
-    if self._door_poll % 50:
-      return
     door_locks = getattr(self.CI.CC, 'door_locks', None) if self.CI.CC is not None else None
     if door_locks is None:
+      return
+    # 4x a second while idle; 20x while a request runs, so the answer is back as soon as the doors move
+    busy = door_locks.sequence is not None or door_locks.manual is not None or bool(door_locks.manual_result)
+    if self._door_poll % (5 if busy else 25):
       return
     if door_locks.manual_result:
       try:
@@ -503,7 +505,7 @@ class Car:
       os.unlink(DOOR_REQUEST)
     except OSError:
       return
-    if cmd in ('lock', 'unlock') and 0 <= age < 5:
+    if cmd.split(' ')[0] in ('lock', 'unlock') and len(cmd) <= 16 and 0 <= age < 5:   # "lock" / "unlock horn" ...
       door_locks.manual = cmd
 
   def refresh_slc_configuration(self, now_ns: int) -> None:

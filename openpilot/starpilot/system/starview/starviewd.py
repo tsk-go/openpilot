@@ -1575,18 +1575,18 @@ class Hub:
     return {"ok": True}
 
   def _door(self, req: dict) -> dict:
-    """The tablet's Lock / Unlock: card hands it to the Toyota controller, which sends StarPilot's own door command
-    (door_locks.py, the one its lock-on-shift uses) once over the normal link - nothing paused, so no cruise fault.
+    """The tablet's / phone's Lock / Unlock: card hands it to the Toyota controller, which runs the door active test
+    (door_locks.py) over the normal link - nothing paused, so no cruise fault. sound: "horn" (default), "none", "buzzer".
     Only in Park and standing still; Panda safety checks stationary + no gas again. Waits up to 3 s for card's answer."""
-    cmd = str(req.get("cmd", ""))
-    if cmd not in ("lock", "unlock"):
+    cmd, sound = str(req.get("cmd", "")), str(req.get("sound") or "horn")
+    if cmd not in ("lock", "unlock") or sound not in ("buzzer", "horn", "none"):
       return {"ok": False, "error": "bad door command"}
     if not self.started:
       return {"ok": False, "error": "Lock / unlock works while openpilot is on (car on, in Park)."}
     t0 = time.time()  # noqa: TID251  compared with card's wall-clock answer
     try:
       with open(DOOR_REQUEST + ".tmp", "w") as f:
-        f.write(cmd)
+        f.write(f"{cmd} {sound}")
       os.replace(DOOR_REQUEST + ".tmp", DOOR_REQUEST)
     except OSError as e:
       return {"ok": False, "error": f"couldn't ask openpilot: {e}"}
@@ -2883,6 +2883,21 @@ TECHSTREAM_ROUTES = [
 ]
 
 
+BLE_DOOR_OFF = "/data/starview/no_ble_door"
+
+
+def start_ble_door(hub):
+  """StarLock on the phone over Bluetooth (ble_door.py): advertised only while openpilot is started. Off with
+  /data/starview/no_ble_door. Without dbus / bluez it just doesn't start - Wi-Fi keeps working."""
+  if os.path.exists(BLE_DOOR_OFF):
+    return
+  try:
+    from openpilot.starpilot.system.starview import ble_door
+    ble_door.start(hub.ops.dongle_id, lambda cmd, sound: hub._door({"cmd": cmd, "sound": sound}), lambda: hub.started)
+  except Exception as e:
+    cloudlog.warning(f"starview: ble door: {e}")
+
+
 def main():
   import atexit
   atexit.register(lambda: os.path.exists(Hub.TABLET_FLAG) and os.unlink(Hub.TABLET_FLAG))
@@ -2895,6 +2910,7 @@ def main():
   threading.Thread(target=tablet_power_thread, name="starview-tabletpower", daemon=True).start()
   threading.Thread(target=log_archive_thread, name="starview-logarchive", daemon=True).start()
   threading.Thread(target=tablet_flag_thread, args=(app["hub"],), name="starview-tabletflag", daemon=True).start()
+  start_ble_door(app["hub"])
   app.add_routes([
     web.get("/", http_index),
     web.get("/status", http_status),
