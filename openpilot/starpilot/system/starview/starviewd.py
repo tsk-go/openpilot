@@ -1574,6 +1574,39 @@ class Hub:
       sock.close()
     return {"ok": True}
 
+  def _door(self, req: dict) -> dict:
+    """The tablet's Lock / Unlock: card hands it to the Toyota controller, which sends StarPilot's own door command
+    (door_locks.py, the one its lock-on-shift uses) once over the normal link - nothing paused, so no cruise fault.
+    Only in Park and standing still; Panda safety checks stationary + no gas again. Waits up to 3 s for card's answer."""
+    cmd = str(req.get("cmd", ""))
+    if cmd not in ("lock", "unlock"):
+      return {"ok": False, "error": "bad door command"}
+    if not self.started:
+      return {"ok": False, "error": "Lock / unlock works while openpilot is on (car on, in Park)."}
+    t0 = time.time()  # noqa: TID251  compared with card's wall-clock answer
+    try:
+      with open(DOOR_REQUEST + ".tmp", "w") as f:
+        f.write(cmd)
+      os.replace(DOOR_REQUEST + ".tmp", DOOR_REQUEST)
+    except OSError as e:
+      return {"ok": False, "error": f"couldn't ask openpilot: {e}"}
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+      time.sleep(0.1)
+      try:
+        with open(DOOR_RESULT) as f:
+          r = json.load(f)
+      except (OSError, ValueError):
+        continue
+      if float(r.get("time", 0)) >= t0 - 0.05:
+        result = str(r.get("result", ""))
+        return {"ok": result.endswith(": sent"), "result": result, **({} if result.endswith(": sent") else {"error": result})}
+    try:
+      os.unlink(DOOR_REQUEST)
+    except OSError:
+      pass
+    return {"ok": False, "error": "openpilot didn't take it (needs the comma update with the door button)"}
+
   def control(self, req: dict) -> dict:
     """Allow-listed writes. Returns a JSON-able ack."""
     act = req.get("action")
@@ -1822,6 +1855,8 @@ class Hub:
         return drive_state_request(self.params, {"default": "auto"}.get(mode, mode))
       if act == "slc_action":
         return self._slc_action(req)
+      if act == "door":
+        return self._door(req)
       return {"ok": False, "error": f"unknown action {act}"}
     except Exception as e:
       cloudlog.exception("starview: control")
@@ -2715,6 +2750,9 @@ def tablet_flag_thread(hub):
     time.sleep(1.0)
 
 
+# the tablet's Lock / Unlock, answered by card (selfdrive/car/card.py reads the request twice a second)
+DOOR_REQUEST = "/dev/shm/starview_door_request"
+DOOR_RESULT = "/dev/shm/starview_door_result"
 LOG_ARCHIVE_PROGRESS = "/dev/shm/starview_logarchive_progress.json"
 LOG_ARCHIVE_LAST: dict = {}   # the auto copy's last start: when, exit code, last line of output (for the storage page)
 
