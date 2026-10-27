@@ -131,6 +131,10 @@ Paths are under `openpilot/` unless noted.
     publishes it. Only while started. Not imported from there (it pulls in the onroad UI); `SLC_ACTION_KINDS` /
     `SLC_ACTION_SOCKET` are checked against it by a test. UI_PARAMS_PERSISTENT also carries the PIPPreview* settings so the
     tablet draws Big UI's cabin-camera side views itself (StarView 2.74).
+28. Log archive follows StarPilot 7's drive state (patch 44): `starview/logarchive.py` (copies finished drives to the
+    EXTDATA USB stick while parked) read only `IsOnroad`, which 7.0 no longer sets, so it thought the car was always parked
+    and a copy kept running into a drive, flooding the USB link the eGPU shares (Chestnut fell back). It now goes by
+    `IsOffroad` (unknown = car on), stops within 1 MB when the car starts, and copies at most 20 MB/s.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
