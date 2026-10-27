@@ -6,7 +6,8 @@ Why: openpilot must never write its live logs to a USB stick. When a stick stall
 gets I/O errors and crashes, which trips "Process Not Running" / "Communication Issue" take-over alerts. So loggerd
 always records to internal storage, and this script mirrors the finished segments onto the stick afterwards:
 
-  * runs only while offroad (IsOnroad != 1) and stops within a file if the car turns on
+  * runs only while offroad (IsOffroad = 1; unknown counts as the car on) and stops within 1 MB if the car turns on
+  * copies at most 20 MB/s: the stick shares the comma's one USB link with the eGPU
   * mounts the EXTDATA stick on its own folder (/data/extstorage/mnt), copies, syncs and UNMOUNTS again
   * never deletes anything on internal storage (openpilot's deleter keeps managing that, uploads keep working)
   * when the stick gets full, the oldest drives ON THE STICK are removed (keeps ~10 % free)
@@ -40,13 +41,28 @@ def sh(cmd, timeout=120):
   return p.returncode, (p.stdout + p.stderr).strip()
 
 
-def onroad():
-  for d in ("/data/params/d", "/dev/shm/params/d"):
+PARAMS_DIRS = ("/data/params/d", "/dev/shm/params/d")
+MAX_BYTES_PER_S = 20 * 1024 * 1024   # the stick shares the comma's one USB link with the eGPU: never flood it
+
+
+def _flag(name):
+  """A bool param: True / False, or None when it can't be read."""
+  for d in PARAMS_DIRS:
     try:
-      return open(f"{d}/IsOnroad", "rb").read().strip() in (b"1", b"\x01")
+      return open(f"{d}/{name}", "rb").read().strip() in (b"1", b"\x01")
+    except FileNotFoundError:
+      continue
     except Exception:
-      pass
-  return False
+      return None
+  return None
+
+
+def onroad():
+  """The car is on, or we can't tell: then the stick is not touched.
+  StarPilot 7 sets only IsOffroad (its IsOnroad no longer exists, so reading IsOnroad alone said 'parked' while driving)."""
+  if _flag("IsOnroad"):
+    return True
+  return _flag("IsOffroad") is not True
 
 
 def stick():
@@ -130,11 +146,16 @@ def copy_all(st):
       os.makedirs(dp, exist_ok=True)
       tmp = d + ".part"
       with open(s, "rb") as fi, open(tmp, "wb") as fo:
+        t0, sent = time.monotonic(), 0
         while True:
           b = fi.read(1024 * 1024)
           if not b:
             break
           fo.write(b)
+          sent += len(b)
+          ahead = sent / MAX_BYTES_PER_S - (time.monotonic() - t0)
+          if ahead > 0:
+            time.sleep(ahead)
           if onroad():
             break
       if onroad():
