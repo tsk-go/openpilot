@@ -397,7 +397,7 @@ def test_door_asks_card_and_reports_its_answer(tmp_path, monkeypatch):
   def card():
     for _ in range(50):
       if req.exists():
-        assert req.read_text() == "lock"
+        assert req.read_text() == "lock horn"
         req.unlink()
         res.write_text(json.dumps({"result": "lock: sent", "time": tm.time()}))
         return

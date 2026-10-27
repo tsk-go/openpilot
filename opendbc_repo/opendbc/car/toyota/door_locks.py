@@ -6,7 +6,10 @@ This owner never changes Panda safety mode or sends diagnostics directly.
 StarView: the 4th-gen Sienna's Main Body module refuses that KWP command (7F 30 11, service not supported) and takes
 Toyota's UDS active test instead (GTS+ "Door Lock" / "Door Unlock": 2F 2810 / 2F 2811). A request from the tablet runs
 it as a short sequence over the normal link - nothing is paused, so cruise never sees a gap:
-  extended session (10 03) -> 0.1 s -> lock / unlock on -> 1 s -> back to the module -> 0.1 s -> default session (10 01)
+  extended session (10 03) -> 0.1 s -> lock / unlock on -> answer-back (horn chirp by default: one for lock, two for
+  unlock) -> 1 s after "on": back to the module -> 0.1 s -> default session (10 01)
+The wireless buzzer (2F 284A) is allowed too, but on the Sienna it doesn't stop on "return control" - it sounds until
+the session ends, so its beeps merge into one long one; the horn is what StarLock offers.
 Only started in Park and standing still with no gas (Panda safety checks stationary + no gas again). If that stops
 being true while it runs, control goes straight back to the module.
 """
@@ -23,20 +26,34 @@ Gear = CarState.GearShifter
 # UDS active test, Main Body (0x750 sub-address 0x40); padded with 0x00 like opendbc's ISO-TP
 UDS_EXTENDED = b"\x40\x02\x10\x03\x00\x00\x00\x00"
 UDS_DEFAULT = b"\x40\x02\x10\x01\x00\x00\x00\x00"
-UDS_ON = {"lock": b"\x40\x06\x2f\x28\x10\x03\x01\x80", "unlock": b"\x40\x06\x2f\x28\x11\x03\x01\x80"}
-UDS_OFF = {"lock": b"\x40\x05\x2f\x28\x10\x00\x80\x00", "unlock": b"\x40\x05\x2f\x28\x11\x00\x80\x00"}
-# controller frames (100 Hz) after the request
+UDS_ON = {"lock": b"\x40\x06\x2f\x28\x10\x03\x01\x80", "unlock": b"\x40\x06\x2f\x28\x11\x03\x01\x80",
+          "buzzer": b"\x40\x06\x2f\x28\x4a\x03\x01\x80", "horn": b"\x40\x06\x2f\x28\x02\x03\x01\x80"}
+UDS_OFF = {"lock": b"\x40\x05\x2f\x28\x10\x00\x80\x00", "unlock": b"\x40\x05\x2f\x28\x11\x00\x80\x00",
+           "buzzer": b"\x40\x05\x2f\x28\x4a\x00\x80\x00", "horn": b"\x40\x05\x2f\x28\x02\x00\x80\x00"}
+SOUNDS = ("buzzer", "horn", "none")
+# controller frames (100 Hz) after the request: the door output, then the answer-back - one beep for lock, two for
+# unlock (buzzer 0.15 s each, horn a 0.08 s chirp) - then the door goes back to the module and the session ends
 STEP_ON, STEP_OFF, STEP_DEFAULT = 10, 110, 120
+BEEPS = {"buzzer": ((20, 35), (50, 65)), "horn": ((20, 28), (45, 53)), "none": ()}
+
+
+def schedule(cmd, sound):
+  """{frame: (action, output)} for one request; action "on" / "off" / "ext" / "default"."""
+  plan = {0: ("ext", None), STEP_ON: ("on", cmd), STEP_OFF: ("off", cmd), STEP_DEFAULT: ("default", None)}
+  for on, off in BEEPS[sound][:1 if cmd == "lock" else 2]:
+    plan[on], plan[off] = ("on", sound), ("off", sound)
+  return plan
 
 
 class DoorLocks:
   def __init__(self):
     self.lock = self.unlock = False
     self.previous_gear = None
-    # StarView: "lock" / "unlock" asked for from the tablet; manual_result says what happened to it
+    # StarView: "lock" / "unlock" (+ " horn" (default) / " buzzer" / " none") asked for from the tablet or phone;
+    # manual_result says what happened to it
     self.manual = None
     self.manual_result = ""
-    self.sequence = None   # {"cmd", "n", "aborted"} while the UDS active test runs
+    self.sequence = None   # while the UDS active test runs: {"cmd", "plan", "n", "held", "aborted"}
 
   @staticmethod
   def _blocker(state):
@@ -52,34 +69,50 @@ class DoorLocks:
       return "car sensors not ready"
     return ""
 
+  def _finish(self):
+    s, self.sequence = self.sequence, None
+    if s["aborted"]:
+      self.manual_result = f"{s['cmd']}: stopped ({s['aborted']})"
+    return UDS_DEFAULT
+
   def _step(self, why):
     s = self.sequence
-    if why and s["n"] < STEP_ON:              # nothing taken over yet: just leave the session
-      s["n"], s["aborted"] = STEP_DEFAULT, why
-    elif why and s["n"] < STEP_OFF:           # holding the output: give it back now
-      s["n"], s["aborted"] = STEP_OFF, why
+    if why and not s["aborted"]:
+      s["aborted"] = why
+    if s["aborted"]:
+      # hand everything back right away, one output per frame (the buzzer / horn first), then leave the session
+      if s["held"]:
+        out = s["held"].pop()
+        return UDS_OFF[out]
+      return self._finish()
     n = s["n"]
     s["n"] += 1
-    if n == 0:
+    action, out = s["plan"].get(n, (None, None))
+    if action == "ext":
       return UDS_EXTENDED
-    if n == STEP_ON:
-      return UDS_ON[s["cmd"]]
-    if n == STEP_OFF:
-      return UDS_OFF[s["cmd"]]
-    if n == STEP_DEFAULT:
-      self.sequence = None
-      self.manual_result = f"{s['cmd']}: " + (f"stopped ({s['aborted']})" if s["aborted"] else "sent")
-      return UDS_DEFAULT
+    if action == "on":
+      s["held"].append(out)
+      if out == s["cmd"]:
+        self.manual_result = f"{out}: sent"     # the doors move now: answer without waiting for the hand-back
+      return UDS_ON[out]
+    if action == "off":
+      s["held"].remove(out)
+      return UDS_OFF[out]
+    if action == "default":
+      return self._finish()
     return None
 
   def update(self, state):
     manual, self.manual = self.manual, None
     if manual is not None:
-      why = "busy" if self.sequence is not None else self._blocker(state)
+      cmd, _, sound = manual.partition(" ")
+      sound = sound or "horn"
+      why = ("bad request" if cmd not in ("lock", "unlock") or sound not in SOUNDS else
+             "busy" if self.sequence is not None else self._blocker(state))
       if why:
-        self.manual_result = f"{manual}: not sent ({why})"
+        self.manual_result = f"{cmd}: not sent ({why})"
       else:
-        self.sequence = {"cmd": manual, "n": 0, "aborted": ""}
+        self.sequence = {"cmd": cmd, "plan": schedule(cmd, sound), "n": 0, "held": [], "aborted": ""}
     if self.sequence is not None:
       self.previous_gear = state.gearShifter
       return self._step(self._blocker(state))

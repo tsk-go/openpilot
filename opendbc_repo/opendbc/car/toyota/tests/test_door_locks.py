@@ -79,11 +79,14 @@ def test_tablet_lock_runs_the_uds_active_test_in_park():
   _, controller, command, state = setup_hold(enabled=False)
   state.out.gearShifter = Gear.park
   step_hold(controller, command, state)
-  controller.door_locks.manual = "lock"
-  assert door_frames(controller, command, state, 140) == {0: UDS_EXTENDED, 10: UDS_ON["lock"], 110: UDS_OFF["lock"], 120: UDS_DEFAULT}
+  controller.door_locks.manual = "lock buzzer"
+  assert door_frames(controller, command, state, 140) == {0: UDS_EXTENDED, 10: UDS_ON["lock"], 20: UDS_ON["buzzer"],
+                                                          35: UDS_OFF["buzzer"], 110: UDS_OFF["lock"], 120: UDS_DEFAULT}
   assert controller.door_locks.manual_result == "lock: sent"
-  controller.door_locks.manual = "unlock"
-  assert door_frames(controller, command, state, 140)[10] == UDS_ON["unlock"]
+  controller.door_locks.manual = "unlock buzzer"
+  assert door_frames(controller, command, state, 140) == {0: UDS_EXTENDED, 10: UDS_ON["unlock"], 20: UDS_ON["buzzer"],
+                                                          35: UDS_OFF["buzzer"], 50: UDS_ON["buzzer"], 65: UDS_OFF["buzzer"],
+                                                          110: UDS_OFF["unlock"], 120: UDS_DEFAULT}
 
 
 def test_tablet_lock_hands_back_at_once_when_the_car_leaves_park():
@@ -92,10 +95,10 @@ def test_tablet_lock_hands_back_at_once_when_the_car_leaves_park():
   step_hold(controller, command, state)
   controller.door_locks.manual = "lock"
   first = door_frames(controller, command, state, 50)
-  assert first == {0: UDS_EXTENDED, 10: UDS_ON["lock"]}
+  assert first == {0: UDS_EXTENDED, 10: UDS_ON["lock"], 20: UDS_ON["horn"], 28: UDS_OFF["horn"]}
   state.out.gearShifter = Gear.drive
   rest = door_frames(controller, command, state, 30)
-  assert rest == {0: UDS_OFF["lock"], 10: UDS_DEFAULT}
+  assert rest == {0: UDS_OFF["lock"], 1: UDS_DEFAULT}
   assert controller.door_locks.manual_result == "lock: stopped (not in Park)"
 
 
@@ -113,3 +116,51 @@ def test_tablet_request_is_refused_out_of_park_moving_or_on_gas(fault, why):
   controller.door_locks.manual = "lock"
   assert door_frames(controller, command, state, 20) == {}
   assert controller.door_locks.manual_result == f"lock: not sent ({why})"
+
+
+def test_answer_is_ready_as_soon_as_the_doors_move():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = "unlock"
+  door_frames(controller, command, state, 11)        # extended session, then unlock on at frame 10
+  assert controller.door_locks.manual_result == "unlock: sent"
+  assert controller.door_locks.sequence is not None  # the hand-back still follows
+
+
+
+@pytest.mark.parametrize('request_, expect', [
+  ("lock horn", {20: "horn", 28: "horn"}),
+  ("unlock horn", {20: "horn", 28: "horn", 45: "horn", 53: "horn"}),
+  ("lock none", {}),
+  ("unlock none", {}),
+])
+def test_sound_choice(request_, expect):
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = request_
+  frames = door_frames(controller, command, state, 140)
+  sound = {n: f for n, f in frames.items() if n not in (0, 10, 110, 120)}
+  assert {n: ("horn" if f in (UDS_ON["horn"], UDS_OFF["horn"]) else f) for n, f in sound.items()} == expect
+  assert all(f != UDS_ON["buzzer"] for f in frames.values())
+
+
+def test_leaving_park_mid_beep_silences_first_then_hands_back():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = "unlock"
+  assert door_frames(controller, command, state, 25)[20] == UDS_ON["horn"]        # the horn is on now
+  state.out.gearShifter = Gear.reverse
+  assert door_frames(controller, command, state, 5) == {0: UDS_OFF["horn"], 1: UDS_OFF["unlock"], 2: UDS_DEFAULT}
+  assert controller.door_locks.manual_result == "unlock: stopped (not in Park)"
+
+
+def test_bad_sound_is_refused():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  step_hold(controller, command, state)
+  controller.door_locks.manual = "lock siren"
+  assert door_frames(controller, command, state, 20) == {}
+  assert controller.door_locks.manual_result == "lock: not sent (bad request)"

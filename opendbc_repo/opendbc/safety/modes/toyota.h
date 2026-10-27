@@ -550,13 +550,18 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
   if (msg->addr == 0x750U) {
     uint64_t payload = GET_BYTES_64_LE(msg, 0, 8);
     // StarView (4th-gen Sienna): its Main Body module refuses the KWP door command (7F 30 11) and takes the UDS
-    // active test instead - extended session, 2F 2810 (lock) / 2F 2811 (unlock) on, then back to the module. Exact
-    // frames only, sub-address 0x40 (Main Body).
+    // active test instead - extended session, 2F 2810 (lock) / 2F 2811 (unlock) on, then back to the module; the
+    // answer-back is the module's own wireless buzzer (2F 284A) or the horn (2F 2802). Exact frames only, sub-address
+    // 0x40 (Main Body).
     bool uds_door_start = (payload == 0x0000000003100240ULL) ||   // 40 02 10 03: extended session
                           (payload == 0x80010310282F0640ULL) ||   // 40 06 2F 28 10 03 01 80: lock on
-                          (payload == 0x80010311282F0640ULL);     // 40 06 2F 28 11 03 01 80: unlock on
+                          (payload == 0x80010311282F0640ULL) ||   // 40 06 2F 28 11 03 01 80: unlock on
+                          (payload == 0x8001034A282F0640ULL) ||   // 40 06 2F 28 4A 03 01 80: wireless buzzer on
+                          (payload == 0x80010302282F0640ULL);     // 40 06 2F 28 02 03 01 80: horn on
     bool uds_door_return = (payload == 0x00800010282F0540ULL) ||  // 40 05 2F 28 10 00 80: lock back to the module
                            (payload == 0x00800011282F0540ULL) ||  // 40 05 2F 28 11 00 80: unlock back to the module
+                           (payload == 0x0080004A282F0540ULL) ||  // 40 05 2F 28 4A 00 80: buzzer back to the module
+                           (payload == 0x00800002282F0540ULL) ||  // 40 05 2F 28 02 00 80: horn back to the module
                            (payload == 0x0000000001100240ULL) ||  // 40 02 10 01: default session
                            (payload == 0x00000000003E0240ULL);    // 40 02 3E 00: tester present
     bool body_command = (payload == 0x0000800011300540ULL) || (payload == 0x0000400011300540ULL) || uds_door_start;
