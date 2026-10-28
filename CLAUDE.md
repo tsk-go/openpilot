@@ -75,6 +75,14 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    normal_update's last stage is "rebooting" and the reboot installs it, but recover_fast_state turns every unfinished
    stage into "Update process restarted before completion". Upstream fixed = normal_update ends with stage "complete"
    (like fast_update does) or recover_fast_state accepts a full update's reboot.
+4. **The comma four restarts all night once it shut down while parked** (patch 50): in
+   `openpilot/system/hardware/power_monitoring.py` `PARKED_OFF_MARKER`, `PARKED_RESTART_SHUTDOWN_S`, `mark_parked_off`,
+   `clear_parked_off` and the `quick` lines of `should_shutdown`; in `hardwared.py` the two calls; the
+   `test_parked_restart_shuts_down_quickly` test. After a parked shutdown the panda's deep sleep wakes on the car's CAN,
+   resets and bootkicks (board init sets BOOT_BOOTKICK), and every such start stayed on for MIN_ON_TIME_S (an hour) on a
+   battery already below the cutoff - 14 restarts in one night (Oct 27). Upstream fixed = a parked wake no longer stays
+   up an hour (the panda stops bootkicking without ignition, or the minimum on time doesn't apply after a parked
+   shutdown).
 
 # Fork history
 
@@ -198,6 +206,8 @@ Paths are under `openpilot/` unless noted.
 14. "Driving Model Lagging" seconds after the big model loads (patches 22, 24): `starpilot/models/warmup.py`; modeld keeps
     ChestnutLoading (no engaging, drops not counted) until 1 s of normal passes, at most 15 s.
 18. A full update shows "failed" after its own reboot (patch 29): `system/updated/updated.py` `recover_fast_state`.
+31. The comma four restarts all night after a parked shutdown (patch 50): a marker in /data/starview from the parked
+    shutdown makes a CAN wake with no drive since shut down again after 2 minutes instead of an hour; a drive clears it.
 
 **No longer carried**
 - Lane Centering with one line (patch 37, with StarView's one-line tile and blue lines): dropped by the owner at the Oct 26

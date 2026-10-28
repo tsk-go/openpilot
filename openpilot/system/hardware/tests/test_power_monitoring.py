@@ -195,3 +195,33 @@ class TestPowerMonitoring(OpenpilotTestCase):
                                        offroad_timestamp,
                                        started_seen), \
                     f"Should shutdown after {DELAY_SHUTDOWN_TIME_S} seconds offroad time"
+
+  def test_parked_restart_shuts_down_quickly(self, mocker):
+    import pathlib
+    import tempfile
+    marker = pathlib.Path(tempfile.mkdtemp()) / "parked_off"
+    self.params.put_bool("DisablePowerDown", False)
+    pm_patch(mocker, "PARKED_OFF_MARKER", str(marker), constant=True)
+    pm_patch(mocker, "HARDWARE.get_current_power_draw", 0)
+    pm = PowerMonitoring()
+    assert not pm.parked_restart
+    pm.mark_parked_off()
+    assert marker.exists()
+
+    # woken by the car's CAN with the car still off: off again after 2 minutes, not after an hour
+    pm = PowerMonitoring()
+    pm.car_battery_capacity_uWh = CAR_BATTERY_CAPACITY_uWh
+    assert pm.parked_restart
+    set_mock_time(100)
+    assert not pm.should_shutdown(False, True, 0, False)
+    set_mock_time(130)
+    assert pm.should_shutdown(False, True, 0, False)
+    assert not pm.should_shutdown(True, True, 0, False)       # ignition: never
+    assert not pm.should_shutdown(False, False, 0, False)     # not in a car: never
+
+    # a drive clears it: back to the normal rules (stays on, good battery, an hour minimum)
+    pm.clear_parked_off()
+    assert not marker.exists()
+    set_mock_time(400)
+    assert not pm.should_shutdown(False, True, 0, True)
+    assert not PowerMonitoring().parked_restart
