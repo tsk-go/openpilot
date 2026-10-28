@@ -72,6 +72,8 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.door_locks = DoorLocks()
+    # StarLock's real lock state: the read-only requests are only for the car they were found on
+    self.door_locks.read_locks = CP.carFingerprint == CAR.TOYOTA_SIENNA_4TH_GEN
     self.reverse_cruise_input = None
     self.prius_filter_input = None
     self.original_prius_sdsu = prius_sdsu.configured(CP) or prius_longitudinal.eps73_status_configured(CP)

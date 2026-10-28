@@ -13,6 +13,12 @@ The wireless buzzer (2F 284A) is allowed too, but on the Sienna it doesn't stop 
 the session ends, so its beeps merge into one long one; the horn is what StarLock offers.
 Only started in Park and standing still with no gas (Panda safety checks stationary + no gas again). If that stops
 being true while it runs, control goes straight back to the module.
+
+StarLock also shows the doors' real lock state: on the 4th-gen Sienna (read_locks) the controller asks the Main Body
+module every 2 s - five read-only requests (UDS 22 10xx, default session), one per frame - and card hands the replies
+on 0x758 back for 0.3 s after each burst. 00 = locked, 01 = unlocked (found on the car Oct 28: driver 101A, passenger
+1019, sliding doors 101B / 101C, back door 101E). No reads while a lock / unlock runs; one 0.5 s after it ends, so the
+new state shows at once. A door that stops answering for 3 bursts shows as unknown.
 """
 
 import math
@@ -42,6 +48,18 @@ BEEP_START = 20
 PATTERN_LIMITS = {"n": (1, 5), "on": (3, 100), "gap": (5, 100)}
 UDS_TESTER_PRESENT = b"\x40\x02\x3e\x00\x00\x00\x00\x00"
 KEEPALIVE = 150
+
+# real lock state (4th-gen Sienna Main Body, UDS 22 10xx): DID low byte -> door
+LOCK_DIDS = {0x1A: "driver", 0x19: "passenger", 0x1B: "slide_1", 0x1C: "slide_2", 0x1E: "back"}
+READ_EVERY = 200        # frames between bursts (2 s)
+READ_LISTEN = 30        # frames after a burst's last request that card keeps handing over 0x758 replies
+READ_AFTER_DOOR = 50    # a lock / unlock just ended: read 0.5 s later
+READ_MISSES = 3         # bursts without an answer before that door shows unknown
+READ_SETTLE = 5         # a lock / unlock asked right after a read waits this many frames for the reply to clear
+
+
+def read_request(did):
+  return bytes([0x40, 0x03, 0x22, 0x10, did, 0x00, 0x00, 0x00])
 
 
 def parse_pattern(text):
@@ -96,6 +114,48 @@ class DoorLocks:
     self.manual = None
     self.manual_result = ""
     self.sequence = None   # while the UDS active test runs: {"cmd", "plan", "n", "held", "aborted"}
+    # real lock state (StarLock): only on the 4th-gen Sienna, whose Main Body module answers these
+    self.read_locks = False
+    self.locks = {name: None for name in LOCK_DIDS.values()}   # "locked" / "unlocked" / None (unknown)
+    self.locks_version = 0     # +1 on every change (card writes the file then)
+    self._tick = 0
+    self._read_next = 0
+    self._read_queue = []
+    self._read_until = -1
+    self._last_read = -READ_SETTLE
+    self._asked = set()
+    self._misses = dict.fromkeys(LOCK_DIDS, 0)
+
+  @property
+  def listening(self):
+    """card hands over the body module's replies (0x758) only while this is true: a lock / unlock running, or 0.3 s
+    after a read burst - about a fifth of the time with the reads on, never otherwise."""
+    return self.sequence is not None or self._tick <= self._read_until
+
+  def _set_lock(self, name, value):
+    if self.locks[name] != value:
+      self.locks[name] = value
+      self.locks_version += 1
+
+  def _read(self, state):
+    """The next read request of the lock state, or None."""
+    if not self.read_locks or not state.canValid or state.canTimeout:
+      return None
+    if not self._read_queue:
+      if self._tick < self._read_next:
+        return None
+      for did in self._asked:          # no answer to the last burst
+        self._misses[did] += 1
+        if self._misses[did] >= READ_MISSES:
+          self._set_lock(LOCK_DIDS[did], None)
+      self._asked = set()
+      self._read_queue = list(LOCK_DIDS)
+      self._read_next = self._tick + READ_EVERY
+    did = self._read_queue.pop(0)
+    self._asked.add(did)
+    self._last_read = self._tick
+    self._read_until = self._tick + READ_LISTEN
+    return read_request(did)
 
   @staticmethod
   def _blocker(state):
@@ -112,8 +172,14 @@ class DoorLocks:
     return ""
 
   def response(self, dat: bytes):
-    """The Main Body module's reply on 0x758 (card hands these over only while a request runs): its "done" to the door
-    output (6F 28 1x 03) is the answer - the car itself confirming it took the lock / unlock."""
+    """The Main Body module's reply on 0x758 (card hands these over only while listening): its "done" to the door
+    output (6F 28 1x 03) is the answer - the car itself confirming it took the lock / unlock; 62 10xx is a lock state."""
+    if len(dat) >= 6 and dat[0] == 0x40 and dat[2] == 0x62 and dat[3] == 0x10 and dat[4] in LOCK_DIDS:
+      did = dat[4]
+      self._asked.discard(did)
+      self._misses[did] = 0
+      self._set_lock(LOCK_DIDS[did], {0: "locked", 1: "unlocked"}.get(dat[5]))
+      return
     s = self.sequence
     if s is None or s.get("on_at") is None or s.get("answered") or len(dat) < 5 or dat[0] != 0x40:
       return
@@ -128,6 +194,7 @@ class DoorLocks:
 
   def _finish(self):
     s, self.sequence = self.sequence, None
+    self._read_queue, self._read_next = [], self._tick + READ_AFTER_DOOR   # show the new state as soon as it's there
     if s["aborted"] and not s.get("final"):       # the car's own answer stands; otherwise say why it stopped
       self.manual_result = f"{s['cmd']}: stopped ({s['aborted']})"
     return UDS_DEFAULT
@@ -144,6 +211,8 @@ class DoorLocks:
       return self._finish()
     n = s["n"]
     s["n"] += 1
+    if n < 0:
+      return None
     if s.get("on_at") is not None and not s.get("answered") and n - s["on_at"] >= NO_ANSWER_FRAMES:
       s["answered"] = True
       self.manual_result = f"{s['cmd']}: sent, no answer from the car"
@@ -165,6 +234,7 @@ class DoorLocks:
     return None
 
   def update(self, state):
+    self._tick += 1
     manual, self.manual = self.manual, None
     if manual is not None:
       parts = manual.split(" ")
@@ -176,11 +246,18 @@ class DoorLocks:
       if why:
         self.manual_result = f"{cmd}: not sent ({why})"
       else:
-        self.sequence = {"cmd": cmd, "plan": schedule(cmd, sound, pattern), "n": 0, "held": [], "aborted": ""}
+        # right after a read: give the module 50 ms to answer it before the extended session (n counts up to 0)
+        wait = max(0, READ_SETTLE - (self._tick - self._last_read))
+        self.sequence = {"cmd": cmd, "plan": schedule(cmd, sound, pattern), "n": -wait, "held": [], "aborted": ""}
+        self._read_queue = []
     if self.sequence is not None:
       self.previous_gear = state.gearShifter
       return self._step(self._blocker(state))
 
+    command = self._transition(state)
+    return command if command is not None else self._read(state)
+
+  def _transition(self, state):
     gear = state.gearShifter
     if not state.canValid or state.canTimeout or gear not in (Gear.park, Gear.drive, Gear.reverse, Gear.neutral):
       self.previous_gear = None

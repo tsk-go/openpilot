@@ -9,13 +9,22 @@ Same key and proofs as the tablet's Wi-Fi pairing (pairing.py), with "ble" as th
                                                                                                 sn single-use)
   {"op":"autolock","set"?,"sn","cn","proof"} -> {"op":"autolock","ok","config","status"}   (auto-lock settings, autolock.py)
   {"op":"rssi"} -> {"op":"rssi","dbm"}   (the comma's reading of this phone's signal, for tuning; nothing secret)
+  {"op":"locks"} -> {"op":"locks","d":{"dr","pa","s1","s2","bk": "L"/"U"/"?"},"live","t"}   (the doors' real lock state,
+                    t = when card wrote it (epoch s);
+                    also sent unasked whenever it changes)
+  {"op":"window","hold":true,"sn","cn","proof"} -> {"op":"window","ok","k"}   (hold-to-close starts: phone proves it)
+  {"op":"window","k"} -> {"op":"window","ok"}      (every 250 ms while the button is held; k from the start)
+  {"op":"window","stop":true} -> {"op":"window","ok"}   (let go - always allowed)
+Advertised while openpilot is started and for 30 min after the car turns off (the window close works car-off only).
 Costs nothing while idle: bluez advertises from the controller; this thread sleeps in a GLib loop that checks every 2 s
-whether openpilot is started.
+whether it should be up.
 """
 import ctypes
 import json
 import queue
+import secrets
 import threading
+import time
 
 from openpilot.starpilot.system.starview import pairing
 
@@ -39,13 +48,31 @@ def announce(message: dict) -> None:
     fn()
 
 
+LOCK_KEYS = {"driver": "dr", "passenger": "pa", "slide_1": "s1", "slide_2": "s2", "back": "bk"}
+WINDOW_KEY_S = 1.5     # a hold's key stops working this long after the last keep-alive
+
+
+def locks_message(state: dict) -> dict:
+  """{"doors", "live"} (starviewd.lock_state) -> the short form StarLock gets: L / U / ? per door."""
+  doors = state.get("doors") or {}
+  msg = {"op": "locks", "d": {short: {"locked": "L", "unlocked": "U"}.get(doors.get(name), "?")
+                              for name, short in LOCK_KEYS.items()}, "live": bool(state.get("live"))}
+  if state.get("time"):
+    msg["t"] = int(state["time"])
+  return msg
+
+
 class Handler:
   """The protocol, without Bluetooth: bytes in, bytes out (unit-tested)."""
-  def __init__(self, dongle_id, door, autolock=None, signal=None):
+  def __init__(self, dongle_id, door, autolock=None, signal=None, locks=None, window=None, clock=time.monotonic):
     self.dongle_id = dongle_id     # () -> str
     self.door = door               # (cmd, sound, beeps) -> {"ok", "result"/"error"}
     self.autolock = autolock       # (settings to save or None) -> {"ok", "config", "status"} / {"ok": False, "error"}
     self.signal = signal           # () -> dBm | None
+    self.locks = locks             # () -> {"doors", "live"}
+    self.window = window           # (hold: bool) -> {"ok", "held"} / {"ok": False, "error"}
+    self.clock = clock
+    self._win = None               # (key, time of the last keep-alive) while StarLock holds the window button
 
   def handle(self, data: bytes) -> bytes:
     try:
@@ -83,7 +110,36 @@ class Handler:
         st = r["status"]
         out["status"] = {"phase": st.get("phase"), "event": str(st.get("event") or "")[:40], "dbm": st.get("dbm")}
       return json.dumps(out, separators=(",", ":")).encode()
+    if op == "locks" and self.locks is not None:
+      return json.dumps(locks_message(self.locks()), separators=(",", ":")).encode()
+    if op == "window" and self.window is not None:
+      return json.dumps(self._window(req), separators=(",", ":")).encode()
     return json.dumps({"op": "error", "error": "unknown op"}).encode()
+
+  def _window(self, req: dict) -> dict:
+    """Hold-to-close: the first request carries the pairing proof and gets a key; the keep-alives (4x a second) only
+    the key, so they stay small and need no new session each time. Letting go needs nothing."""
+    now = self.clock()
+    if req.get("stop"):
+      self._win = None
+      self.window(False)
+      return {"op": "window", "ok": True}
+    if req.get("hold"):
+      if pairing.open_session(PEER, self.dongle_id(), req.get("sn"), req.get("cn"), req.get("proof")) is None:
+        return {"op": "window", "ok": False, "error": "not paired - pair StarLock again"}
+      key = secrets.token_hex(4)
+    else:
+      key = req.get("k")
+      if self._win is None or key != self._win[0] or now - self._win[1] > WINDOW_KEY_S:
+        self._win = None
+        return {"op": "window", "ok": False, "error": "hold again"}
+    r = self.window(True)
+    if not r.get("ok"):
+      self._win = None
+      self.window(False)            # e.g. the car just started: let go now, not after the keep time
+      return {"op": "window", "ok": False, "error": str(r.get("error") or "not held")[:120]}
+    self._win = (key, now)
+    return {"op": "window", "ok": True, "k": key}
 
   def feed(self, data: bytes, offset: int = 0) -> bytes | None:
     """One write from bluez. A request longer than one packet (the auto-lock settings with the pairing proof) arrives
@@ -242,7 +298,7 @@ def run(handler: Handler, started, log=lambda s: None) -> None:
       state["on"] = False
       gatt, advm = bluez()
       advm.UnregisterAdvertisement(dbus.ObjectPath(base + "/adv"), reply_handler=lambda: None, error_handler=lambda e: None)
-      gatt.UnregisterApplication(dbus.ObjectPath(base), reply_handler=lambda: print("stopped advertising (openpilot off)", flush=True),
+      gatt.UnregisterApplication(dbus.ObjectPath(base), reply_handler=lambda: print("stopped advertising (car off 30 min)", flush=True),
                                  error_handler=lambda e: None)
     return 1                  # keep the 2 s timer
 
@@ -263,8 +319,9 @@ def run(handler: Handler, started, log=lambda s: None) -> None:
   glib.g_main_loop_run(glib.g_main_loop_new(None, 0))
 
 
-def start(dongle_id, door, started, log=lambda s: None, autolock=None, signal=None) -> threading.Thread:
-  t = threading.Thread(target=run, args=(Handler(dongle_id, door, autolock, signal), started, log), name="starview-ble-door",
-                       daemon=True)
+def start(dongle_id, door, started, log=lambda s: None, autolock=None, signal=None, locks=None,
+          window=None) -> threading.Thread:
+  t = threading.Thread(target=run, args=(Handler(dongle_id, door, autolock, signal, locks, window), started, log),
+                       name="starview-ble-door", daemon=True)
   t.start()
   return t

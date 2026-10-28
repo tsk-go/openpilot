@@ -605,10 +605,16 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
                            (payload == 0x0080004A282F0540ULL) ||  // 40 05 2F 28 4A 00 80: buzzer back to the module
                            (payload == 0x00800002282F0540ULL) ||  // 40 05 2F 28 02 00 80: horn back to the module
                            (payload == 0x0000000001100240ULL) ||  // 40 02 10 01: default session
-                           (payload == 0x00000000003E0240ULL);    // 40 02 3E 00: tester present
+                           (payload == 0x00000000003E0240ULL) ||  // 40 02 3E 00: tester present
+                           // StarLock's real lock state - read only (40 03 22 10 xx): driver, passenger, sliding doors,
+                           // back door
+                           (payload == 0x0000001A10220340ULL) || (payload == 0x0000001910220340ULL) ||
+                           (payload == 0x0000001B10220340ULL) || (payload == 0x0000001C10220340ULL) ||
+                           (payload == 0x0000001E10220340ULL);
     bool body_command = (payload == 0x0000800011300540ULL) || (payload == 0x0000400011300540ULL) || uds_door_start;
     if (uds_door_return) {
-      // Handing control back can only make things safer: allowed whenever the relay is fine, moving or not.
+      // Handing control back (or reading a lock state) can only make things safer: allowed whenever the relay is fine,
+      // moving or not.
       tx &= !relay_malfunction;
     } else if (body_command) {
       // Never admit arbitrary UDS, an unobserved/stale stop, or a moving car.

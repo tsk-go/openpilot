@@ -218,3 +218,80 @@ def test_pattern_with_silent_is_silent():
   step_hold(controller, command, state)
   controller.door_locks.manual = "lock none 3x15x30"
   assert set(door_frames(controller, command, state, 140)) == {0, 10, 110, 120}
+
+
+from opendbc.car.toyota.door_locks import LOCK_DIDS, READ_EVERY, read_request
+
+
+def reads(frames):
+  return {n: f[4] for n, f in frames.items() if f[:4] == b"\x40\x03\x22\x10"}
+
+
+def sienna():
+  """the reads are switched on for the 4th-gen Sienna (checked below); its SecOC controller needs live car data, so the
+  steps run on a Corolla with them switched on"""
+  _, controller, command, state = setup_hold(enabled=False)
+  controller.door_locks.read_locks = True
+  return controller, command, state
+
+
+def test_reads_are_switched_on_for_the_sienna_only():
+  from opendbc.car.toyota.carcontroller import CarController
+  from opendbc.car.toyota.interface import CarInterface
+  from opendbc.car.toyota.values import DBC
+  for car, on in ((CAR.TOYOTA_SIENNA_4TH_GEN, True), (CAR.TOYOTA_SIENNA, False), (CAR.TOYOTA_COROLLA_TSS2, False)):
+    cp = CarInterface.get_params(car, {0: {}, 1: {}, 2: {}}, [], False, False, False)
+    assert CarController(DBC[car], cp).door_locks.read_locks is on
+
+
+def test_lock_state_reads_only_when_switched_on():
+  _, controller, command, state = setup_hold(enabled=False)
+  state.out.gearShifter = Gear.park
+  assert reads(door_frames(controller, command, state, 3 * READ_EVERY)) == {}
+  assert not controller.door_locks.listening
+  controller, command, state = sienna()
+  state.out.gearShifter = Gear.park
+  frames = door_frames(controller, command, state, READ_EVERY + 10)
+  assert reads(frames) == {0: 0x1A, 1: 0x19, 2: 0x1B, 3: 0x1C, 4: 0x1E, 200: 0x1A, 201: 0x19, 202: 0x1B, 203: 0x1C, 204: 0x1E}
+  assert set(frames.values()) == {read_request(d) for d in LOCK_DIDS}      # nothing else goes to the body module
+
+
+def test_lock_state_from_the_replies():
+  controller, command, state = sienna()
+  state.out.gearShifter = Gear.drive          # read while driving too (read-only)
+  dl = controller.door_locks
+  door_frames(controller, command, state, 6)
+  assert dl.listening and dl.locks_version == 0
+  for did, v in ((0x1A, 1), (0x19, 0), (0x1B, 0), (0x1C, 0), (0x1E, 0)):
+    dl.response(bytes([0x40, 0x04, 0x62, 0x10, did, v, 0, 0]))
+  assert dl.locks == {"driver": "unlocked", "passenger": "locked", "slide_1": "locked", "slide_2": "locked", "back": "locked"}
+  v = dl.locks_version
+  dl.response(bytes([0x40, 0x04, 0x62, 0x10, 0x1A, 1, 0, 0]))   # same again: no change
+  assert dl.locks_version == v
+  door_frames(controller, command, state, 40)
+  assert not dl.listening                                          # 0.3 s after the burst: card stops scanning
+
+
+def test_a_door_that_stops_answering_shows_unknown():
+  controller, command, state = sienna()
+  state.out.gearShifter = Gear.park
+  dl = controller.door_locks
+  door_frames(controller, command, state, 6)
+  dl.response(bytes([0x40, 0x04, 0x62, 0x10, 0x1E, 0, 0, 0]))
+  assert dl.locks["back"] == "locked"
+  door_frames(controller, command, state, 3 * READ_EVERY)    # silent in the next two bursts: still the last answer
+  assert dl.locks["back"] == "locked"
+  door_frames(controller, command, state, READ_EVERY)        # and the third
+  assert dl.locks["back"] is None
+
+
+def test_no_reads_during_a_lock_and_one_right_after():
+  controller, command, state = sienna()
+  state.out.gearShifter = Gear.park
+  door_frames(controller, command, state, 2)            # mid-burst: the last read went out on this step
+  controller.door_locks.manual = "lock none"
+  frames = door_frames(controller, command, state, 190)
+  # the extended session waits 50 ms after that read (its reply), then the usual sequence
+  assert min(frames) == 4 and frames[4] == UDS_EXTENDED and frames[124] == UDS_DEFAULT
+  assert reads({n: f for n, f in frames.items() if n <= 124}) == {}
+  assert reads(frames) == {174: 0x1A, 175: 0x19, 176: 0x1B, 177: 0x1C, 178: 0x1E}   # 0.5 s after the session ends

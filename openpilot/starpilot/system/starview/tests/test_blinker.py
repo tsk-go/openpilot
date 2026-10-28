@@ -115,3 +115,30 @@ def test_unplugged_clears_the_signal(tmp_path):
   os.close(master)
   time.sleep(0.5)
   assert b.fd is None and not sig.exists()
+
+
+def test_window_relay_is_held_while_asked_and_released_after():
+  master, path = _pair()
+  b = PicoBlinker(path)
+  assert b.window(True) == {"ok": True, "held": True}
+  for _ in range(3):                       # StarLock repeats every 250 ms while the button is held
+    time.sleep(0.25)
+    b.window(True)
+  got = _read(master)
+  assert got.count(b'W') >= 4 and b'0' not in got
+  assert b.set("off")["side"] == "off"     # the tablet letting go of a blinker doesn't let go of the window
+  assert b'0' not in _read(master, 0.3)
+  time.sleep(PicoBlinker.WINDOW_KEEP_S + 0.3)  # StarLock stopped asking: let go
+  assert _read(master).endswith(b'000') and b.side == "0"
+
+
+def test_window_let_go_and_never_over_a_blinker():
+  master, path = _pair()
+  b = PicoBlinker(path)
+  b.window(True)
+  assert b.window(False) == {"ok": True, "held": False}
+  assert _read(master).endswith(b'W000')
+  b.set("left")
+  assert b.window(True) == {"ok": False, "error": "a turn signal is on"}
+  assert b.side == "L"
+  b.set("off")
