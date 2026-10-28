@@ -107,3 +107,50 @@ def test_announce_queues_for_the_bluetooth_loop():
     assert json.loads(ble_door._OUT.get_nowait()) == {"op": "auto", "cmd": "lock", "ok": True, "result": "lock: confirmed"}
   finally:
     ble_door._WAKE["fn"] = None
+
+
+def test_lock_state_in_short_form():
+  h = ble_door.Handler(lambda: "6e453c4b", None, locks=lambda: {"doors": {"driver": "unlocked", "passenger": "locked",
+                                                                          "slide_1": "locked", "slide_2": None,
+                                                                          "back": "locked"}, "live": True})
+  assert ask(h, op="locks") == {"op": "locks", "d": {"dr": "U", "pa": "L", "s1": "L", "s2": "?", "bk": "L"}, "live": True}
+  assert ble_door.locks_message({"doors": None, "live": False})["d"] == {"dr": "?", "pa": "?", "s1": "?", "s2": "?", "bk": "?"}
+  assert ble_door.locks_message({"doors": None, "live": False, "time": 1793223113.29})["t"] == 1793223113
+
+
+def test_window_hold_needs_the_proof_then_only_the_key():
+  t = [100.0]
+  held = []
+
+  def window(hold):
+    held.append(hold)
+    return {"ok": True, "held": hold}
+  h = ble_door.Handler(lambda: "6e453c4b", None, window=window, clock=lambda: t[0])
+  cn = "ef" * 16
+  hello = ask(h, op="hello", cn=cn)
+  assert not ask(h, op="window", hold=True, sn=hello["sn"], cn=cn, proof="00" * 32)["ok"]
+  assert not ask(h, op="window", k="whatever")["ok"] and held == []
+  hello = ask(h, op="hello", cn=cn)
+  r = ask(h, op="window", hold=True, sn=hello["sn"], cn=cn, proof=pairing.client_proof("6e453c4b", hello["sn"], cn))
+  assert r["ok"] and held == [True]
+  for _ in range(4):
+    t[0] += 0.25
+    assert ask(h, op="window", k=r["k"])["ok"]
+  assert held == [True] * 5
+  assert not ask(h, op="window", k="nope")["ok"]                      # a wrong key ends the hold
+  assert not ask(h, op="window", k=r["k"])["ok"]
+  hello = ask(h, op="hello", cn=cn)
+  r = ask(h, op="window", hold=True, sn=hello["sn"], cn=cn, proof=pairing.client_proof("6e453c4b", hello["sn"], cn))
+  t[0] += 2.0                                                         # too long since the last keep-alive
+  assert ask(h, op="window", k=r["k"]) == {"op": "window", "ok": False, "error": "hold again"}
+  assert ask(h, op="window", stop=True) == {"op": "window", "ok": True} and held[-1] is False
+
+
+def test_window_refused_passes_the_reason_on_and_lets_go():
+  asked = []
+  h = ble_door.Handler(lambda: "6e453c4b", None, window=lambda hold: asked.append(hold) or {"ok": False, "error": "car on"})
+  cn = "12" * 16
+  hello = ask(h, op="hello", cn=cn)
+  r = ask(h, op="window", hold=True, sn=hello["sn"], cn=cn, proof=pairing.client_proof("6e453c4b", hello["sn"], cn))
+  assert r == {"op": "window", "ok": False, "error": "car on"}
+  assert asked == [True, False]

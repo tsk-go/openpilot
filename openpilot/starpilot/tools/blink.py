@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""blink.py - drive the Sienna turn signals through the Pico relay box (comma side, stdlib only).
+"""blink.py - drive the Sienna's Pico relay box by hand (comma side, stdlib only): turn signals and the window close.
   blink.py tap-left | tap-right        lane-change tap (TL/TR closed 0.6 s -> meter does its 3 blinks)
-  blink.py left  [SECS] | right [SECS] latched signal (TL/TR + CR) for SECS (default 5), Ctrl-C stops early
+  blink.py left  [SECS] | right [SECS] signal held (TL/TR) for SECS (default 5), Ctrl-C stops early
+  blink.py window [SECS]               relay 3 = the driver's door key held to LOCK, for SECS (default 10, at most 15):
+                                       with the car off the windows and sunroof close (and the doors lock)
   blink.py test                        left 4 s, pause, right 4 s, pause, tap-left, tap-right
   blink.py off                         release everything
+The Pico's own program is starpilot/tools/pico/main.py (load it with pico/load.py). Don't run this while the tablet or
+StarLock holds a relay: starviewd owns the port then.
 """
 import glob
 import os
@@ -47,7 +51,7 @@ def off(fd):
     time.sleep(0.05)
 
 def main(argv):
-  if len(argv) < 2 or argv[1] not in ('tap-left', 'tap-right', 'left', 'right', 'test', 'off'):
+  if len(argv) < 2 or argv[1] not in ('tap-left', 'tap-right', 'left', 'right', 'window', 'test', 'off'):
     print(__doc__)
     return 2
   cmd, p = argv[1], port()
@@ -62,6 +66,10 @@ def main(argv):
       secs = float(argv[2]) if len(argv) > 2 else 5.0
       print(f'{cmd} signal for {secs:g}s (Ctrl-C to stop)')
       hold(fd, 'L' if cmd == 'left' else 'R', secs)
+    elif cmd == 'window':
+      secs = min(float(argv[2]) if len(argv) > 2 else 10.0, 15.0)
+      print(f'holding the key to lock for {secs:g}s (Ctrl-C to let go)')
+      hold(fd, 'W', secs)
     elif cmd == 'test':
       for label, ch, secs in (('LEFT latched', 'L', 4), ('off', '0', 2), ('RIGHT latched', 'R', 4), ('off', '0', 2),
                               ('tap LEFT', 'l', 0.6), ('off', '0', 4), ('tap RIGHT', 'r', 0.6), ('off', '0', 1)):

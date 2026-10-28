@@ -31,7 +31,7 @@ Never rebase or force-push for a sync: the local commits must be kept as they ar
 # Panda firmware (ours, not upstream's)
 
 This fork ships its own panda firmware: its Toyota safety lets through the 4th-gen Sienna's UDS door lock / unlock
-frames (fork history 29). The app images in `panda/board/obj/*.bin.signed` (and `gitversion.h`, `version`) are built
+frames (fork history 29) and StarLock's lock-state reads (fork history 33). The app images in `panda/board/obj/*.bin.signed` (and `gitversion.h`, `version`) are built
 from this repo's own source, not taken from upstream. The comma flashes whatever is in that folder at boot, so a sync
 that lands upstream's images there silently removes the door lock.
 
@@ -213,6 +213,25 @@ Paths are under `openpilot/` unless noted.
     Also: auto-lock tells StarLock what it did (`ble_door.announce`: {"op":"auto","cmd","ok","done","result"} pushed
     on the TX characteristic, queued from any thread and sent from the Bluetooth loop via g_idle_add), and StarLock
     sends its current answer-back and horn patterns (`autolock` set) whenever they change and on every connect.
+33. StarLock's real lock state and hold-to-close windows (patch 53).
+    Lock state: on the 4th-gen Sienna (`DoorLocks.read_locks`, set by the Toyota CarController for
+    TOYOTA_SIENNA_4TH_GEN) `door_locks.py` reads the Main Body module every 2 s - UDS 22 101A (driver), 1019
+    (passenger), 101B / 101C (sliding doors), 101E (back door), one request per frame, default session, 00 = locked /
+    01 = unlocked (found on the car Oct 28) - never while a lock / unlock runs, and 0.5 s after one ends; a lock /
+    unlock asked right after a read waits 50 ms for its reply. card hands it
+    the 0x758 replies only while `DoorLocks.listening` (a request running, or 0.3 s after a burst) and writes
+    /dev/shm/starview_locks on a change (and once at start, all unknown, so a drive never shows the last one's). Panda safety allows those five exact read frames like the return frames
+    (rebuilt firmware). starviewd `lock_state` / action `locks`; BLE op `locks`, and `locks_watch` pushes
+    {"op":"locks","d":{dr,pa,s1,s2,bk: L/U/?},"live"} to StarLock on every change (one stat() a second).
+    Windows: relay 3 of the Pico relay box (GP4 -> IN3, COM3 / NO3 across the driver's door key switch, lock side) is
+    the key held to lock - with the car off the Sienna closes every window and the sunroof with its own anti-pinch (and
+    locks). The Pico program (`starpilot/tools/pico/main.py`, loaded with `pico/load.py`) takes 'W' for it; latched
+    blinkers no longer close relay 3. `PicoBlinker.window` holds it while asked (1.2 s keep); starviewd `window_close`
+    (action `window` {hold}) refuses while openpilot is started; BLE op `window`: the first request carries the
+    pairing proof and gets a key, the 250 ms keep-alives only the key, `stop` always works. StarLock's Bluetooth now
+    stays up for 30 min after the car turns off (`Hub.ble_wanted`), and starviewd follows deviceState.started in its
+    1 s openpilot check too - before, `started` only updated while a tablet was connected, so StarLock's Bluetooth,
+    auto-lock and lock / unlock depended on the tablet. `blink.py window [SECS]` holds relay 3 by hand.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

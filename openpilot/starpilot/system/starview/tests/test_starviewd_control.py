@@ -54,6 +54,8 @@ def make_hub(onroad=False, started=False, engaged=False):
   hub._ds_t = 0.0
   hub.live = False
   hub._param_keys = None
+  hub._ble_until = 0.0
+  hub._locks = {"mtime": None, "doors": None}
   return hub
 
 
@@ -432,3 +434,63 @@ def test_autolock_settings_action(tmp_path, monkeypatch):
   assert hub.control({"action": "autolock"})["config"]["lock_dbm"] == -55
   assert not hub.control({"action": "autolock", "set": {"lock_dbm": 5}})["ok"]
   assert hub.control({"action": "autolock_rssi"}) == {"ok": True, "dbm": -61}
+
+
+def _device_state(started):
+  from openpilot.cereal import messaging
+  m = messaging.new_message("deviceState")
+  m.deviceState.started = started
+  return m.to_bytes()
+
+
+def test_started_is_followed_without_a_tablet_and_bluetooth_stays_30_min(clock):
+  hub = make_hub()
+  hub._ds_sock.pending.append(_device_state(True))
+  hub.openpilot_tick()
+  assert hub.started and hub.ble_wanted()
+  hub._ds_sock.pending.append(_device_state(False))     # car off
+  hub.openpilot_tick()
+  assert not hub.started and hub.ble_wanted()
+  clock[0] += hub.BLE_AFTER_OFF_S - 1
+  assert hub.ble_wanted()
+  clock[0] += 2
+  assert not hub.ble_wanted()
+
+
+def test_window_close_only_with_the_car_off():
+  hub = make_hub(onroad=True, started=True)
+  held = []
+  hub.blinker = SimpleNamespace(window=lambda hold: held.append(hold) or {"ok": True, "held": hold})
+  assert hub.control({"action": "window", "hold": True})["error"].startswith("Windows close with the car off")
+  assert hub.control({"action": "window", "hold": False}) == {"ok": True, "held": False}   # letting go always works
+  hub.started = False
+  assert hub.control({"action": "window", "hold": True}) == {"ok": True, "held": True}
+  assert held == [False, True]
+
+  def gone(hold):
+    raise RuntimeError("Pico relay box not found (no /dev/ttyACM*) - is it plugged into the comma?")
+  hub.blinker = SimpleNamespace(window=gone)
+  assert hub.control({"action": "window", "hold": True})["error"].startswith("Pico relay box not found")
+
+
+def test_lock_state_from_card(tmp_path, monkeypatch):
+  import json
+  path = tmp_path / "locks"
+  monkeypatch.setattr(starviewd, "LOCKS", str(path))
+  hub = make_hub(onroad=True, started=True)
+  assert hub.control({"action": "locks"}) == {"ok": True, "doors": None, "live": True}
+  doors = {"driver": "unlocked", "passenger": "locked", "slide_1": "locked", "slide_2": "locked", "back": None}
+  path.write_text(json.dumps({"v": 3, "doors": doors, "time": 5.0}))
+  r = hub.control({"action": "locks"})
+  assert r["doors"] == doors and r["live"] and r["time"] == 5.0
+
+
+def test_locks_go_to_starlock_only_when_they_change(monkeypatch):
+  sent = []
+  states = iter([{"doors": None, "live": True}] * 2 + [{"doors": {"driver": "locked"}, "live": True}] * 2 +
+                [{"doors": {"driver": "locked"}, "live": False}])
+  hub = SimpleNamespace(lock_state=lambda: next(states))
+  from openpilot.starpilot.system.starview import ble_door
+  monkeypatch.setattr(ble_door, "announce", sent.append)
+  starviewd.locks_watch(hub, ble_door, period=0, rounds=5)
+  assert [(m["d"]["dr"], m["live"]) for m in sent] == [("?", True), ("L", True), ("L", False)]

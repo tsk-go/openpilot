@@ -102,6 +102,7 @@ REPLAY = "REPLAY" in os.environ
 DOOR_REQUEST = "/dev/shm/starview_door_request"
 DOOR_RESULT = "/dev/shm/starview_door_result"
 DRIVER_DOOR = "/dev/shm/starview_driver_door"   # StarLock auto-lock (starview/autolock.py): written only on a change
+LOCKS = "/dev/shm/starview_locks"   # StarLock: the doors' real lock state (door_locks.py), written only on a change
 
 EventName = log.OnroadEvent.EventName
 DISTANCE_GESTURE_KEYS = {Press.SHORT: ('DistanceButtonControl', 0),
@@ -487,6 +488,15 @@ class Car:
     busy = door_locks.sequence is not None or door_locks.manual is not None or bool(door_locks.manual_result)
     if self._door_poll % (5 if busy else 25):
       return
+    # written once at start too (nothing known yet), so the last drive's state is never shown as this drive's
+    if door_locks.read_locks and door_locks.locks_version != getattr(self, '_locks_written', -1):
+      self._locks_written = door_locks.locks_version
+      try:
+        with open(LOCKS + '.tmp', 'w') as f:
+          f.write(json.dumps({'v': door_locks.locks_version, 'doors': door_locks.locks, 'time': time.time()}))  # noqa: TID251
+        os.replace(LOCKS + '.tmp', LOCKS)
+      except OSError:
+        pass
     if door_locks.manual_result:
       try:
         with open(DOOR_RESULT + '.tmp', 'w') as f:
@@ -572,10 +582,11 @@ class Car:
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
-    # StarView door request running (about a second, rarely): hand the body module's replies to it, so the answer is the
-    # car's own confirmation. Nothing is scanned otherwise.
+    # StarView door request running (about a second, rarely), or 0.3 s after the lock-state reads (every 2 s, Sienna):
+    # hand the body module's replies to it - the car's own confirmation and its real lock state. Nothing is scanned
+    # otherwise.
     door_locks = getattr(self.CI.CC, 'door_locks', None) if self.CI.CC is not None else None
-    if door_locks is not None and getattr(door_locks, 'sequence', None) is not None:
+    if door_locks is not None and getattr(door_locks, 'listening', False):
       for _, frames in can_list:
         for address, dat, src in frames:
           if address == 0x758 and src == 0:

@@ -604,8 +604,13 @@ class PicoBlinker:
   Why the tablet signals (its automatic blinker) goes to SIGNAL_PATH while the side is held, for desire_helper:
   "turn left|right" = a route turn (never start a lane change from it), "lane left|right" = a lane change the driver
   confirmed on the tablet (tap or steering nudge) or set to automatic (counts as the nudge), then time.monotonic().
-  Rewritten with every request (4x a second) and removed on release; desire_helper ignores it once it is 1 s old."""
+  Rewritten with every request (4x a second) and removed on release; desire_helper ignores it once it is 1 s old.
+
+  Relay 3 is StarLock's window close ('W'): wired across the driver's door key switch (lock side), so holding it is
+  holding the key turned to lock - with the car off the Sienna closes every window and the sunroof (its own anti-pinch),
+  and locks the doors. Held only while StarLock keeps asking (WINDOW_KEEP_S); the Pico never closes two relays at once."""
   KEEP_S = 0.6
+  WINDOW_KEEP_S = 1.2          # StarLock's hold-to-close: a slow Bluetooth answer shouldn't let go of the "key"
   PERIOD_S = 0.2
   SIGNAL_PATH = "/dev/shm/starview_signal"
   WHYS = ("turn", "lane")
@@ -683,10 +688,30 @@ class PicoBlinker:
       self.side = "0"
       self._signal("off", "")
 
+  def window(self, hold: bool) -> dict:
+    """StarLock's hold-to-close: relay 3 ('W') while asked every 250 ms, released WINDOW_KEEP_S after the last ask."""
+    with self.lock:
+      if not hold:
+        if self.side == "W":
+          for _ in range(3):
+            self._write("0")
+          self.side = "0"
+        return {"ok": True, "held": False}
+      if self.side in ("L", "R"):
+        return {"ok": False, "error": "a turn signal is on"}
+      self._open()
+      if self.side != "W":
+        self._write("W")
+      self.side = "W" if self.fd is not None else "0"
+      self.until = time.monotonic() + self.WINDOW_KEEP_S
+      return {"ok": self.side == "W", "held": self.side == "W", **({} if self.side == "W" else {"error": "relay box lost"})}
+
   def set(self, side: str, why: str = "") -> dict:
     ch = {"left": "L", "right": "R"}.get(side, "0")
     why = why if why in self.WHYS else ""
     with self.lock:
+      if ch == "0" and self.side == "W":      # the tablet letting go of a blinker never lets go of StarLock's window
+        return {"ok": True, "side": "off", "signal": True}
       if ch == "0" and self.fd is None:       # nothing open, nothing held: no need to find the Pico to let go
         self.side = "0"
         self._signal("off", "")
@@ -847,6 +872,8 @@ class Hub:
     self._flag_t = 0.0
     self.engaged = False
     self.started = False
+    self._ble_until = 0.0     # StarLock's Bluetooth stays up this long after the car turns off (window close)
+    self._locks = {"mtime": None, "doors": None}
     # StarLock auto-lock (autolock.py): the comma's reading of the phone's Bluetooth signal, and the walk-away logic
     from openpilot.starpilot.system.starview.autolock import AutoLock, PhoneSignal
     self.phone_signal = PhoneSignal()
@@ -1034,8 +1061,12 @@ class Hub:
       self._ds_sock = messaging.sub_sock("deviceState", conflate=True)
     now = time.monotonic()
     try:
-      if self._ds_sock.receive(non_blocking=True) is not None:
+      m = self._ds_sock.receive(non_blocking=True)
+      if m is not None:
         self._ds_t = now
+        # kept current here too: the reader only follows deviceState while a tablet is connected, and StarLock's
+        # Bluetooth, auto-lock and lock / unlock go by it without one
+        self._set_started(bool(messaging.log_from_bytes(m).deviceState.started))
     except Exception:
       pass
     down = now - self._ds_t > self.OPENPILOT_DOWN_S
@@ -1043,7 +1074,7 @@ class Hub:
       self.openpilot_down = down
       cloudlog.info(f"starview: openpilot {'stopped' if down else 'running again'}")
       if down:
-        self.started = False
+        self._set_started(False)
         self.engaged = False
       self.invalidate_params_snapshot()
     if not down and self.live and not self.params.get_bool("IsLiveStreaming"):
@@ -1364,7 +1395,7 @@ class Hub:
       if name == "selfdriveState":
         self.engaged = bool(evt.selfdriveState.enabled)
       elif name == "deviceState":
-        self.started = bool(evt.deviceState.started)
+        self._set_started(bool(evt.deviceState.started))
         self.chestnut_present = bool(evt.deviceState.chestnutPresent)
       else:
         self.aol_active, self._aol_t = bool(evt.starpilotCarState.alwaysOnLateralEnabled), now
@@ -1555,6 +1586,46 @@ class Hub:
       return {"ok": False, "error": str(e)}
     return {"ok": True, "config": cfg, "status": self.autolock.status()}
 
+  BLE_AFTER_OFF_S = 30 * 60
+
+  def _set_started(self, started: bool) -> None:
+    if self.started and not started:
+      self._ble_until = time.monotonic() + self.BLE_AFTER_OFF_S
+    self.started = started
+
+  def ble_wanted(self) -> bool:
+    """StarLock's Bluetooth: while openpilot is started, and for 30 min after the car turns off - the window close only
+    works with the car off."""
+    return self.started or time.monotonic() < self._ble_until
+
+  def window_close(self, hold: bool) -> dict:
+    """StarLock's hold-to-close (relay 3 = the driver's door key held to lock, PicoBlinker.window). Repeated every
+    250 ms while held; released 1.2 s after the last (StarLock sends stop when the finger lifts). Only with the car
+    off: that's when the Sienna's key-close works."""
+    if hold and self.started:
+      return {"ok": False, "error": "Windows close with the car off (like holding the key in the door)."}
+    try:
+      return self.blinker.window(hold)
+    except (RuntimeError, OSError) as e:
+      return {"ok": False, "error": str(e)}
+
+  def lock_state(self) -> dict:
+    """The doors' real lock state (card writes LOCKS on a change, door_locks.py): {"doors": {driver, passenger, slide_1,
+    slide_2, back: "locked" / "unlocked" / None}, "live": openpilot started (car on: read every 2 s), "time"}. One stat()
+    when nothing changed."""
+    try:
+      m = os.stat(LOCKS).st_mtime_ns
+    except OSError:
+      return {"doors": None, "live": self.started}
+    if m != self._locks["mtime"]:
+      try:
+        with open(LOCKS) as f:
+          r = json.load(f)
+        self._locks = {"mtime": m, "doors": r.get("doors"), "time": r.get("time")}
+      except (OSError, ValueError):
+        pass
+    return {"doors": self._locks["doors"], "live": self.started, "time": self._locks.get("time")}
+
   def _door(self, req: dict) -> dict:
     """The tablet's / phone's Lock / Unlock: card hands it to the Toyota controller, which runs the door active test
     (door_locks.py) over the normal link - nothing paused, so no cruise fault. sound: "horn" (default), "none", "buzzer".
@@ -1723,6 +1794,10 @@ class Hub:
         return self.autolock_settings(req.get("set"))
       if act == "autolock_rssi":
         return {"ok": True, "dbm": self.phone_signal.latest()}
+      if act == "locks":  # the doors' real lock state (door_locks.py via card)
+        return {"ok": True, **self.lock_state()}
+      if act == "window":  # {"hold": bool} every 250 ms while held: StarLock's hold-to-close (relay 3, car off)
+        return self.window_close(bool(req.get("hold")))
       if act == "update_check":
         return self.ops.update_check()
       if act == "update_download":
@@ -2756,6 +2831,7 @@ def tablet_flag_thread(hub):
 # the tablet's Lock / Unlock, answered by card (selfdrive/car/card.py reads the request twice a second)
 DOOR_REQUEST = "/dev/shm/starview_door_request"
 DOOR_RESULT = "/dev/shm/starview_door_result"
+LOCKS = "/dev/shm/starview_locks"   # the doors' real lock state, from card (door_locks.py)
 LOG_ARCHIVE_PROGRESS = "/dev/shm/starview_logarchive_progress.json"
 LOG_ARCHIVE_LAST: dict = {}   # the auto copy's last start: when, exit code, last line of output (for the storage page)
 
@@ -2890,17 +2966,37 @@ BLE_DOOR_OFF = "/data/starview/no_ble_door"
 
 
 def start_ble_door(hub):
-  """StarLock on the phone over Bluetooth (ble_door.py): advertised only while openpilot is started. Off with
-  /data/starview/no_ble_door. Without dbus / bluez it just doesn't start - Wi-Fi keeps working."""
+  """StarLock on the phone over Bluetooth (ble_door.py): advertised while openpilot is started and for 30 min after
+  (hub.ble_wanted). Off with /data/starview/no_ble_door. Without dbus / bluez it just doesn't start - Wi-Fi keeps
+  working."""
   if os.path.exists(BLE_DOOR_OFF):
     return
   try:
     from openpilot.starpilot.system.starview import ble_door
     ble_door.start(hub.ops.dongle_id, lambda cmd, sound, beeps=None: hub._door({"cmd": cmd, "sound": sound, "beeps": beeps}),
-                   lambda: hub.started, autolock=hub.autolock_settings, signal=hub.phone_signal.latest)
+                   hub.ble_wanted, autolock=hub.autolock_settings, signal=hub.phone_signal.latest, locks=hub.lock_state,
+                   window=hub.window_close)
     hub.autolock.announce = ble_door.announce   # what auto-lock did goes to StarLock
+    threading.Thread(target=locks_watch, args=(hub, ble_door), name="starview-locks", daemon=True).start()
   except Exception as e:
     cloudlog.warning(f"starview: ble door: {e}")
+
+
+def locks_watch(hub, ble_door, period=1.0, rounds=None):
+  """The doors' lock state to StarLock as soon as it changes (fob, door button, StarLock itself) or the car turns on /
+  off: one stat() a second."""
+  last = None
+  while rounds is None or rounds > 0:
+    try:
+      msg = ble_door.locks_message(hub.lock_state())
+      if msg != last:
+        last = msg
+        ble_door.announce(msg)
+    except Exception as e:
+      cloudlog.warning(f"starview: locks: {e}")
+    if rounds is not None:
+      rounds -= 1
+    time.sleep(period)
 
 
 def start_autolock(hub):
