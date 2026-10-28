@@ -187,3 +187,53 @@ def test_phone_signal_reads_btmgmt():
   out["con"] = "Connections:\n"
   out["conn-info"] = "Unable to get conn info: Not Connected\n"
   assert sig.read() is None
+
+
+def test_btmgmt_gets_an_open_stdin():
+  seen = {}
+
+  def run(args, **kw):
+    seen["stdin"] = kw.get("stdin")
+    os.fstat(kw["stdin"])                 # still open while btmgmt runs (it quits on end of input)
+
+    class R:
+      stdout = ""
+    return R()
+  PhoneSignal(run).read()
+  assert isinstance(seen["stdin"], int)
+
+
+def test_live_reading_never_waits():
+  import threading
+  gate = threading.Event()
+  t = [0.0]
+
+  class R:
+    def __init__(self, stdout):
+      self.stdout = stdout
+
+  def run(args, **kw):
+    gate.wait(2)
+    return R("Connections:\n\t5A:11:22:33:44:55 type LE Random\n" if args[3] == "con" else "RSSI -48\tTX power 9\n")
+  sig = PhoneSignal(run, clock=lambda: t[0])
+  assert sig.latest() is None             # nothing yet: answers at once, reads in the background
+  gate.set()
+  for _ in range(100):
+    if not sig._refreshing:
+      break
+    threading.Event().wait(0.01)
+  assert sig.latest() == -48              # the background reading is what the next request gets
+
+
+def test_tells_starlock_what_it_did(tmp_path):
+  r = Rig(tmp_path, unlock=True)
+  told = []
+  r.auto.announce = told.append
+  r.get_out()
+  r.dbm = None
+  r.tick()
+  r.tick()
+  r.dbm = -50
+  r.tick()
+  assert [(m["op"], m["cmd"], m["done"]) for m in told] == [("auto", "lock", True), ("auto", "unlock", True)]
+  assert told[0]["result"] == "lock: confirmed"

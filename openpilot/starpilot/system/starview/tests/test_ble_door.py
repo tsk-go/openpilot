@@ -96,3 +96,14 @@ def test_long_write_in_pieces_and_short_answers():
   assert r["ok"] and r["config"]["unlock_min"] == 30 and len(r["status"]["event"]) == 40
   assert json.loads(h.feed(b"\xff"))["op"] == "error"     # junk still gets an answer
   assert h.feed(b"{\"op\":", 0) is None and h.feed(b"\"rssi\"}", 99) is None   # out of order: dropped
+
+
+def test_announce_queues_for_the_bluetooth_loop():
+  woke = []
+  ble_door._WAKE["fn"] = lambda: woke.append(1)
+  try:
+    ble_door.announce({"op": "auto", "cmd": "lock", "ok": True, "result": "lock: confirmed"})
+    assert woke == [1]
+    assert json.loads(ble_door._OUT.get_nowait()) == {"op": "auto", "cmd": "lock", "ok": True, "result": "lock: confirmed"}
+  finally:
+    ble_door._WAKE["fn"] = None

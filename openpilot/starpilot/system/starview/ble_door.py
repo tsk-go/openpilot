@@ -14,6 +14,7 @@ whether openpilot is started.
 """
 import ctypes
 import json
+import queue
 import threading
 
 from openpilot.starpilot.system.starview import pairing
@@ -23,6 +24,19 @@ RX = "5a1c0002-7374-6172-6c6f-636b00000000"
 TX = "5a1c0003-7374-6172-6c6f-636b00000000"
 PEER = "ble"
 MAX_REQUEST = 1024
+
+
+_OUT: "queue.SimpleQueue[bytes]" = queue.SimpleQueue()
+_WAKE = {"fn": None}
+
+
+def announce(message: dict) -> None:
+  """Tell the connected phone something it didn't ask for (auto-lock locked / unlocked). Any thread: the message is
+  handed to the Bluetooth loop, which sends it; dropped when no phone is listening."""
+  _OUT.put(json.dumps(message, separators=(",", ":")).encode()[:240])
+  fn = _WAKE["fn"]
+  if fn is not None:
+    fn()
 
 
 class Handler:
@@ -174,34 +188,75 @@ def run(handler: Handler, started, log=lambda s: None) -> None:
       super().__init__(bus, base + "/s0")
 
   _app, _adv, _svc = App(), Adv(), Service()   # kept referenced: bluez calls these objects
-  hci = bus.get_object("org.bluez", "/org/bluez/hci0")
-  gatt = dbus.Interface(hci, "org.bluez.GattManager1")
-  advm = dbus.Interface(hci, "org.bluez.LEAdvertisingManager1")
-  state = {"on": False}
+  # The paths go to bluez typed as object paths. Untyped, dbus-python only gets "o" right when its introspection of
+  # hci0 finished first; when it hadn't (some boots), it sent a string, and bluez answered every registration with
+  # 'Method "RegisterApplication" with signature "sa{sv}" ... doesn't exist'. The proxies are also made fresh for each
+  # call (one made at start stays bound to that bluetoothd), and a new bluetoothd means registering again.
+  state = {"on": False, "owner": None, "err": ""}
+
+  def bluez():
+    hci = bus.get_object("org.bluez", "/org/bluez/hci0", introspect=False)
+    return dbus.Interface(hci, "org.bluez.GattManager1"), dbus.Interface(hci, "org.bluez.LEAdvertisingManager1")
+
+  def bluez_owner():
+    try:
+      return str(bus.get_name_owner("org.bluez"))   # asks the bus daemon, not bluez: safe to block on
+    except dbus.DBusException:
+      return None
 
   # bluez calls back into this process (GetManagedObjects, GetAll, Release) while it handles these, so every call
   # to it is asynchronous: a blocking one would wait on our own loop and time out.
   def failed(what):
     def f(e):
       state["on"] = False
-      print(f"bluez {what}: {e}", flush=True)
+      msg = f"bluez {what}: {e}"
+      if msg != state["err"]:          # once per new error, not every 2 s
+        state["err"] = msg
+        print(msg, flush=True)
+    return f
+
+  def up(what):
+    def f():
+      state["err"] = ""
+      print(what, flush=True)
     return f
   empty = lambda: dbus.Dictionary({}, signature="sv")  # noqa: E731
 
   def tick(_data):
+    owner = bluez_owner()
+    if owner != state["owner"]:
+      if state["owner"] is not None:
+        print(f"bluetoothd changed ({state['owner']} -> {owner}): registering again", flush=True)
+      state["owner"], state["on"] = owner, False
+    if owner is None:
+      return 1
     want = bool(started())
     if want and not state["on"]:
       state["on"] = True
-      gatt.RegisterApplication(base, empty(), reply_handler=lambda: print("StarLock service up", flush=True),
+      gatt, advm = bluez()
+      gatt.RegisterApplication(dbus.ObjectPath(base), empty(), reply_handler=up("StarLock service up"),
                                error_handler=failed("service"))
-      advm.RegisterAdvertisement(base + "/adv", empty(), reply_handler=lambda: print("advertising StarLock", flush=True),
+      advm.RegisterAdvertisement(dbus.ObjectPath(base + "/adv"), empty(), reply_handler=up("advertising StarLock"),
                                  error_handler=failed("advertising"))
     elif not want and state["on"]:
       state["on"] = False
-      advm.UnregisterAdvertisement(base + "/adv", reply_handler=lambda: None, error_handler=lambda e: None)
-      gatt.UnregisterApplication(base, reply_handler=lambda: print("stopped advertising (openpilot off)", flush=True),
+      gatt, advm = bluez()
+      advm.UnregisterAdvertisement(dbus.ObjectPath(base + "/adv"), reply_handler=lambda: None, error_handler=lambda e: None)
+      gatt.UnregisterApplication(dbus.ObjectPath(base), reply_handler=lambda: print("stopped advertising (openpilot off)", flush=True),
                                  error_handler=lambda e: None)
     return 1                  # keep the 2 s timer
+
+  # announce(): other threads queue a message and wake this loop once (g_idle_add is thread-safe); sent from here,
+  # since dbus-python must only be used from its own loop's thread
+  def drain(_data):
+    while True:
+      try:
+        tx.send(_OUT.get_nowait())
+      except queue.Empty:
+        return 0                # run once
+  drain_cb = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)(drain)
+  glib.g_idle_add.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+  _WAKE["fn"] = lambda: glib.g_idle_add(ctypes.cast(drain_cb, ctypes.c_void_p), None)
 
   cb = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)(tick)
   glib.g_timeout_add(2000, ctypes.cast(cb, ctypes.c_void_p), None)

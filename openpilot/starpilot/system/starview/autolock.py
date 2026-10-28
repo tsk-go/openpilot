@@ -29,6 +29,7 @@ ARMED_S = 0.5         # reading interval while armed for the lock
 WATCH_S = 1.0         # reading interval while waiting to unlock
 IDLE_S = 0.5          # file checks while started
 OFF_S = 2.0           # openpilot not started, or both switched off
+LIVE_S = 0.8          # StarLock's live number: a reading older than this is refreshed in the background
 
 DEFAULTS = {"lock": False, "unlock": False, "lock_dbm": -52, "away_dbm": -75, "unlock_dbm": -62, "unlock_min": 30,
             "sound": "horn", "lock_beeps": None, "unlock_beeps": None}
@@ -96,16 +97,43 @@ class PhoneSignal:
   CON = re.compile(r"([0-9A-Fa-f:]{17}) type (LE Random|LE Public|BR/EDR)")
   KIND = {"BR/EDR": "0", "LE Public": "1", "LE Random": "2"}
 
-  def __init__(self, run=subprocess.run):
+  def __init__(self, run=subprocess.run, clock=time.monotonic):
     self.run = run
+    self.clock = clock
     self.lock = threading.Lock()
     self.phone: tuple[str, str] | None = None
+    self._cache: int | None = None
+    self._cache_t = float("-inf")
+    self._refreshing = False
 
   def _btmgmt(self, *args) -> str:
+    # btmgmt quits as soon as its stdin ends - under the service stdin is /dev/null, so it printed nothing and every
+    # reading was None. Its stdin is a pipe held open until it's done.
+    r, w = os.pipe()
     try:
-      return self.run(["sudo", "-n", "btmgmt", *args], capture_output=True, text=True, timeout=3).stdout
+      return self.run(["sudo", "-n", "btmgmt", *args], stdin=r, capture_output=True, text=True, timeout=3).stdout
     except (OSError, subprocess.SubprocessError):
       return ""
+    finally:
+      os.close(r)
+      os.close(w)
+
+  def latest(self) -> int | None:
+    """For StarLock's live number: the newest reading, without waiting (a fresh one is taken in the background, so a
+    request on the Bluetooth link never waits for btmgmt and can't hold up a lock / unlock behind it)."""
+    with self.lock:
+      start = self.clock() - self._cache_t > LIVE_S and not self._refreshing
+      if start:
+        self._refreshing = True
+    if start:
+      threading.Thread(target=self._refresh, name="starview-phone-signal", daemon=True).start()
+    return self._cache
+
+  def _refresh(self):
+    try:
+      self.read()
+    finally:
+      self._refreshing = False
 
   def _find(self):
     for addr, kind in self.CON.findall(self._btmgmt("con")):
@@ -115,21 +143,25 @@ class PhoneSignal:
 
   def read(self) -> int | None:
     with self.lock:
+      value = None
       for attempt in (0, 1):
         if self.phone is None or attempt:
           self.phone = self._find()
           if self.phone is None:
-            return None
+            break
         m = re.search(r"RSSI (-?\d+)", self._btmgmt("conn-info", "-t", self.phone[1], self.phone[0]))
         if m:
-          return int(m.group(1))
+          value = int(m.group(1))
+          break
         self.phone = None   # gone or a new address: look again once
-      return None
+      self._cache, self._cache_t = value, self.clock()
+      return value
 
 
 class AutoLock:
   def __init__(self, door, signal, config_path=CONFIG, state_path=DRIVER_DOOR, clock=time.monotonic, log=lambda s: None):
     self.door = door                # (cmd, sound, beeps) -> {"ok", ...}
+    self.announce = None            # (message) -> None: tells StarLock what auto-lock did (ble_door.announce)
     self.signal = signal            # () -> dBm | None
     self.config_path, self.state_path = config_path, state_path
     self.clock, self.log = clock, log
@@ -174,8 +206,15 @@ class AutoLock:
   def _act(self, cmd) -> bool:
     beeps = self.cfg["lock_beeps" if cmd == "lock" else "unlock_beeps"]
     r = self.door(cmd, self.cfg["sound"], beeps) or {}
-    self._note(f"{cmd}: {r.get('result') or r.get('error') or '?'}")
-    return bool(r.get("ok")) or str(r.get("result", "")).endswith("no answer from the car")
+    result = str(r.get('result') or r.get('error') or '?')
+    self._note(f"{cmd}: {result}")
+    done = bool(r.get("ok")) or result.endswith("no answer from the car")
+    if self.announce is not None:   # StarLock shows it (circle, tile) - the phone didn't ask, the comma did it
+      try:
+        self.announce({"op": "auto", "cmd": cmd, "ok": bool(r.get("ok")), "done": done, "result": result[:60]})
+      except Exception as e:
+        self.log(f"autolock: telling the phone: {e}")
+    return done
 
   def status(self) -> dict:
     return {"phase": self.phase, **self.last}
