@@ -1722,7 +1722,7 @@ class Hub:
       if act == "autolock":
         return self.autolock_settings(req.get("set"))
       if act == "autolock_rssi":
-        return {"ok": True, "dbm": self.phone_signal.read()}
+        return {"ok": True, "dbm": self.phone_signal.latest()}
       if act == "update_check":
         return self.ops.update_check()
       if act == "update_download":
@@ -2897,7 +2897,8 @@ def start_ble_door(hub):
   try:
     from openpilot.starpilot.system.starview import ble_door
     ble_door.start(hub.ops.dongle_id, lambda cmd, sound, beeps=None: hub._door({"cmd": cmd, "sound": sound, "beeps": beeps}),
-                   lambda: hub.started, autolock=hub.autolock_settings, signal=hub.phone_signal.read)
+                   lambda: hub.started, autolock=hub.autolock_settings, signal=hub.phone_signal.latest)
+    hub.autolock.announce = ble_door.announce   # what auto-lock did goes to StarLock
   except Exception as e:
     cloudlog.warning(f"starview: ble door: {e}")
 
@@ -2946,7 +2947,9 @@ def main():
     app.router.add_route(method, path, techstream_call, name=name)
   cloudlog.info(f"starview: listening on {HOST}:{PORT}")
   print(f"starviewd listening on http://{HOST}:{PORT}/", flush=True)
-  web.run_app(app, host=HOST, port=PORT, loop=loop, print=None, access_log=None)
+  # shutdown_timeout: on a stop, don't wait the default 60 s for the tablet's websocket - the watcher restarting it
+  # (code changed) would time out meanwhile and fall back to running starviewd inside the manager
+  web.run_app(app, host=HOST, port=PORT, loop=loop, print=None, access_log=None, shutdown_timeout=2)
 
 
 if __name__ == "__main__":

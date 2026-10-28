@@ -202,6 +202,17 @@ Paths are under `openpilot/` unless noted.
     or leaving Park disarms. Settings in /data/starview/autolock.json (StarLock writes them: BLE op `autolock` with the
     pairing proof, or starviewd action `autolock`); live reading: BLE op `rssi` / action `autolock_rssi`. Idle cost: two
     stat() calls every 0.5 s while started.
+    Patch 52: ble_door sends the registration paths as dbus.ObjectPath. Untyped, dbus-python only sent "o" when its
+    introspection of hci0 had finished; on some boots it hadn't, and bluez refused every registration ('Method
+    "RegisterApplication" with signature "sa{sv}" ... doesn't exist'), so the phone connected and found no service.
+    The proxies are also made fresh per call and it registers again when org.bluez changes owner (a bluetoothd
+    restart). starviewd stops within 2 s (aiohttp shutdown_timeout) so the watcher's restart doesn't fall back.
+    Also: btmgmt gets a stdin pipe held open (under the service stdin is /dev/null and btmgmt quit before printing, so
+    every reading was None), and StarLock's live reading (BLE op `rssi`, action `autolock_rssi`) answers from the last
+    reading while a fresh one is taken in the background - btmgmt never runs inside the Bluetooth callback.
+    Also: auto-lock tells StarLock what it did (`ble_door.announce`: {"op":"auto","cmd","ok","done","result"} pushed
+    on the TX characteristic, queued from any thread and sent from the Bluetooth loop via g_idle_add), and StarLock
+    sends its current answer-back and horn patterns (`autolock` set) whenever they change and on every connect.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

@@ -424,7 +424,7 @@ def test_autolock_settings_action(tmp_path, monkeypatch):
   monkeypatch.setattr(autolock.save_config, "__defaults__", (str(tmp_path / "autolock.json"),))
   hub = make_hub(onroad=True, started=True)
   hub.autolock = autolock.AutoLock(lambda *a: {"ok": True}, lambda: -50, str(tmp_path / "autolock.json"), str(tmp_path / "door"))
-  hub.phone_signal = type("S", (), {"read": staticmethod(lambda: -61)})()
+  hub.phone_signal = type("S", (), {"latest": staticmethod(lambda: -61)})()
   r = hub.control({"action": "autolock"})
   assert r["ok"] and r["config"]["lock"] is False and r["status"]["phase"] == "idle"
   r = hub.control({"action": "autolock", "set": {"lock": True, "lock_dbm": -55}})
