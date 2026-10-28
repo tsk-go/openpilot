@@ -7,6 +7,8 @@ Same key and proofs as the tablet's Wi-Fi pairing (pairing.py), with "ble" as th
   {"op":"hello","cn"}                        -> {"op":"hello","dongle","sn","proof"}     (comma proves it has the key)
   {"op":"door","cmd","sound","beeps"?,"sn","cn","proof"} -> {"op":"door","ok","result"/"error"}  (phone proves it;
                                                                                                 sn single-use)
+  {"op":"autolock","set"?,"sn","cn","proof"} -> {"op":"autolock","ok","config","status"}   (auto-lock settings, autolock.py)
+  {"op":"rssi"} -> {"op":"rssi","dbm"}   (the comma's reading of this phone's signal, for tuning; nothing secret)
 Costs nothing while idle: bluez advertises from the controller; this thread sleeps in a GLib loop that checks every 2 s
 whether openpilot is started.
 """
@@ -20,13 +22,16 @@ SERVICE = "5a1c0001-7374-6172-6c6f-636b00000000"
 RX = "5a1c0002-7374-6172-6c6f-636b00000000"
 TX = "5a1c0003-7374-6172-6c6f-636b00000000"
 PEER = "ble"
+MAX_REQUEST = 1024
 
 
 class Handler:
   """The protocol, without Bluetooth: bytes in, bytes out (unit-tested)."""
-  def __init__(self, dongle_id, door):
+  def __init__(self, dongle_id, door, autolock=None, signal=None):
     self.dongle_id = dongle_id     # () -> str
     self.door = door               # (cmd, sound, beeps) -> {"ok", "result"/"error"}
+    self.autolock = autolock       # (settings to save or None) -> {"ok", "config", "status"} / {"ok": False, "error"}
+    self.signal = signal           # () -> dBm | None
 
   def handle(self, data: bytes) -> bytes:
     try:
@@ -48,7 +53,41 @@ class Handler:
       ack = self.door(cmd, sound, req.get("beeps"))
       return json.dumps({"op": "door", "ok": bool(ack.get("ok")), "result": ack.get("result", ""),
                          **({"error": ack["error"]} if "error" in ack else {})}).encode()
+    if op == "rssi" and self.signal is not None:
+      return json.dumps({"op": "rssi", "dbm": self.signal()}).encode()
+    if op == "autolock" and self.autolock is not None:
+      if pairing.open_session(PEER, self.dongle_id(), req.get("sn"), req.get("cn"), req.get("proof")) is None:
+        return json.dumps({"op": "autolock", "ok": False, "error": "not paired - pair StarLock again"}).encode()
+      r = self.autolock(req.get("set"))
+      # a notification carries at most MTU - 3 (244) bytes: the lines and switches, and a short status
+      out = {"op": "autolock", "ok": bool(r.get("ok"))}
+      if "error" in r:
+        out["error"] = str(r["error"])[:120]
+      if "config" in r:
+        out["config"] = {k: r["config"][k] for k in ("lock", "unlock", "lock_dbm", "away_dbm", "unlock_dbm", "unlock_min")}
+      if "status" in r:
+        st = r["status"]
+        out["status"] = {"phase": st.get("phase"), "event": str(st.get("event") or "")[:40], "dbm": st.get("dbm")}
+      return json.dumps(out, separators=(",", ":")).encode()
     return json.dumps({"op": "error", "error": "unknown op"}).encode()
+
+  def feed(self, data: bytes, offset: int = 0) -> bytes | None:
+    """One write from bluez. A request longer than one packet (the auto-lock settings with the pairing proof) arrives
+    as a long write in pieces with their offsets: collect them, answer once the JSON is whole."""
+    if offset == 0:
+      self._buf = bytearray()
+    buf = getattr(self, "_buf", bytearray())
+    if offset != len(buf) or len(buf) + len(data) > MAX_REQUEST:
+      self._buf = bytearray()
+      return None
+    buf += data
+    self._buf = buf
+    try:
+      json.loads(bytes(buf).decode())
+    except (ValueError, UnicodeDecodeError):
+      return None if len(buf) > 2 and buf[:1] == b"{" else self.handle(bytes(buf))
+    self._buf = bytearray()
+    return self.handle(bytes(buf))
 
 
 def run(handler: Handler, started, log=lambda s: None) -> None:
@@ -102,7 +141,9 @@ def run(handler: Handler, started, log=lambda s: None) -> None:
     @dbus.service.method("org.bluez.GattCharacteristic1", in_signature="aya{sv}")
     def WriteValue(self, value, options):
       log(f"<- {len(value)} bytes {bytes(value)[:60]!r} {dict(options)}")
-      tx.send(handler.handle(bytes(value)))
+      out = handler.feed(bytes(value), int(options.get("offset", 0)))
+      if out is not None:
+        tx.send(out)
     @dbus.service.method(PROPS_IFACE, in_signature="s", out_signature="a{sv}")
     def GetAll(self, iface):
       return self.props()
@@ -132,7 +173,7 @@ def run(handler: Handler, started, log=lambda s: None) -> None:
     def __init__(self):
       super().__init__(bus, base + "/s0")
 
-  app, adv, _svc = App(), Adv(), Service()
+  _app, _adv, _svc = App(), Adv(), Service()   # kept referenced: bluez calls these objects
   hci = bus.get_object("org.bluez", "/org/bluez/hci0")
   gatt = dbus.Interface(hci, "org.bluez.GattManager1")
   advm = dbus.Interface(hci, "org.bluez.LEAdvertisingManager1")
@@ -167,7 +208,8 @@ def run(handler: Handler, started, log=lambda s: None) -> None:
   glib.g_main_loop_run(glib.g_main_loop_new(None, 0))
 
 
-def start(dongle_id, door, started, log=lambda s: None) -> threading.Thread:
-  t = threading.Thread(target=run, args=(Handler(dongle_id, door), started, log), name="starview-ble-door", daemon=True)
+def start(dongle_id, door, started, log=lambda s: None, autolock=None, signal=None) -> threading.Thread:
+  t = threading.Thread(target=run, args=(Handler(dongle_id, door, autolock, signal), started, log), name="starview-ble-door",
+                       daemon=True)
   t.start()
   return t

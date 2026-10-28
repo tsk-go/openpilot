@@ -101,6 +101,7 @@ REPLAY = "REPLAY" in os.environ
 # StarView: the tablet's lock / unlock button (starviewd writes the request, card answers in the result) - RAM only
 DOOR_REQUEST = "/dev/shm/starview_door_request"
 DOOR_RESULT = "/dev/shm/starview_door_result"
+DRIVER_DOOR = "/dev/shm/starview_driver_door"   # StarLock auto-lock (starview/autolock.py): written only on a change
 
 EventName = log.OnroadEvent.EventName
 DISTANCE_GESTURE_KEYS = {Press.SHORT: ('DistanceButtonControl', 0),
@@ -508,6 +509,27 @@ class Car:
     if cmd.split(' ')[0] in ('lock', 'unlock') and len(cmd) <= 32 and 0 <= age < 5:   # "lock" / "unlock horn 2x8x17" ...
       door_locks.manual = cmd
 
+  def publish_driver_door(self, CS) -> None:
+    """StarLock auto-lock: the driver's door, any door and Park, written to DRIVER_DOOR only when one of them changes
+    (a few times per stop). starviewd's autolock arms on the driver's door closing in Park."""
+    drv = getattr(self.CI.CS, 'driver_door_open', None)
+    if drv is None:
+      return
+    now = (bool(drv), bool(CS.doorOpen), CS.gearShifter == structs.CarState.GearShifter.park)
+    if now == getattr(self, '_driver_door_prev', None):
+      return
+    prev, self._driver_door_prev = getattr(self, '_driver_door_prev', None), now
+    self._driver_door_n = getattr(self, '_driver_door_n', 0) + 1
+    if prev is not None and prev[0] and not now[0]:   # the driver's door just closed (counted, so none is missed)
+      self._driver_door_closes = getattr(self, '_driver_door_closes', 0) + 1
+    try:
+      with open(DRIVER_DOOR + '.tmp', 'w') as f:
+        f.write(json.dumps({'n': self._driver_door_n, 'driver': 'open' if now[0] else 'shut', 'any_open': now[1],
+                            'park': now[2], 'closes': getattr(self, '_driver_door_closes', 0)}))
+      os.replace(DRIVER_DOOR + '.tmp', DRIVER_DOOR)
+    except OSError:
+      pass
+
   def refresh_slc_configuration(self, now_ns: int) -> None:
     configuration = getattr(self, 'slc_requested_configuration', None)
     if configuration is None or configuration == getattr(self, 'slc_configuration', None):
@@ -599,6 +621,7 @@ class Car:
                                  max((stamp for stamp, _ in can_list), default=0), cancel_boot_ns)
     self.refresh_slc_configuration(now_ns)
     self.poll_door_request()
+    self.publish_driver_door(CS)
     evidence = getattr(self.CI.CS, 'dashboard_limit', None) if self.slc_replay else None
     observation = evidence.observation if evidence is not None else None
     floor_ns = getattr(self, 'slc_source_floor_ns', 0)
