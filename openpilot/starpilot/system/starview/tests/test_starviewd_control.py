@@ -400,7 +400,7 @@ def test_door_asks_card_and_reports_its_answer(tmp_path, monkeypatch):
       if req.exists():
         seen.append(req.read_text())
         req.unlink()
-        res.write_text(json.dumps({"result": "lock: confirmed", "time": tm.time()}))
+        res.write_text(json.dumps({"result": "lock: confirmed", "time": tm.time()}))  # noqa: TID251  card writes wall-clock times
         return
       tm.sleep(0.02)
   th.Thread(target=card).start()
@@ -415,3 +415,20 @@ def test_door_asks_card_and_reports_its_answer(tmp_path, monkeypatch):
   assert hub.control({"action": "door", "cmd": "lock", "beeps": {"n": 2}})["error"] == "bad horn pattern"
   assert not hub.control({"action": "door", "cmd": "open"})["ok"]
   assert not make_hub(onroad=False, started=False).control({"action": "door", "cmd": "lock"})["ok"]
+
+
+def test_autolock_settings_action(tmp_path, monkeypatch):
+  from openpilot.starpilot.system.starview import autolock
+  monkeypatch.setattr(autolock, "CONFIG", str(tmp_path / "autolock.json"))
+  monkeypatch.setattr(autolock.load_config, "__defaults__", (str(tmp_path / "autolock.json"),))
+  monkeypatch.setattr(autolock.save_config, "__defaults__", (str(tmp_path / "autolock.json"),))
+  hub = make_hub(onroad=True, started=True)
+  hub.autolock = autolock.AutoLock(lambda *a: {"ok": True}, lambda: -50, str(tmp_path / "autolock.json"), str(tmp_path / "door"))
+  hub.phone_signal = type("S", (), {"read": staticmethod(lambda: -61)})()
+  r = hub.control({"action": "autolock"})
+  assert r["ok"] and r["config"]["lock"] is False and r["status"]["phase"] == "idle"
+  r = hub.control({"action": "autolock", "set": {"lock": True, "lock_dbm": -55}})
+  assert r["ok"] and r["config"]["lock"] is True and r["config"]["lock_dbm"] == -55
+  assert hub.control({"action": "autolock"})["config"]["lock_dbm"] == -55
+  assert not hub.control({"action": "autolock", "set": {"lock_dbm": 5}})["ok"]
+  assert hub.control({"action": "autolock_rssi"}) == {"ok": True, "dbm": -61}

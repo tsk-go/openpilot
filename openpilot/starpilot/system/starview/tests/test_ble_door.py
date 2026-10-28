@@ -13,7 +13,10 @@ def key(tmp_path, monkeypatch):
 
 
 def handler(calls):
-  return ble_door.Handler(lambda: "6e453c4b", lambda cmd, sound, beeps=None: calls.append((cmd, sound) + ((beeps,) if beeps else ())) or {"ok": True, "result": f"{cmd}: sent"})
+  def door(cmd, sound, beeps=None):
+    calls.append((cmd, sound) + ((beeps,) if beeps else ()))
+    return {"ok": True, "result": f"{cmd}: sent"}
+  return ble_door.Handler(lambda: "6e453c4b", door)
 
 
 def ask(h, **req):
@@ -54,3 +57,42 @@ def test_wrong_key_or_command_is_refused():
   assert ask(h, op="hello", cn="xyz")["op"] == "error"
   assert json.loads(h.handle(b"\xff"))["op"] == "error"
   assert calls == []
+
+
+def test_autolock_settings_need_the_key_and_rssi_does_not():
+  saved = []
+  h = ble_door.Handler(lambda: "6e453c4b", lambda cmd, sound, beeps=None: {"ok": True},
+                       autolock=lambda new: saved.append(new) or {"ok": True, "status": {"phase": "idle"}},
+                       signal=lambda: -57)
+  assert ask(h, op="rssi") == {"op": "rssi", "dbm": -57}
+  cn = "ef" * 16
+  hello = ask(h, op="hello", cn=cn)
+  assert not ask(h, op="autolock", set={"lock": True}, sn=hello["sn"], cn=cn, proof="00" * 32)["ok"]
+  assert saved == []
+  hello = ask(h, op="hello", cn=cn)
+  r = ask(h, op="autolock", set={"lock": True}, sn=hello["sn"], cn=cn, proof=pairing.client_proof("6e453c4b", hello["sn"], cn))
+  assert r["ok"] and r["status"]["phase"] == "idle"
+  assert saved == [{"lock": True}]
+
+
+def test_long_write_in_pieces_and_short_answers():
+  h = ble_door.Handler(lambda: "6e453c4b", lambda cmd, sound, beeps=None: {"ok": True},
+                       autolock=lambda new: {"ok": True, "status": {"phase": "returning", "event": "x" * 200, "dbm": -100},
+                                             "config": {"lock": True, "unlock": True, "lock_dbm": -52, "away_dbm": -75,
+                                                        "unlock_dbm": -62, "unlock_min": 30, "sound": "horn",
+                                                        "lock_beeps": [1, 80, 170], "unlock_beeps": [2, 80, 170]}})
+  cn = "ab" * 16
+  hello = json.loads(h.feed(json.dumps({"op": "hello", "cn": cn}).encode()))
+  req = json.dumps({"op": "autolock", "set": {"lock": True, "unlock": True, "lock_dbm": -52, "away_dbm": -75, "unlock_dbm": -62,
+                                              "unlock_min": 30, "sound": "horn", "lock_beeps": [1, 80, 170],
+                                              "unlock_beeps": [2, 80, 170]},
+                    "sn": hello["sn"], "cn": cn, "proof": pairing.client_proof("6e453c4b", hello["sn"], cn)}).encode()
+  assert len(req) > 244
+  pieces = [req[i:i + 200] for i in range(0, len(req), 200)]
+  assert h.feed(pieces[0], 0) is None                     # waits for the rest
+  out = h.feed(pieces[1], 200)
+  assert len(out) <= 244
+  r = json.loads(out)
+  assert r["ok"] and r["config"]["unlock_min"] == 30 and len(r["status"]["event"]) == 40
+  assert json.loads(h.feed(b"\xff"))["op"] == "error"     # junk still gets an answer
+  assert h.feed(b"{\"op\":", 0) is None and h.feed(b"\"rssi\"}", 99) is None   # out of order: dropped

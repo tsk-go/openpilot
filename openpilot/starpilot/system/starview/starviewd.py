@@ -847,6 +847,11 @@ class Hub:
     self._flag_t = 0.0
     self.engaged = False
     self.started = False
+    # StarLock auto-lock (autolock.py): the comma's reading of the phone's Bluetooth signal, and the walk-away logic
+    from openpilot.starpilot.system.starview.autolock import AutoLock, PhoneSignal
+    self.phone_signal = PhoneSignal()
+    self.autolock = AutoLock(lambda cmd, sound, beeps: self._door({"cmd": cmd, "sound": sound, "beeps": beeps}),
+                             self.phone_signal.read, log=cloudlog.warning)
     # StarView runs as its own service (service.py) and outlives openpilot: deviceState (2 Hz) tells whether it's up
     self.openpilot_down = False
     self._ds_sock = None
@@ -1541,6 +1546,15 @@ class Hub:
         out["p"]["IsOnroad"] = True   # the tablet shows the drive screens, as when that drive was recorded
     return out
 
+  def autolock_settings(self, new=None) -> dict:
+    """StarLock's auto-lock settings (saved in /data/starview/autolock.json) and what it's doing now."""
+    from openpilot.starpilot.system.starview import autolock
+    try:
+      cfg = autolock.save_config(new) if new is not None else autolock.load_config()
+    except (ValueError, OSError) as e:
+      return {"ok": False, "error": str(e)}
+    return {"ok": True, "config": cfg, "status": self.autolock.status()}
+
   def _door(self, req: dict) -> dict:
     """The tablet's / phone's Lock / Unlock: card hands it to the Toyota controller, which runs the door active test
     (door_locks.py) over the normal link - nothing paused, so no cruise fault. sound: "horn" (default), "none", "buzzer".
@@ -1705,6 +1719,10 @@ class Hub:
         if self.started or self._onroad():
           return {"ok": False, "error": "Updates are installed while the car is off."}
         return self.ops.software_fast()
+      if act == "autolock":
+        return self.autolock_settings(req.get("set"))
+      if act == "autolock_rssi":
+        return {"ok": True, "dbm": self.phone_signal.read()}
       if act == "update_check":
         return self.ops.update_check()
       if act == "update_download":
@@ -2878,9 +2896,17 @@ def start_ble_door(hub):
     return
   try:
     from openpilot.starpilot.system.starview import ble_door
-    ble_door.start(hub.ops.dongle_id, lambda cmd, sound, beeps=None: hub._door({"cmd": cmd, "sound": sound, "beeps": beeps}), lambda: hub.started)
+    ble_door.start(hub.ops.dongle_id, lambda cmd, sound, beeps=None: hub._door({"cmd": cmd, "sound": sound, "beeps": beeps}),
+                   lambda: hub.started, autolock=hub.autolock_settings, signal=hub.phone_signal.read)
   except Exception as e:
     cloudlog.warning(f"starview: ble door: {e}")
+
+
+def start_autolock(hub):
+  """StarLock auto-lock / auto-unlock (autolock.py): idle (two stat() calls every 0.5 s) unless switched on in StarLock
+  and armed by the driver's door closing in Park."""
+  from openpilot.starpilot.system.starview import autolock
+  threading.Thread(target=autolock.run, args=(hub.autolock, lambda: hub.started), name="starview-autolock", daemon=True).start()
 
 
 def main():
@@ -2896,6 +2922,7 @@ def main():
   threading.Thread(target=log_archive_thread, name="starview-logarchive", daemon=True).start()
   threading.Thread(target=tablet_flag_thread, args=(app["hub"],), name="starview-tabletflag", daemon=True).start()
   start_ble_door(app["hub"])
+  start_autolock(app["hub"])
   app.add_routes([
     web.get("/", http_index),
     web.get("/status", http_status),

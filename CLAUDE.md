@@ -193,6 +193,15 @@ Paths are under `openpilot/` unless noted.
     tablet (pairing.py, peer "ble"), then starviewd's `door` action. The phone also tries Wi-Fi (starviewd /hello,
     /auth, `door` over /data) at the same time; whichever reaches the comma first does it. Off with
     /data/starview/no_ble_door. The app's source is in the StarView repo (module `starlock`).
+32. StarLock auto-lock / auto-unlock (patch 51): `starview/autolock.py`. card publishes the driver's door (Toyota
+    `CarState.driver_door_open` from BODY_CONTROL_STATE DOOR_OPEN_FL), any door and Park to /dev/shm/starview_driver_door
+    only on a change, with a count of driver's-door closes. A close in Park with the phone connected arms it for 60 s;
+    the comma's own reading of the phone (`sudo -n btmgmt con` / `conn-info`, 2x a second while armed) below the lock
+    line, or the phone dropping off, locks through `door`. Auto-unlock (optional, only after an auto-lock, within
+    unlock_min): the phone must go below the walk-away line first, then come back above the unlock line. Any door opening
+    or leaving Park disarms. Settings in /data/starview/autolock.json (StarLock writes them: BLE op `autolock` with the
+    pairing proof, or starviewd action `autolock`); live reading: BLE op `rssi` / action `autolock_rssi`. Idle cost: two
+    stat() calls every 0.5 s while started.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
