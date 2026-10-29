@@ -533,6 +533,7 @@ def test_offline_tick_closes_a_held_door_and_restores_the_boot_service(monkeypat
   monkeypatch.setattr(offline, "enabled", lambda: True)
   monkeypatch.setattr(offline, "boot_installed", lambda: False)
   monkeypatch.setattr(offline, "install", lambda: calls.append("install"))
+  monkeypatch.setattr(starviewd.Hub, "_offline_time", lambda self, now, started: None)
   hub = make_hub(started=True)
   hub.offline_tick(100.0)
   assert calls == ["expire"]                              # car on: no remount
@@ -560,3 +561,32 @@ def test_doorbelt_history_any_time_live_and_learn_only_parked(monkeypatch, tmp_p
   monkeypatch.setattr(starviewd, "techstream_parked", lambda h: False)
   assert hub.control({"action": "doorbelt", "op": "live"}) == {"ok": False, "error": "Put it in Park and stand still."}
   assert hub.control({"action": "doorbelt", "op": "nope"})["ok"] is False
+
+
+def test_offline_clock_runs_beside_the_heartbeat_and_only_sets_the_clock_with_the_car_off(monkeypatch):
+  from openpilot.starpilot.system.starview import offline
+  calls = []
+  monkeypatch.setattr(offline, "door_expire", lambda now=None: None)
+  monkeypatch.setattr(offline, "enabled", lambda: True)
+  monkeypatch.setattr(offline, "boot_installed", lambda: True)
+  monkeypatch.setattr(offline, "time_allow", lambda: calls.append("allow") or 3)
+  monkeypatch.setattr(offline, "clock_fix", lambda: calls.append("clock") or 0.0)
+  threads = []
+  monkeypatch.setattr(starviewd.threading, "Thread", lambda target, args, **kw: threads.append((target, args)) or SimpleNamespace(start=lambda: None))
+  hub = make_hub(started=True)
+  hub.offline_tick(100.0)
+  hub.offline_tick(131.0)                      # still busy: no second thread
+  assert len(threads) == 1
+  target, args = threads.pop()
+  target(*args)
+  assert calls == ["allow"] and hub._offline_time_next == 100.0 + 300   # car on: no clock, looked at again in 5 min
+  hub.started = False
+  hub.offline_tick(400.0)
+  target, args = threads.pop()
+  target(*args)
+  assert calls[1:] == ["allow", "clock"] and hub._offline_time_next == 400.0 + hub.OFFLINE_TIME_S
+  monkeypatch.setattr(offline, "time_allow", lambda: 0)     # no network yet
+  hub.offline_tick(400.0 + hub.OFFLINE_TIME_S)
+  target, args = threads.pop()
+  target(*args)
+  assert hub._offline_time_next == 400.0 + hub.OFFLINE_TIME_S + hub.OFFLINE_TIME_RETRY_S

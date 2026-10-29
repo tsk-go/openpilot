@@ -260,6 +260,14 @@ Paths are under `openpilot/` unless noted.
     "elsewhere" counts only the other steps and the first 5 s (walking through a door between steps is fine); "Again"
     forgets the earlier try. Action `doorbelt` {op: status | live |
     begin | start | done | skip | save | cancel}; live and Learn need the car on in Park, standing still.
+36. The clock in offline mode (patch 56): offline mode blocked the time servers, so parked without a GPS fix the clock
+    fell months behind (Oct 29: July 28) and every TLS connection failed ("certificate is not yet valid": updates,
+    Mapbox). `offline.py`: rule 9030 lets the time servers through - what `timedatectl show-timesync` lists plus
+    TIME_HOSTS, and Google's / Cloudflare's fixed anycast addresses (TIME4, also at boot) - NTP only (`ipproto udp
+    dport 123`; a kernel that refuses that gets the whole address); timesyncd is restarted when it isn't synced yet.
+    `clock_fix` sets the clock from GitHub's Date header (read without the certificate check) when it's > 60 s off.
+    starviewd `offline_tick` runs both in a thread of its own every 30 min (1 min after a failure, 5 min while the car
+    is on; the clock only with the car off - driving, GPS sets it). `offline.py clock` does it by hand.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
