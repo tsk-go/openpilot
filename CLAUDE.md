@@ -288,6 +288,10 @@ Paths are under `openpilot/` unless noted.
     `clock_fix` sets the clock from GitHub's Date header (read without the certificate check) when it's > 60 s off.
     starviewd `offline_tick` runs both in a thread of its own every 30 min (1 min after a failure, 5 min while the car
     is on; the clock only with the car off - driving, GPS sets it). `offline.py clock` does it by hand.
+37. Car on keeps the tablet where it was (patch 59): starviewd's `tablet_power_thread` woke the tablet and ran `am start`
+    of StarView's MainActivity at every ignition on. MainActivity is singleTask, so that closed every StarView screen
+    above it (Settings, Doors & belts...) even with the tablet on and showing StarView. `_tablet_wake` now asks
+    `dumpsys window` which app is in front (mFocusedApp, then mCurrentFocus) and starts StarView only when it isn't.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

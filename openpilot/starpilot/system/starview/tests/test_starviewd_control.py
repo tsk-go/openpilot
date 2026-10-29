@@ -665,3 +665,22 @@ def test_offline_clock_runs_beside_the_heartbeat_and_only_sets_the_clock_with_th
   target, args = threads.pop()
   target(*args)
   assert hub._offline_time_next == 400.0 + hub.OFFLINE_TIME_S + hub.OFFLINE_TIME_RETRY_S
+
+
+@pytest.mark.parametrize("dumpsys,awake,expect,started", [
+  ("  mFocusedApp=ActivityRecord{8d1c2a u0 com.starpilot.starview/.SettingsActivity t1234}\n", True, "nothing", False),
+  ("  mFocusedApp=ActivityRecord{8d1c2a u0 com.starpilot.starview/.SettingsActivity t1234}\n", False, "woke", False),
+  ("  mCurrentFocus=Window{a1 u0 com.starpilot.starview/com.starpilot.starview.MainActivity}\n  mFocusedApp=null\n", True, "nothing", False),
+  ("  mFocusedApp=ActivityRecord{9 u0 com.google.android.apps.maps/com.google.Maps t7}\n", True, "started", True),
+  ("  mCurrentFocus=Window{b2 u0 NotificationShade}\n  mFocusedApp=null\n", False, "started", True),
+])
+def test_car_on_never_restarts_starview_when_it_is_already_in_front(monkeypatch, dumpsys, awake, expect, started):
+  calls = []
+
+  def adb(*args, timeout=10):
+    calls.append(args)
+    return SimpleNamespace(stdout=dumpsys if args[:2] == ("shell", "dumpsys") else "", returncode=0)
+  monkeypatch.setattr(starviewd, "_adb", adb)
+  assert starviewd._tablet_wake(awake) == expect
+  assert (("shell", "am", "start", "-n", "com.starpilot.starview/.MainActivity") in calls) == started
+  assert (("shell", "input", "keyevent", "KEYCODE_WAKEUP") in calls) == (not awake)

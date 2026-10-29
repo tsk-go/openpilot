@@ -39,6 +39,7 @@ Design notes:
 import asyncio
 import fcntl
 import pty
+import re
 import signal
 import termios
 import json
@@ -2894,6 +2895,35 @@ def _tablet_awake():
   return None
 
 
+STARVIEW_PKG = "com.starpilot.starview"
+
+
+def _tablet_front():
+  """The app in front on the tablet (its focused activity's package), or None when that can't be told."""
+  r = _adb("shell", "dumpsys", "window")
+  if r is None:
+    return None
+  for key in ("mFocusedApp=", "mCurrentFocus="):
+    for ln in r.stdout.splitlines():
+      if key in ln:
+        m = re.search(r"\b([A-Za-z][\w.]*\.[\w.]+)/", ln)
+        if m:
+          return m.group(1)
+  return None
+
+
+def _tablet_wake(awake: bool) -> str:
+  """Car on: screen on, and StarView in front - but only started when it isn't already in front. Starting its main
+  screen (singleTask) while StarView shows Settings or any other of its screens would close them all and drop the
+  driver back on the main screen. Returns what it did."""
+  if not awake:
+    _adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+  if _tablet_front() == STARVIEW_PKG:
+    return "woke" if not awake else "nothing"
+  _adb("shell", "am", "start", "-n", f"{STARVIEW_PKG}/.MainActivity")
+  return "started"
+
+
 def tablet_power_thread():
   if shutil.which("adb") is None or not os.path.isdir(ADB_HOME):
     cloudlog.info("starview: tablet power follow off (no adb or no paired key)")
@@ -2934,10 +2964,7 @@ def tablet_power_thread():
       if awake is None:
         continue                          # tablet not reachable yet (booting / tethering coming up): try again
       if want == "wake":
-        if not awake:
-          _adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
-        _adb("shell", "am", "start", "-n", "com.starpilot.starview/.MainActivity")
-        cloudlog.warning("starview: car on -> tablet screen on")
+        cloudlog.warning(f"starview: car on -> tablet: {_tablet_wake(awake)}")
       elif want == "sleep" and awake:
         _adb("shell", "input", "keyevent", "KEYCODE_SLEEP")
         cloudlog.warning("starview: car off -> tablet screen off")
