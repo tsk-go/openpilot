@@ -23,11 +23,17 @@
 
 # Syncing upstream
 
-"Sync" means: merge https://github.com/firestar5683/StarPilot branch `Dom` into this repo's `Dom` with a merge commit
-(`git fetch https://github.com/firestar5683/StarPilot.git Dom && git merge --no-edit -m "Merge upstream StarPilot Dom"
-FETCH_HEAD`), then a normal push. Oct 29: firestar folded `SecretGoodStarPilot` into `Dom` and deleted it, so this
-repo's `Dom` branch was started from `SecretGoodStarPilot_v2` (all our patches through 57) and syncs from `Dom` now;
+"Sync" means: merge https://github.com/StarPilotHQ/StarPilot branch `Dom` into this repo's `Dom` with a merge commit
+(`git fetch https://github.com/StarPilotHQ/StarPilot.git Dom && git merge --no-edit -m "Merge upstream StarPilot Dom"
+FETCH_HEAD`), then a normal push. firestar's repo moved from firestar5683/StarPilot to StarPilotHQ/StarPilot (the old
+address still redirects). Oct 29: firestar folded `SecretGoodStarPilot` into `Dom` and deleted it, so this repo's
+`Dom` branch was started from `SecretGoodStarPilot_v2` (all our patches through 57) and syncs from `Dom` now;
 `SecretGoodStarPilot_v2` and `SecretGoodStarPilot_v2-pre-oct26` are kept as they were and no longer synced.
+
+The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
+tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
+and the sunnypilot network's LFS budget was used up; in firestar's network every LFS file of his history is already
+there, so syncs push without uploading any.
 Never rebase or force-push for a sync: the local commits must be kept as they are. On a conflict, stop and ask.
 
 # Panda firmware (ours, not upstream's)
