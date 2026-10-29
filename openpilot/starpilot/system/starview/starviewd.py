@@ -1674,18 +1674,46 @@ class Hub:
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
       return {"ok": False, "error": str(e)[:200]}
 
+  OFFLINE_TIME_S = 1800.0     # time servers looked up again / clock checked
+  OFFLINE_TIME_RETRY_S = 60.0  # ... sooner while that failed (no network yet after a boot)
+
   def offline_tick(self, now: float) -> None:
     """Every 30 s (tablet_flag_thread): close a download door that was held open too long, and - car off, offline
-    mode on - put the boot service back when it's missing or runs an old copy (an AGNOS update, /data/tools)."""
+    mode on - put the boot service back when it's missing or runs an old copy (an AGNOS update, /data/tools).
+    Offline mode on: every OFFLINE_TIME_S the time servers' addresses are refreshed and (car off) the clock checked
+    against GitHub's - in a thread of its own, the lookups must never hold up this heartbeat."""
     if now - getattr(self, "_offline_t", -1e9) < self.OFFLINE_CHECK_S:
       return
     self._offline_t = now
     offline_mode.door_expire()
+    if offline_mode.enabled() and now >= getattr(self, "_offline_time_next", 0.0) and not getattr(self, "_offline_time_busy", False):
+      self._offline_time_busy = True
+      threading.Thread(target=self._offline_time, args=(now, bool(self.started)), name="starview-offline-time", daemon=True).start()
     if not self.started and offline_mode.enabled() and not getattr(self, "_offline_boot_checked", False):
       self._offline_boot_checked = True
       if not offline_mode.boot_installed():
         offline_mode.install()
         cloudlog.info("starview: offline boot service (re)installed")
+
+  def _offline_time(self, now: float, started: bool) -> None:
+    """Time servers' addresses again, and - car off - the clock against GitHub's (driving: GPS sets it, timed.py).
+    Next in OFFLINE_TIME_S; sooner after a failure, or while the car is on (so the clock is checked soon after)."""
+    wait = self.OFFLINE_TIME_RETRY_S
+    try:
+      if offline_mode.time_allow() > 0:
+        wait = self.OFFLINE_TIME_S
+      if started:
+        wait = min(wait, 5 * self.OFFLINE_TIME_RETRY_S)
+      else:
+        off = offline_mode.clock_fix()
+        if off:
+          cloudlog.warning(f"starview: clock was {off:+.0f} s off - set from GitHub")
+    except Exception as e:
+      wait = self.OFFLINE_TIME_RETRY_S
+      cloudlog.warning(f"starview: offline clock: {e}")
+    finally:
+      self._offline_time_next = now + wait
+      self._offline_time_busy = False
 
   def _doorbelt_ok(self):
     """Live and Learn read the CAN bus only with the car on (openpilot started), in Park and standing still."""

@@ -16,9 +16,16 @@ class FakeIp:
     self.rules = {"-4": [], "-6": []}
     self.default_route = True
     self.calls = []
+    self.timesync = "time.example.org\n"
+    self.synced = "no\n"
+    self.ports = True          # the kernel's rules know ipproto / dport
 
   def __call__(self, argv, **kw):
     stdin = kw.get("input")
+    if argv[0] == "timedatectl":
+      self.calls.append(argv)
+      out = self.timesync if argv[1] == "show-timesync" else self.synced
+      return SimpleNamespace(returncode=0, stdout=out, stderr="")
     assert argv[:2] == ["sudo", "-n"]
     cmd = argv[2:]
     self.calls.append(cmd)
@@ -26,6 +33,8 @@ class FakeIp:
     if cmd[0] == "ip" and "-batch" in cmd:
       fam = cmd[1]
       for line in (stdin or "").splitlines():
+        if "dport" in line and not self.ports:
+          return SimpleNamespace(returncode=2, stdout="", stderr='Error: argument "ipproto" is wrong')
         self._rule(fam, line.split())
     elif cmd[:4] in (["ip", "-4", "rule", "show"], ["ip", "-6", "rule", "show"]):
       out = "\n".join(f"{p}:\tfrom all {rest}" for p, rest in self.rules[cmd[1]]) + "\n"
@@ -63,6 +72,7 @@ def ip(tmp_path, monkeypatch):
   monkeypatch.setattr(offline, "UNIT", str(tmp_path / "sv-offline.service"))
   monkeypatch.setattr(offline, "cloudfront", lambda: ["13.32.0.0/15"])
   addrs = {"github.com": ["140.82.112.3"], "api.mapbox.com": ["13.32.1.1"], "huggingface.co": ["3.167.112.38"],
+           "time.example.org": ["203.0.113.5"], "time.google.com": ["216.239.35.4"],
            "us.aws.cdn.hf.co": ["98.90.123.60", "32.193.91.216"]}
   monkeypatch.setattr(offline, "resolve", lambda hosts, wait=10: {h: addrs[h] for h in hosts if h in addrs})
   fake.addrs = addrs
@@ -208,3 +218,51 @@ def test_boot_service_runs_this_file(ip):
   assert not offline.boot_installed()                    # the old /data/tools copy: starviewd reinstalls
   assert ["systemctl", "enable", "sv-offline.service"] in ip.calls
   assert os.path.basename(offline.SCRIPT) == "offline.py"
+
+
+def test_time_servers_pass_ntp_only_and_boot_has_the_fixed_ones(ip):
+  offline.on()
+  t = ip.prio(9030)
+  assert "to 216.239.35.0/28 ipproto udp dport 123 lookup main" in t
+  assert "to 203.0.113.5/32 ipproto udp dport 123 lookup main" in t          # what timesyncd is set to use
+  assert not any("216.239.35.4/32" in r for r in t)                         # already inside the fixed range
+  assert ["sudo", "-n", "systemctl", "restart", "systemd-timesyncd"] in [["sudo", "-n", *c] for c in ip.calls]
+  offline.time_allow()                                                       # every 30 min: replaced, not doubled
+  assert sorted(ip.prio(9030)) == sorted(t)
+  offline.clear()
+  ip.default_route = False
+  offline.boot()
+  assert sorted(ip.prio(9030)) == sorted(f"to {n} ipproto udp dport 123 lookup main" for n in offline.TIME4)
+  offline.off()
+  assert ip.prio(9030) == []
+
+
+def test_a_kernel_without_port_rules_lets_the_time_servers_through_whole(ip):
+  ip.ports = False
+  offline.on()
+  assert "to 203.0.113.5/32 lookup main" in ip.prio(9030)
+  assert ip.prio(9200) == ["unreachable"]                                   # offline mode itself untouched
+
+
+def test_clock_set_from_github_only_when_off(ip, monkeypatch):
+  real = 1_793_300_000.0
+  monkeypatch.setattr(offline, "github_time", lambda timeout=5: real)
+  assert offline.clock_fix(now=real - 30) == 0.0
+  assert not any(c[0] == "date" for c in ip.calls)
+  off = offline.clock_fix(now=real - 93 * 86400)                            # three months behind
+  assert round(off) == 93 * 86400
+  assert ["date", "-u", "-s", f"@{int(real)}"] in ip.calls
+
+
+def test_github_time_reads_the_date_header_without_the_certificate(monkeypatch):
+  seen = {}
+
+  class Resp(io.BytesIO):
+    headers = {"Date": "Thu, 29 Oct 2026 17:03:07 GMT"}
+
+  def fake(req, timeout=None, context=None):
+    seen.update(method=req.get_method(), verify=context.verify_mode)
+    return Resp(b"")
+  monkeypatch.setattr(offline.urllib.request, "urlopen", fake)
+  assert offline.github_time() == 1793293387.0
+  assert seen == {"method": "HEAD", "verify": offline.ssl.CERT_NONE}

@@ -5,12 +5,14 @@ and - only while a model / sound download runs - Hugging Face (the "download doo
 
   python3 offline.py on | off | status | install | uninstall | boot
   python3 offline.py door open | close | status | auto on | auto off
+  python3 offline.py clock          (set the clock from GitHub's when it's off)
 
 How: routing rules (the comma's kernel has no nf_tables - iptables 1.8 answers "Could not fetch rule set generation id").
 Before the normal routing: (9000) GitHub's ranges and Amazon CloudFront's (Mapbox sits behind it) use the normal
-routes, (9050) the download door's addresses, (9100) every route except the default one (USB link, hotspot, Wi-Fi's
-own network, loopback), (9200) everything else is unreachable at once. IPv6 the same, or switched off when the kernel
-has no IPv6 rules. Comma's own servers (Microsoft), error reports (Google) and uploads stay blocked.
+routes, (9030) the time servers (NTP only, port 123, where the kernel can tell), (9050) the download door's addresses,
+(9100) every route except the default one (USB link, hotspot, Wi-Fi's own network, loopback), (9200) everything else
+is unreachable at once. IPv6 the same, or switched off when the kernel has no IPv6 rules. Comma's own servers
+(Microsoft), error reports (Google) and uploads stay blocked.
 
 Remembered in /data/starview/offline; "boot" puts it back after a restart: "install" adds the sv-offline boot service
 that runs it before openpilot starts. An AGNOS update removes that service (system partition): starviewd puts it back.
@@ -18,18 +20,28 @@ that runs it before openpilot starts. An AGNOS update removes that service (syst
 The download door (models/manager.py, audio/downloads.py): with offline mode on, a download job opens it - Hugging
 Face's current addresses (they rotate) are let through, looked up again before every request, after every redirect and
 every 20 s while the job runs. When the last job ends it closes again, or - with "close after downloads" off - stays
-open until "door close" or DOOR_HOLD_S. Nothing runs while no download is going on. Standard library only: the boot
+open until "door close" or DOOR_HOLD_S.
+
+The clock: offline mode used to block the time servers, so with no GPS fix (parked indoors) the clock fell months
+behind and every secure connection - updates, Mapbox - failed on "certificate not yet valid". Now the time servers the
+comma's time sync uses (plus Google's and Cloudflare's fixed ones) are let through, looked up again every 30 min by
+starviewd (`time_allow`); and as a backup `clock_fix` sets the clock from GitHub's own time when it is more than a
+minute off (car off only; GitHub's answer is read without checking its certificate - that check is what a wrong clock
+breaks). Nothing runs while no download is going on. Standard library only: the boot
 service runs this file before openpilot is up.
 """
+import email.utils
 import fcntl
 import ipaddress
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -61,7 +73,7 @@ WantedBy=multi-user.target
 """
 
 
-PRIO_ALLOW, PRIO_DOOR, PRIO_LOCAL, PRIO_BLOCK = 9000, 9050, 9100, 9200
+PRIO_ALLOW, PRIO_TIME, PRIO_DOOR, PRIO_LOCAL, PRIO_BLOCK = 9000, 9030, 9050, 9100, 9200
 LOOKUP_S = 10   # "on" never waits longer than this for the lookups
 DOOR_HOLD_S = 3600   # with "close after downloads" off, the door still closes this long after the last download
 DOOR_KEEPALIVE_S = 20
@@ -78,6 +90,13 @@ CF_URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
 DOOR_HOSTS = ["huggingface.co", "us.aws.cdn.hf.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co",
               "transfer.xethub.hf.co"]
 DOOR_DOMAINS = ("huggingface.co", "hf.co")   # redirects are only followed (and let through) inside these
+# The clock (NTP): whatever systemd-timesyncd is set to use, plus these; Google's and Cloudflare's time servers sit on
+# fixed anycast addresses, so they work at boot before any lookup
+TIME_HOSTS = ["time.google.com", "time1.google.com", "time2.google.com", "time3.google.com", "time4.google.com",
+              "time.cloudflare.com", "ntp.ubuntu.com", "0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org", "3.pool.ntp.org"]
+TIME4 = ["216.239.35.0/28", "162.159.200.1/32", "162.159.200.123/32"]
+TIME_URL = "https://github.com"
+CLOCK_OFF_S = 60
 # CloudFront IPv4 ranges, Amazon's list of 2026-10-28 (merged); "on" refreshes it from CF_URL when it can
 CLOUDFRONT4 = """
 3.10.17.128/25 3.11.53.0/24 3.29.40.64/26 3.29.40.128/25 3.29.57.0/26 3.35.130.128/25 3.101.158.0/23
@@ -205,7 +224,7 @@ def allowed_now():
 def clear():
   for fam in ("-4", "-6"):
     shown = rules(fam)
-    dels = [f"rule del priority {prio}" for prio in (PRIO_ALLOW, PRIO_DOOR, PRIO_LOCAL, PRIO_BLOCK)
+    dels = [f"rule del priority {prio}" for prio in (PRIO_ALLOW, PRIO_TIME, PRIO_DOOR, PRIO_LOCAL, PRIO_BLOCK)
             for line in shown if line.startswith(f"{prio}:")]
     batch(fam, dels, force=True)
 
@@ -232,6 +251,10 @@ def on(resolve_hosts=True):
   except RuntimeError:
     clear()                      # never leave half of it in place
     raise
+  try:
+    time_allow(resolve_hosts)      # on its own: a kernel that can't do it never stops offline mode
+  except RuntimeError:
+    pass
   os.makedirs(os.path.dirname(FLAG), exist_ok=True)
   with open(FLAG, "w") as f:
     f.write(v6)
@@ -292,6 +315,84 @@ def boot():
   """After a restart: put it back if it was on (no lookups, nothing's up yet)."""
   if enabled() and not active():
     on(resolve_hosts=False)
+
+
+# ---- the clock --------------------------------------------------------------------------------------------------------
+
+def time_hosts() -> list:
+  """The servers systemd-timesyncd is set to use (its config, DHCP's, the built-in fallback), then TIME_HOSTS."""
+  hosts = []
+  try:
+    r = RUN(["timedatectl", "show-timesync", "-p", "SystemNTPServers", "-p", "FallbackNTPServers", "-p", "LinkNTPServers",
+             "-p", "ServerName", "--value"], capture_output=True, text=True, timeout=5)
+    hosts = [w for w in (r.stdout or "").split() if w and w != "n/a"]
+  except (OSError, subprocess.SubprocessError):
+    pass
+  return list(dict.fromkeys(hosts + TIME_HOSTS))
+
+
+def _time_rules(nets, port=True):
+  return [f"rule add priority {PRIO_TIME} to {n} {'ipproto udp dport 123 ' if port else ''}lookup main" for n in nets]
+
+
+def time_allow(resolve_hosts=True) -> int:
+  """(Re)writes the time servers' rules: TIME4 always, the looked-up servers too when resolve_hosts. NTP only where the
+  kernel's rules know ports (else the whole address - a time server). Returns how many addresses were looked up."""
+  nets = list(TIME4)
+  found = 0
+  if resolve_hosts:
+    hosts = time_hosts()
+    lits = []
+    for h in hosts:
+      try:
+        if ipaddress.ip_address(h).version == 4:
+          lits.append(f"{h}/32")
+      except ValueError:
+        pass
+    looked = resolve([h for h in hosts if f"{h}/32" not in lits], wait=5)
+    addrs = sorted({f"{ip}/32" for v in looked.values() for ip in v} | set(lits))
+    base = [ipaddress.ip_network(n) for n in TIME4]
+    extra = [a for a in addrs if not any(ipaddress.ip_network(a).subnet_of(b) for b in base)]
+    nets += extra
+    found = len(addrs)
+  dels = [f"rule del priority {PRIO_TIME}" for line in rules() if line.startswith(f"{PRIO_TIME}:")]
+  batch("-4", dels, force=True)
+  try:
+    batch("-4", _time_rules(nets))
+  except RuntimeError:
+    batch("-4", [f"rule del priority {PRIO_TIME}" for line in rules() if line.startswith(f"{PRIO_TIME}:")], force=True)
+    batch("-4", _time_rules(nets, port=False))
+  if resolve_hosts and found:
+    r = RUN(["timedatectl", "show", "-p", "NTPSynchronized", "--value"], capture_output=True, text=True)
+    if (r.stdout or "").strip() == "no":
+      sh("systemctl", "restart", "systemd-timesyncd", check=False)   # it waits minutes between tries on its own
+  return found
+
+
+def github_time(timeout=5) -> float:
+  """GitHub's clock (its Date header), read without checking the certificate - a wrong clock is what breaks that."""
+  ctx = ssl.create_default_context()
+  ctx.check_hostname = False
+  ctx.verify_mode = ssl.CERT_NONE
+  req = urllib.request.Request(TIME_URL, method="HEAD")
+  try:
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+      date = r.headers.get("Date")
+  except urllib.error.HTTPError as e:
+    date = e.headers.get("Date")
+  if not date:
+    raise RuntimeError("GitHub's answer had no time in it")
+  return email.utils.parsedate_to_datetime(date).timestamp()
+
+
+def clock_fix(now=None) -> float:
+  """Sets the clock from GitHub's when it's more than CLOCK_OFF_S off. Returns how far off it was (0 when fine)."""
+  t = github_time()
+  off = t - (time.time() if now is None else now)  # noqa: TID251  the wall clock is what's being checked
+  if abs(off) <= CLOCK_OFF_S:
+    return 0.0
+  sh("date", "-u", "-s", f"@{int(round(t))}")
+  return off
 
 
 # ---- the download door ------------------------------------------------------------------------------------------------
@@ -520,6 +621,7 @@ def status_text() -> str:
     text += f"  (saved setting: {'on' if saved else 'off'})"
   if on_now:
     text += f"  ·  GitHub + Mapbox: {passes} ranges let through"
+    text += f"  ·  time servers: {sum(1 for line in rules() if line.startswith(f'{PRIO_TIME}:'))}"
     text += f"  ·  download door: {'OPEN' if door['open'] else 'closed'}"
     if door["downloads"]:
       text += f" ({', '.join(door['downloads'])})"
@@ -551,6 +653,10 @@ def main(argv):
     elif sub != "status":
       sys.exit(__doc__)
     print(json.dumps(door_status()))
+    return
+  elif cmd == "clock":
+    drift = clock_fix()
+    print(f"clock was {drift:+.0f} s off - set from GitHub" if drift else "clock is right")
     return
   elif cmd != "status":
     sys.exit(__doc__)
