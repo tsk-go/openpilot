@@ -232,6 +232,20 @@ Paths are under `openpilot/` unless noted.
     stays up for 30 min after the car turns off (`Hub.ble_wanted`), and starviewd follows deviceState.started in its
     1 s openpilot check too - before, `started` only updated while a tablet was connected, so StarLock's Bluetooth,
     auto-lock and lock / unlock depended on the tablet. `blink.py window [SECS]` holds relay 3 by hand.
+34. Comma offline mode and the download door (patch 54): `starpilot/system/starview/offline.py` (standard library only).
+    The comma's kernel has no nf_tables, so it's policy routing: rule 9000 lets GitHub's ranges (updates) and Amazon
+    CloudFront's (Mapbox: maps, routes, live traffic - refreshed from ip-ranges.amazonaws.com at "on", saved in
+    /data/starview/offline_cloudfront) use the normal routes, 9050 the download door, 9100 every non-default route
+    (USB tablet, hotspot, Wi-Fi's own network), 9200 everything else unreachable; IPv6 the same or switched off.
+    /data/starview/offline remembers it; the sv-offline boot service (`offline.py install`, runs this file before
+    openpilot) puts it back. starviewd action `offline` {on} (installs the service), `offline_door` {close} /
+    {autoClose}, and a 30 s `offline_tick` (closes a door held too long; car off, puts back a missing or old boot
+    service - AGNOS updates remove it). The door: the model manager (`_work`) and sound downloads (`_run`) run inside
+    `offline.download_door`, and their default opener is `offline.urlopen` - with offline mode on, Hugging Face
+    (huggingface.co redirects every file to rotating plain-Amazon us.aws.cdn.hf.co) is let through at its current
+    addresses before every request, after every redirect and every 20 s while a download runs; after the last one it
+    closes, or with "close after downloads" off (/data/starview/offline_door.json) stays open until "Close now" or 1 h.
+    State in /dev/shm/starview_offline_door.json (jobs by pid, monotonic times). Nothing runs without a download.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

@@ -59,7 +59,7 @@ from openpilot.cereal import messaging
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.swaglog import cloudlog
-from openpilot.starpilot.system.starview import compat, pairing, replay
+from openpilot.starpilot.system.starview import compat, offline as offline_mode, pairing, replay
 
 try:
   from openpilot.common.version import get_build_metadata
@@ -1609,6 +1609,50 @@ class Hub:
     except (RuntimeError, OSError) as e:
       return {"ok": False, "error": str(e)}
 
+  OFFLINE_CHECK_S = 30.0
+
+  def offline(self, on) -> dict:
+    """The tablet's "Comma offline" switch (offline.py: no internet except GitHub and Mapbox, put back at every boot by
+    the sv-offline service, installed here when it's switched on). {"ok", "on", "boot", "door"} - "door": the model /
+    sound download door (offline.door_status)."""
+    try:
+      if on is True:
+        offline_mode.on()
+        if not offline_mode.boot_installed():
+          offline_mode.install()
+      elif on is False:
+        offline_mode.off()
+      return {"ok": True, "on": offline_mode.active(), "boot": offline_mode.boot_installed(), "door": offline_mode.door_status()}
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+      return {"ok": False, "error": str(e)[:200]}
+
+  def offline_door(self, req: dict) -> dict:
+    """{"close": true} closes the download door now (also cuts a download that's running); {"autoClose": bool} sets
+    whether it closes by itself when the downloads finish (else it stays open, at most offline.DOOR_HOLD_S)."""
+    try:
+      if "autoClose" in req:
+        offline_mode.set_auto_close(bool(req["autoClose"]))
+        if req["autoClose"]:
+          offline_mode.door_expire()     # turning it back on also closes a door that was only held open
+      if req.get("close"):
+        offline_mode.door_close()
+      return {"ok": True, "door": offline_mode.door_status()}
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+      return {"ok": False, "error": str(e)[:200]}
+
+  def offline_tick(self, now: float) -> None:
+    """Every 30 s (tablet_flag_thread): close a download door that was held open too long, and - car off, offline
+    mode on - put the boot service back when it's missing or runs an old copy (an AGNOS update, /data/tools)."""
+    if now - getattr(self, "_offline_t", -1e9) < self.OFFLINE_CHECK_S:
+      return
+    self._offline_t = now
+    offline_mode.door_expire()
+    if not self.started and offline_mode.enabled() and not getattr(self, "_offline_boot_checked", False):
+      self._offline_boot_checked = True
+      if not offline_mode.boot_installed():
+        offline_mode.install()
+        cloudlog.info("starview: offline boot service (re)installed")
+
   def lock_state(self) -> dict:
     """The doors' real lock state (card writes LOCKS on a change, door_locks.py): {"doors": {driver, passenger, slide_1,
     slide_2, back: "locked" / "unlocked" / None}, "live": openpilot started (car on: read every 2 s), "time"}. One stat()
@@ -1794,6 +1838,10 @@ class Hub:
         return self.autolock_settings(req.get("set"))
       if act == "autolock_rssi":
         return {"ok": True, "dbm": self.phone_signal.latest()}
+      if act == "offline":  # {"on": bool} or {} for its state: the comma's internet off except GitHub + Mapbox (offline.py)
+        return self.offline(req.get("on"))
+      if act == "offline_door":  # {"close": true} / {"autoClose": bool}: the model / sound download door (offline.py)
+        return self.offline_door(req)
       if act == "locks":  # the doors' real lock state (door_locks.py via card)
         return {"ok": True, **self.lock_state()}
       if act == "window":  # {"hold": bool} every 250 ms while held: StarLock's hold-to-close (relay 3, car off)
@@ -2825,6 +2873,10 @@ def tablet_flag_thread(hub):
       hub.drive_hold_tick()
     except Exception as e:
       cloudlog.warning(f"starview: drive hold: {e}")
+    try:
+      hub.offline_tick(time.monotonic())
+    except Exception as e:
+      cloudlog.warning(f"starview: offline: {e}")
     time.sleep(1.0)
 
 
