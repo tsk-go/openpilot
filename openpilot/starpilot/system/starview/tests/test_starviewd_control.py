@@ -617,3 +617,21 @@ def test_offline_tick_closes_a_held_door_and_restores_the_boot_service(monkeypat
   hub.offline_tick(131.0)
   hub.offline_tick(170.0)
   assert calls == ["expire", "expire", "install", "expire"]   # installed once
+
+
+def test_doorbelt_history_any_time_live_and_learn_only_parked(monkeypatch, tmp_path):
+  from openpilot.starpilot.system.starview import doorbelt
+  monkeypatch.setattr(doorbelt, "MAP", str(tmp_path / "bits.json"))
+  monkeypatch.setattr(doorbelt, "EVENTS", str(tmp_path / "events.jsonl"))
+  monkeypatch.setattr(doorbelt, "SCANNED", str(tmp_path / "scanned.json"))
+  monkeypatch.setattr(doorbelt, "ROOT", str(tmp_path / "realdata"))
+  hub = make_hub()
+  r = hub.control({"action": "doorbelt"})
+  assert r["ok"] and not r["carOn"] and r["drives"] == [] and r["pending"] == 0
+  assert [i["id"] for i in r["items"]][:2] == ["door_driver", "door_passenger"]
+  assert hub.control({"action": "doorbelt", "op": "live"}) == {"ok": False, "error": "Turn the car on (in Park) first."}
+  assert hub.control({"action": "doorbelt", "op": "begin"})["ok"] is False
+  hub.started = True
+  monkeypatch.setattr(starviewd, "techstream_parked", lambda h: False)
+  assert hub.control({"action": "doorbelt", "op": "live"}) == {"ok": False, "error": "Put it in Park and stand still."}
+  assert hub.control({"action": "doorbelt", "op": "nope"})["ok"] is False

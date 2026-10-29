@@ -252,6 +252,20 @@ Paths are under `openpilot/` unless noted.
     addresses before every request, after every redirect and every 20 s while a download runs; after the last one it
     closes, or with "close after downloads" off (/data/starview/offline_door.json) stays open until "Close now" or 1 h.
     State in /dev/shm/starview_offline_door.json (jobs by pid, monotonic times). Nothing runs without a download.
+35. Doors & belts (patch 55): `starpilot/system/starview/doorbelt.py`. Every door and seat-belt switch, checked after
+    each drive from that drive's rlogs - nothing extra runs while driving. Standard bits: BODY_CONTROL_STATE 0x620 bus
+    0 (driver's / passenger / both sliding doors, driver's belt). The rest come from the tablet's Learn (car on, in
+    Park): `CanWatch` reads the "can" socket only while the tablet asks, keeps bit changes (counters dropped after 40
+    changes), and per switch picks the bit that changed at least twice inside its step and more there than everywhere
+    else (so the dome light and "a door is open" drop out); saved in /data/starview/doorbelt/bits.json, learned wins.
+    starviewd `doorbelt_thread`: car off and new finished segments (last 7 days) -> `python3 -m ...doorbelt scan` at
+    nice 19 / ionice idle; the rlog is streamed (capnp framing by hand, a few MB), stops when the car turns on, and
+    writes events.jsonl (time, speed, fast = within 3 s of the last change, moving); scanned.json holds the read
+    segments, per-drive lines (also when nothing changed) and the events file's size, saved after every segment, so a
+    killed scan never repeats a change (flock: one scan at a time). A new Learn starts the history over. Learn's
+    "elsewhere" counts only the other steps and the first 5 s (walking through a door between steps is fine); "Again"
+    forgets the earlier try. Action `doorbelt` {op: status | live |
+    begin | start | done | skip | save | cancel}; live and Learn need the car on in Park, standing still.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
