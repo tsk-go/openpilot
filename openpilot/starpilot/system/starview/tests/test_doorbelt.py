@@ -142,18 +142,23 @@ def test_live_reads_only_the_mapped_messages(files, monkeypatch):
 
 
 # ------------------------------------------------------------------------------------------ after the drive
-def write_rlog(path, frames, mono0=10_000_000_000, wall=True, extra=None):
-  """frames: [(seconds from start, data of 0x620, speed m/s)] -> rlog.zst with initData, carState and can."""
+def write_rlog(path, frames, mono0=10_000_000_000, wall=True, extra=None, clocks=(), init_wall=WALL0):
+  """frames: [(seconds from start, data of 0x620, speed m/s)] -> rlog.zst with initData, carState and can;
+  clocks: [(seconds from start, wall clock then)]."""
   msgs = []
   if wall:
     ev = log.Event.new_message(logMonoTime=mono0)
-    ev.init("initData").wallTimeNanos = int(WALL0 * 1e9)
-    msgs.append(ev.to_bytes())
+    ev.init("initData").wallTimeNanos = int(init_wall * 1e9)
+    msgs.append((mono0, 0, ev.to_bytes()))
+  for s_, w in clocks:
+    ev = log.Event.new_message(logMonoTime=mono0 + int(s_ * 1e9))
+    ev.init("clocks").wallTimeNanos = int(w * 1e9)
+    msgs.append((mono0 + int(s_ * 1e9), 1, ev.to_bytes()))
   for s, dat, v in frames:
     mono = mono0 + int(s * 1e9)
     cs = log.Event.new_message(logMonoTime=mono)
     cs.init("carState").vEgo = v
-    msgs.append(cs.to_bytes())
+    msgs.append((mono, 2, cs.to_bytes()))
     ev = log.Event.new_message(logMonoTime=mono)
     can = ev.init("can", 3 if extra is None else 3 + extra)
     can[0].address, can[0].src, can[0].dat = 0x620, 0, dat
@@ -161,10 +166,10 @@ def write_rlog(path, frames, mono0=10_000_000_000, wall=True, extra=None):
     can[2].address, can[2].src, can[2].dat = 0x2C1, 0, b"\x01\x02"
     for i in range(extra or 0):
       can[3 + i].address, can[3 + i].src, can[3 + i].dat = 0x400 + i % 50, 1, bytes(64)
-    msgs.append(ev.to_bytes())
+    msgs.append((mono, 3, ev.to_bytes()))
   os.makedirs(os.path.dirname(path), exist_ok=True)
   with open(path, "wb") as f:
-    f.write(zstd.compress(b"".join(msgs)))
+    f.write(zstd.compress(b"".join(m[2] for m in sorted(msgs, key=lambda m: m[:2]))))   # in time order, like loggerd
 
 
 def seg(files, route, n):
@@ -329,3 +334,21 @@ def test_a_dead_reader_is_started_again(files, monkeypatch):
   w = doorbelt.CanWatch(ok=lambda: None)
   w.thread = Dead()
   assert w.begin()["ok"] and started == [1]
+
+
+def test_times_follow_the_clock_even_when_it_was_set_mid_drive(files):
+  route = "00000020--abcdef0123"
+  july = WALL0 - 93 * 86400
+  # the drive started with the clock three months behind; GPS set it 30 s in (initData keeps the old time)
+  write_rlog(seg(files, route, 0), [(10.0, body(), 0.0), (20.0, body(slide_r=1), 0.0), (40.0, body(), 0.0)],
+             init_wall=july, clocks=[(0.0, july), (30.0, WALL0 + 30)])
+  write_rlog(seg(files, route, 1), [(60.0, body(), 0.0), (70.0, body(slide_r=1), 0.0)], init_wall=july)   # no clocks: carried
+  now = os.path.getmtime(seg(files, route, 1)) + 60
+  doorbelt.scan(now=now, progress=False)
+  ts = [e["t"] for e in doorbelt.history()["events"]]
+  assert ts == [WALL0 + 70, WALL0 + 40, july + 20]
+
+
+def test_changes_are_listed_newest_first_whatever_order_they_were_read(files):
+  doorbelt._append_events([{"t": 300.0, "item": "slide_right"}, {"t": 100.0, "item": "slide_right"}, {"t": 200.0, "item": "door_driver"}])
+  assert [e["t"] for e in doorbelt.history()["events"]] == [300.0, 200.0, 100.0]
