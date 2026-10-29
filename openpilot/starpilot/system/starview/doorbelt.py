@@ -92,8 +92,12 @@ def bit_map() -> dict:
   return out
 
 
+SCAN_VERSION = 2   # 2: times from the clocks messages (1 used the route's initData - wrong when the clock was set mid-drive)
+
+
 def map_key(bits: dict) -> str:
-  return json.dumps({k: [v["bus"], v["addr"], v["byte"], v["bit"], v["active"]] for k, v in sorted(bits.items())}, separators=(",", ":"))
+  return json.dumps({"v": SCAN_VERSION} | {k: [v["bus"], v["addr"], v["byte"], v["bit"], v["active"]] for k, v in sorted(bits.items())},
+                    separators=(",", ":"))
 
 
 def value(dat: bytes, b: dict):
@@ -377,15 +381,21 @@ def _messages(path):
 
 
 def scan_segment(path, bits: dict, route_state: dict, should_stop=lambda: False):
-  """One rlog -> [event dicts], updating route_state {"v": {item: value}, "tc": {item: wall time of the last change}}.
-  None when stopped (the car turned on)."""
+  """One rlog -> [event dicts], updating route_state {"v": {item: value}, "tc": {item: wall time of the last change},
+  "off": wall - mono of the last clocks message}. None when stopped (the car turned on).
+
+  Times: each change takes the wall clock of the latest `clocks` message before it (timed sends one every 10 s with
+  the clock as it is then). initData is no good for that: loggerd writes the route's first one into every segment, so
+  when the clock is set mid-drive (GPS, or after a wrong clock at boot) a whole drive would keep the old time."""
   from openpilot.cereal import log
   by_key = defaultdict(list)
   for item, b in bits.items():
     by_key[(b["bus"], b["addr"])].append((item, b))
   vals = dict(route_state.get("v") or {})   # committed to route_state only when the whole segment is read
-  raw_events = []                    # (mono ns, item, value, speed)
-  offset = None                      # wall ns - mono ns
+  raw_events = []                    # (mono ns, item, value, speed, offset or None)
+  offset = route_state.get("off")    # wall ns - mono ns, carried from the segment before
+  first_clock = None
+  init_off = None
   speed = 0.0
   last_mono = 0
   for n, dat in enumerate(_messages(path)):
@@ -407,27 +417,33 @@ def scan_segment(path, bits: dict, route_state: dict, should_stop=lambda: False)
               old = vals.get(item)
               vals[item] = v
               if old is not None and old != v:
-                raw_events.append((mono, item, v, speed))
+                raw_events.append((mono, item, v, speed, offset))
       elif w == "carState":
         speed = ev.carState.vEgo
-      elif w == "initData" and offset is None:
-        if ev.initData.wallTimeNanos > 1.6e18:
-          offset = ev.initData.wallTimeNanos - ev.logMonoTime
-      elif w == "clocks" and offset is None:
+      elif w == "clocks":
         if ev.clocks.wallTimeNanos > 1.6e18:
           offset = ev.clocks.wallTimeNanos - ev.logMonoTime
-  if offset is None:                 # no clock in the log: the rlog's own time stamp is its last write
-    offset = int(os.path.getmtime(path) * 1e9) - last_mono
+          if first_clock is None:
+            first_clock = offset
+      elif w == "initData" and init_off is None:
+        if ev.initData.wallTimeNanos > 1.6e18:
+          init_off = ev.initData.wallTimeNanos - ev.logMonoTime
+  # before the first clocks message of the drive: that one, else initData, else the rlog's own time (its last write)
+  fallback = first_clock if first_clock is not None else init_off
+  if fallback is None:
+    fallback = int(os.path.getmtime(path) * 1e9) - last_mono
   tc = dict(route_state.get("tc") or {})
   out = []
-  for mono, item, v, spd in raw_events:
-    t = (mono + offset) / 1e9
+  for mono, item, v, spd, off in raw_events:
+    t = (mono + (off if off is not None else fallback)) / 1e9
     fast = item in tc and t - tc[item] <= FAST_S
     tc[item] = t
     out.append({"t": round(t, 2), "item": item, "v": v, "on": v == bits[item]["active"], "mph": round(spd * 2.237),
                 "moving": spd > MOVING_MS, "fast": fast})
   route_state["v"] = vals
   route_state["tc"] = tc
+  if offset is not None:
+    route_state["off"] = offset
   return out
 
 
@@ -610,14 +626,16 @@ def history(n_events=400, n_drives=40) -> dict:
   evs = []
   try:
     with open(EVENTS) as f:
-      lines = f.read().splitlines()[-n_events:]
-    for ln in reversed(lines):
+      lines = f.read().splitlines()
+    for ln in lines:
       try:
         evs.append(json.loads(ln))
       except ValueError:
         pass
   except OSError:
     pass
+  evs.sort(key=lambda e: e.get("t", 0), reverse=True)   # by time: drives are read in route order, not time order
+  evs = evs[:n_events]
   return {"drives": list(reversed(drives))[:n_drives], "events": evs}
 
 

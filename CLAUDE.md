@@ -260,6 +260,10 @@ Paths are under `openpilot/` unless noted.
     "elsewhere" counts only the other steps and the first 5 s (walking through a door between steps is fine); "Again"
     forgets the earlier try. Action `doorbelt` {op: status | live |
     begin | start | done | skip | save | cancel}; live and Learn need the car on in Park, standing still.
+    Patch 57: change times come from the `clocks` messages (the latest before each change, carried across segments);
+    loggerd writes the route's first initData into every segment, so a clock set mid-drive left a whole drive on the
+    old time and the list out of order. The tablet's list is sorted by time; SCAN_VERSION in the state key makes a
+    new version read the last week again.
 36. The clock in offline mode (patch 56): offline mode blocked the time servers, so parked without a GPS fix the clock
     fell months behind (Oct 29: July 28) and every TLS connection failed ("certificate is not yet valid": updates,
     Mapbox). `offline.py`: rule 9030 lets the time servers through - what `timedatectl show-timesync` lists plus
