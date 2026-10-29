@@ -23,9 +23,11 @@
 
 # Syncing upstream
 
-"Sync" means: merge https://github.com/firestar5683/StarPilot branch `SecretGoodStarPilot` into this repo's
-`SecretGoodStarPilot_v2` with a merge commit (`git fetch https://github.com/firestar5683/StarPilot.git SecretGoodStarPilot
-&& git merge --no-edit -m "Merge upstream StarPilot SecretGoodStarPilot" FETCH_HEAD`), then a normal push.
+"Sync" means: merge https://github.com/firestar5683/StarPilot branch `Dom` into this repo's `Dom` with a merge commit
+(`git fetch https://github.com/firestar5683/StarPilot.git Dom && git merge --no-edit -m "Merge upstream StarPilot Dom"
+FETCH_HEAD`), then a normal push. Oct 29: firestar folded `SecretGoodStarPilot` into `Dom` and deleted it, so this
+repo's `Dom` branch was started from `SecretGoodStarPilot_v2` (all our patches through 57) and syncs from `Dom` now;
+`SecretGoodStarPilot_v2` and `SecretGoodStarPilot_v2-pre-oct26` are kept as they were and no longer synced.
 Never rebase or force-push for a sync: the local commits must be kept as they are. On a conflict, stop and ask.
 
 # Panda firmware (ours, not upstream's)
@@ -65,7 +67,8 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `BIG_MODEL_FIRST_TIMEOUT`, `BIG_MODEL_CACHED_TIMEOUT`. Upstream fixed = the big model's compiled programs survive a
    reboot by themselves (no `do_to_program` codegen at every start), or modeld's load timeout no longer cuts it off.
    Oct 21: upstream `ba6eac26` ("Fix Big Model Cold Startup") keeps its runtime cache on /data and waits 120 s; kept
-   until a cold start's log shows that alone loads the big model in time.
+   until a cold start's log shows that alone loads the big model in time. Oct 29 (Dom sync): upstream `6effaaa3`
+   ("Accelerate Chestnut model loading") only pins the loader thread to core 7 - kept ours beside it.
 2. **"Driving Model Lagging" right after the big model loads** (patch 22): `openpilot/starpilot/models/warmup.py` and in
    `openpilot/selfdrive/modeld/modeld.py` `big_warmup` (ChestnutLoading stays on until the big model runs steady).
    Upstream fixed = modeld itself waits for the big model's first real passes before clearing ChestnutLoading, or those
@@ -82,7 +85,8 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    resets and bootkicks (board init sets BOOT_BOOTKICK), and every such start stayed on for MIN_ON_TIME_S (an hour) on a
    battery already below the cutoff - 14 restarts in one night (Oct 27). Upstream fixed = a parked wake no longer stays
    up an hour (the panda stops bootkicking without ignition, or the minimum on time doesn't apply after a parked
-   shutdown).
+   shutdown). Oct 29 (Dom sync): upstream `2567a32f` re-applies the panda's power-save CAN interrupt state after a CAN
+   re-init (a CAN wake may have come from that); kept ours until a parked night shows no restarts without it.
 
 # Fork history
 
