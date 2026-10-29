@@ -378,7 +378,7 @@ def test_nav_preview_never_takes_the_request_number_for_a_mapbox_place():
 
 
 def _slc_receiver(tmp_path, monkeypatch):
-  from openpilot.starpilot.system.android_auto.projection_slc_action import SlcActionReceiver
+  from openpilot.starpilot.system.starport.projection_slc_action import SlcActionReceiver
   path = tmp_path / "slc.sock"
   monkeypatch.setattr(starviewd, "SLC_ACTION_SOCKET", str(path))
   return SlcActionReceiver(path)
@@ -447,7 +447,7 @@ def test_the_tablet_gets_the_side_view_settings():
 
 def test_slc_action_kinds_match_the_native_ui():
   from openpilot.starpilot.ui.onroad_state import SlcActionKind
-  from openpilot.starpilot.system.android_auto.projection_slc_action import DEFAULT_SOCKET
+  from openpilot.starpilot.system.starport.projection_slc_action import DEFAULT_SOCKET
   assert set(starviewd.SLC_ACTION_KINDS) == {k.value for k in SlcActionKind}
   assert starviewd.SLC_ACTION_SOCKET == DEFAULT_SOCKET
 

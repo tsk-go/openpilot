@@ -167,8 +167,8 @@ Paths are under `openpilot/` unless noted.
     (`lane_runtime.LaneCenteringHost.sample`). Everything that decides (speed bumps, potholes, cut-ins, lights...) runs
     on the tablet (StarView 2.67).
 27. Big UI's cards on the tablet (patch 43): starviewd action `slc_action` {kind accept/reject/adopt, session, decision,
-    presentation, speed} sends the same datagram as the car screen's speed-limit taps (`android_auto/projection_slc_action.py`
-    SlcActionSender) to /tmp/starpilot-projection-slc.sock; the native UI checks it against the live slcState and
+    presentation, speed} sends the same datagram as the car screen's speed-limit taps (`starport/projection_slc_action.py`
+    SlcActionSender; the folder was android_auto/ until upstream renamed it Oct 28) to /tmp/starpilot-projection-slc.sock; the native UI checks it against the live slcState and
     publishes it. Only while started. Not imported from there (it pulls in the onroad UI); `SLC_ACTION_KINDS` /
     `SLC_ACTION_SOCKET` are checked against it by a test. UI_PARAMS_PERSISTENT also carries the PIPPreview* settings so the
     tablet draws Big UI's cabin-camera side views itself (StarView 2.74).
