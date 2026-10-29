@@ -48,6 +48,7 @@ import secrets
 import struct
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -59,7 +60,7 @@ from openpilot.cereal import messaging
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.swaglog import cloudlog
-from openpilot.starpilot.system.starview import compat, offline as offline_mode, pairing, replay
+from openpilot.starpilot.system.starview import compat, doorbelt, offline as offline_mode, pairing, replay
 
 try:
   from openpilot.common.version import get_build_metadata
@@ -1653,6 +1654,40 @@ class Hub:
         offline_mode.install()
         cloudlog.info("starview: offline boot service (re)installed")
 
+  def _doorbelt_ok(self):
+    """Live and Learn read the CAN bus only with the car on (openpilot started), in Park and standing still."""
+    if not self.started:
+      return "Turn the car on (in Park) first."
+    if not techstream_parked(self):
+      return "Put it in Park and stand still."
+    return None
+
+  def doorbelt(self, req: dict) -> dict:
+    """The tablet's Doors & belts screen (doorbelt.py). op "status": which switches are known, the last drives and
+    changes (read from the logs after each drive); "live": every switch now (car on, in Park - the bus is read only
+    while the screen asks); "begin" / "start" / "done" / "skip" / "save" / "cancel": Learn, one switch at a time."""
+    w = getattr(self, "_doorbelt_w", None)
+    if w is None:
+      w = self._doorbelt_w = doorbelt.CanWatch(ok=self._doorbelt_ok)
+    op = str(req.get("op") or "status")
+    item = str(req.get("item") or "")
+    try:
+      if op == "status":
+        return {"ok": True, "carOn": bool(self.started), **doorbelt.status(), **doorbelt.history()}
+      if op == "live":
+        return w.live()
+      if op == "begin":
+        return w.begin()
+      if op in ("start", "done", "skip"):
+        return getattr(w, op)(item)
+      if op == "save":
+        return w.save()
+      if op == "cancel":
+        return w.cancel()
+    except OSError as e:
+      return {"ok": False, "error": str(e)[:200]}
+    return {"ok": False, "error": "unknown doors & belts request"}
+
   def lock_state(self) -> dict:
     """The doors' real lock state (card writes LOCKS on a change, door_locks.py): {"doors": {driver, passenger, slide_1,
     slide_2, back: "locked" / "unlocked" / None}, "live": openpilot started (car on: read every 2 s), "time"}. One stat()
@@ -1842,6 +1877,8 @@ class Hub:
         return self.offline(req.get("on"))
       if act == "offline_door":  # {"close": true} / {"autoClose": bool}: the model / sound download door (offline.py)
         return self.offline_door(req)
+      if act == "doorbelt":  # {"op": ...}: the doors & belts screen - history, live (in Park) and Learn (doorbelt.py)
+        return self.doorbelt(req)
       if act == "locks":  # the doors' real lock state (door_locks.py via card)
         return {"ok": True, **self.lock_state()}
       if act == "window":  # {"hold": bool} every 250 ms while held: StarLock's hold-to-close (relay 3, car off)
@@ -2925,6 +2962,24 @@ def log_archive_thread():
     time.sleep(300)
 
 
+def doorbelt_thread():
+  """Car off: read the finished drives' logs for every door and seat-belt switch (doorbelt.py scan) at the lowest CPU
+  and I/O priority, like the log copy. A directory listing every RUN_EVERY_S when there's nothing new; nothing while
+  the car is on - the scan itself stops too when it turns on."""
+  params = Params()
+  time.sleep(120)
+  while True:
+    try:
+      if not compat.is_onroad(params) and doorbelt.scan_progress() is None and doorbelt.pending():
+        r = subprocess.run(["nice", "-n", "19", "ionice", "-c3", sys.executable, "-m", "openpilot.starpilot.system.starview.doorbelt", "scan"],
+                           capture_output=True, text=True, timeout=2 * 3600)
+        if r.returncode != 0:
+          cloudlog.warning(f"starview: doors & belts scan: {(r.stderr or '').strip()[-300:]}")
+    except Exception as e:
+      cloudlog.warning(f"starview: doors & belts: {e}")
+    time.sleep(doorbelt.RUN_EVERY_S)
+
+
 # ------------------------------------------------------------------------------------------ TechStream
 # Toyota diagnostics on the tablet (techstream/, from toyopilot): the page is served from techstream/web (built from
 # techstream/web_src), its API under /api/toyota like toyopilot's LANLink so the page works unchanged. The page and its
@@ -3069,6 +3124,7 @@ def main():
   threading.Thread(target=auto_tether_thread, name="starview-tether", daemon=True).start()
   threading.Thread(target=tablet_power_thread, name="starview-tabletpower", daemon=True).start()
   threading.Thread(target=log_archive_thread, name="starview-logarchive", daemon=True).start()
+  threading.Thread(target=doorbelt_thread, name="starview-doorbelt-scan", daemon=True).start()
   threading.Thread(target=tablet_flag_thread, args=(app["hub"],), name="starview-tabletflag", daemon=True).start()
   start_ble_door(app["hub"])
   start_autolock(app["hub"])
