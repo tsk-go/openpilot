@@ -569,3 +569,51 @@ def test_locks_go_to_starlock_only_when_they_change(monkeypatch):
   monkeypatch.setattr(ble_door, "announce", sent.append)
   starviewd.locks_watch(hub, ble_door, period=0, rounds=5)
   assert [(m["d"]["dr"], m["live"]) for m in sent] == [("?", True), ("L", True), ("L", False)]
+
+
+def test_offline_switch_and_download_door_actions(monkeypatch):
+  from openpilot.starpilot.system.starview import offline
+  calls = []
+  state = {"on": False, "boot": False, "auto": True}
+  monkeypatch.setattr(offline, "on", lambda: calls.append("on") or state.update(on=True))
+  monkeypatch.setattr(offline, "off", lambda: calls.append("off") or state.update(on=False))
+  monkeypatch.setattr(offline, "active", lambda: state["on"])
+  monkeypatch.setattr(offline, "boot_installed", lambda: state["boot"])
+  monkeypatch.setattr(offline, "install", lambda: calls.append("install") or state.update(boot=True))
+  monkeypatch.setattr(offline, "door_status", lambda: {"open": False, "autoClose": state["auto"]})
+  monkeypatch.setattr(offline, "set_auto_close", lambda v: calls.append(f"auto={v}") or state.update(auto=v))
+  monkeypatch.setattr(offline, "door_close", lambda: calls.append("close"))
+  monkeypatch.setattr(offline, "door_expire", lambda now=None: calls.append("expire"))
+  hub = make_hub()
+  assert hub.control({"action": "offline"}) == {"ok": True, "on": False, "boot": False, "door": {"open": False, "autoClose": True}}
+  r = hub.control({"action": "offline", "on": True})
+  assert r["ok"] and r["on"] and r["boot"] and calls == ["on", "install"]
+  r = hub.control({"action": "offline_door", "autoClose": False})
+  assert r == {"ok": True, "door": {"open": False, "autoClose": False}}
+  hub.control({"action": "offline_door", "close": True})
+  hub.control({"action": "offline_door", "autoClose": True})
+  assert calls[2:] == ["auto=False", "close", "auto=True", "expire"]
+  assert not hub.control({"action": "offline", "on": False})["on"]
+
+  def broken():
+    raise RuntimeError("ip -4 -batch: RTNETLINK answers: Operation not permitted")
+  monkeypatch.setattr(offline, "on", broken)
+  assert hub.control({"action": "offline", "on": True}) == {"ok": False, "error": "ip -4 -batch: RTNETLINK answers: Operation not permitted"}
+
+
+def test_offline_tick_closes_a_held_door_and_restores_the_boot_service(monkeypatch):
+  from openpilot.starpilot.system.starview import offline
+  calls = []
+  monkeypatch.setattr(offline, "door_expire", lambda now=None: calls.append("expire"))
+  monkeypatch.setattr(offline, "enabled", lambda: True)
+  monkeypatch.setattr(offline, "boot_installed", lambda: False)
+  monkeypatch.setattr(offline, "install", lambda: calls.append("install"))
+  hub = make_hub(started=True)
+  hub.offline_tick(100.0)
+  assert calls == ["expire"]                              # car on: no remount
+  hub.offline_tick(110.0)
+  assert calls == ["expire"]                              # every 30 s only
+  hub.started = False
+  hub.offline_tick(131.0)
+  hub.offline_tick(170.0)
+  assert calls == ["expire", "expire", "install", "expire"]   # installed once

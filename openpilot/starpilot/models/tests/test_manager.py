@@ -101,6 +101,26 @@ class ModelManagerTest(unittest.TestCase):
       time.sleep(0.01)
     self.fail('Artifact verification did not finish')
 
+  def test_downloads_open_the_offline_download_door_for_the_whole_job(self):
+    from contextlib import contextmanager
+    events = []
+
+    @contextmanager
+    def door(reason):
+      events.append(("open", reason))
+      yield
+      events.append(("close", reason, len(self.urls)))
+
+    with patch('openpilot.starpilot.models.manager.offline.download_door', door):
+      self.manager.action('refresh_manifest', {})
+      self.manager.worker.join(3)
+      self.download()
+    self.assertEqual(events, [("open", "models"), ("close", "models", 1), ("open", "models"), ("close", "models", 4)])
+
+  def test_default_opener_is_the_offline_aware_one(self):
+    from openpilot.starpilot.system.starview import offline
+    self.assertIs(ModelManager(root=self.root).opener, offline.urlopen)
+
   def test_selected_gpu_status_verifies_download_without_bundled_model_or_job_writes(self):
     from openpilot.starpilot.models.manager import artifact_path
 
