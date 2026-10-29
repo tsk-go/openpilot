@@ -28,6 +28,30 @@ def required_os_version(launch):
   return versions[0] if len(versions) == 1 else None
 
 
+def validate_legacy_return(git, revision, branch):
+  if branch not in ('Dom', 'StarPilot'):
+    raise FastUpdateIncompatible('Legacy return is only available for Dom and StarPilot 6.x releases')
+  entries = {}
+  for row in git('ls-tree', '-rz', '--full-tree', revision).split('\0'):
+    if row:
+      meta, name = row.split('\t', 1)
+      entries[name] = meta.split()[0]
+  if 'upstream-sync.json' in entries or '.gitmodules' in entries or '160000' in entries.values():
+    raise FastUpdateIncompatible('Legacy return requires a complete prebuilt release without submodules')
+  required = {'prebuilt': ('100644',), 'launch_env.sh': ('100644', '100755'),
+              'launch_openpilot.sh': ('100755',), 'launch_chffrplus.sh': ('100755',),
+              'selfdrive/ui/lib/starpilot_version.py': ('100644',),
+              'selfdrive/car/card.py': ('100644', '100755'),
+              'selfdrive/modeld/modeld.py': ('100644', '100755')}
+  if any(entries.get(name) not in modes for name, modes in required.items()):
+    raise FastUpdateIncompatible('Legacy return requires a complete prebuilt StarPilot 6.x release')
+  version = git('show', f'{revision}:selfdrive/ui/lib/starpilot_version.py')
+  versions = re.findall(r'^STARPILOT_DISPLAY_VERSION = ["\'](6\.\d+\.\d+)["\']\s*$', version, re.MULTILINE)
+  if len(versions) != 1:
+    raise FastUpdateIncompatible('Legacy return requires a StarPilot 6.x release')
+  return versions[0]
+
+
 def _stop_process(process):
   try:
     os.killpg(process.pid, signal.SIGTERM)
@@ -172,9 +196,20 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
         notify('complete', 'Recent versions are ready to review.')
         return 'versions-listed'
   notify('validating', 'Checking downloaded operating system and native artifacts...')
-  validate_revision(repo, target)
+  legacy_return = branch in ('Dom', 'StarPilot') and not git('ls-tree', target, '--', 'upstream-sync.json').strip()
+  if legacy_return:
+    version = validate_legacy_return(git, target, branch)
+    notify('validating', f'Returning to {branch} {version}; checking the legacy prebuilt release...')
+  else:
+    validate_revision(repo, target)
   launch = git('show', f'{target}:launch_env.sh')
-  if not current_os or required_os_version(launch) != current_os:
+  required_os = required_os_version(launch)
+  accepted_os = {required_os}
+  if legacy_return:
+    accepted = re.findall(r'^\s*export\s+AGNOS_ACCEPTED_VERSIONS=["\']([^"\'\n]+)["\']\s*$', launch, re.MULTILINE)
+    if len(accepted) == 1:
+      accepted_os.update(accepted[0].split())
+  if not required_os or not current_os or current_os not in accepted_os:
     raise FastUpdateIncompatible('Update requires a different or unverified operating system')
   if target == previous and branch == initial_branch and not git('status', '--porcelain', '--untracked-files=no').strip():
     notify('complete', 'Already up to date.')
@@ -182,7 +217,7 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
   for revision in (previous, target):
     if git('ls-tree', revision, '--', 'prebuilt').strip().split()[:1] != ['100644']:
       raise FastUpdateIncompatible('Fast Update requires prebuilt releases; use a full validated update')
-  if not valid_receipt(git, target) and revision_digest(git, previous) != revision_digest(git, target):
+  if not legacy_return and not valid_receipt(git, target) and revision_digest(git, previous) != revision_digest(git, target):
     raise FastUpdateIncompatible('Native build inputs or artifacts changed without a matching build receipt; use a full validated update')
   tracked = set(git('ls-tree', '-rz', '--name-only', target).split('\0')) - {''}
   indexed = set(git('ls-files', '-z').split('\0')) - {''}
@@ -239,7 +274,10 @@ def fast_update(repo, branch, *, params, parked, expected_commit, current_os=Non
       git('reset', '--hard', '--no-recurse-submodules', target)
     if git('rev-parse', 'HEAD^{commit}').strip() != target:
       raise FastUpdateError('Applied source revision does not match download')
-    validate_revision(repo, 'HEAD')
+    if legacy_return:
+      validate_legacy_return(git, 'HEAD', branch)
+    else:
+      validate_revision(repo, 'HEAD')
     if not parked():
       raise FastUpdateError('Parked state changed before restart')
     notify('submodules', 'No submodules configured; dependencies are vendored in this release.')

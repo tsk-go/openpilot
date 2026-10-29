@@ -15,7 +15,7 @@ from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 from openpilot.starpilot.longitudinal.encouragement import Encouragement
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW, get_jerk_factor,
-                                                                                      qualified_model_leads, ModelLeadHistory)
+                                                                                      qualified_model_leads, ModelLeadHistory, should_trigger_planner_fcw)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -27,7 +27,7 @@ from openpilot.starpilot.longitudinal.vehicle_policy import forecast_should_stop
 from openpilot.starpilot.longitudinal.cruise_ceiling import CruiseCeiling, CurveCeiling, select_cruise_ceiling, select_curve_ceiling
 from openpilot.starpilot.longitudinal.profile_runtime import (AppliedProfile, ProfileSmoother, ProfileTuning, SelectedProfileTuning,
                                                              TRAFFIC_CRUISE_BRAKE_MAGNITUDE)
-from openpilot.starpilot.longitudinal.slc_coast import braking_lead_relevant, slc_coast_floor
+from openpilot.starpilot.longitudinal.slc_coast import braking_lead_relevant
 from openpilot.starpilot.longitudinal.throttle_gate import ModelThrottleGate
 from openpilot.starpilot.longitudinal.ioniq6_start import eligible as ioniq6_long_eligible
 from openpilot.starpilot.longitudinal.lane_change_gap import LaneChangeGap, project as project_lane_gap
@@ -36,6 +36,9 @@ from openpilot.starpilot.longitudinal.force_stop import StopPlan
 from openpilot.starpilot.longitudinal.follow_jerk import FollowJerk
 from openpilot.starpilot.longitudinal.lead_takeoff import LeadTakeoff, project as project_takeoff
 from openpilot.starpilot.longitudinal.lead_behavior import adjust as adjust_lead_behavior
+from openpilot.starpilot.longitudinal.hkg_vision_stop import owner_for as vision_stop_owner
+from openpilot.starpilot.car.ford.stopped_lead import owner_for as ford_stop_owner
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.starpilot.longitudinal.lead_approach import LeadApproach, LeadApproachKey, project as project_approach
 from openpilot.starpilot.lateral.lane_change_preferences import LaneChangePolicy
 
@@ -62,7 +65,7 @@ def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
-                     profile: AppliedProfile | None = None, cruise_brake_floor: float | None = None,
+                     profile: AppliedProfile | None = None,
                      base_brake_floor: float = A_CRUISE_MIN, selected_acceleration_max: float | None = None, faster_takeoffs: bool = False,
                      *, a_target_prev: float | None = None):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego)
@@ -85,8 +88,6 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
       max_accel = min(max_accel, coast_limit)
 
   cruise_min = max(ACCEL_MIN, -profile.cruise_brake_magnitude) if profile is not None else max(ACCEL_MIN, base_brake_floor)
-  if cruise_brake_floor is not None:
-    cruise_min = max(cruise_min, cruise_brake_floor)
   target_accel = np.clip(v_cruise - v_ego, cruise_min, max_accel)
   j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
   decel_start = a_cruise_prev if a_target_prev is None else min(a_cruise_prev, a_target_prev)
@@ -132,6 +133,8 @@ class LongitudinalPlanner:
     self.vehicle_cost_owner = planner_cost_owner(CP)
     self.lead_takeoff = LeadTakeoff()
     self.vehicle_far_follow = far_follow_owner(CP, dt)
+    self.vision_stop_buffer = vision_stop_owner(CP)
+    self.ford_stop_approach = ford_stop_owner(CP, STOP_DISTANCE - .5)
     self.preap_adaptive = preap_adaptive_owner(CP)
 
   def update(self, sm, *, cruise_ceiling: CruiseCeiling | None = None,
@@ -143,7 +146,7 @@ class LongitudinalPlanner:
              lead_approach_key: LeadApproachKey | None = None,
              force_stop_provider: Callable[[float], StopPlan] | None = None,
              faster_lead_takeoff: bool = False, takeoff_drive_id: int = 0,
-             now_ns: int | None = None, drive_id: int = 0, wheel_coast=None):
+             now_ns: int | None = None, drive_id: int = 0, wheel_coast=None, experimental_speed_nudge: bool = True):
     if curve_ceiling is not None and curve_provider is not None:
       raise ValueError('choose explicit Curve ceiling or same-cycle provider')
     if self.plan_drive_id != drive_id:
@@ -176,7 +179,6 @@ class LongitudinalPlanner:
                                                        traffic_mode=traffic_mode)
     else:
       self.profile_smoother.applied = None
-      self.profile_smoother.slc_braking_style = 'standard'
       self.last_profile = None
 
     # Reset current state when not engaged, or user is controlling the speed
@@ -325,6 +327,8 @@ class LongitudinalPlanner:
 
     # TODO counter is only needed because radar is glitchy, remove once radar is gone
     self.fcw = self.mpc.crash_cnt > 2 and not sm['carState'].standstill
+    if self.CP.carFingerprint == 'SUBARU_CROSSTREK_2025':
+      self.fcw = self.fcw and should_trigger_planner_fcw(sm['radarState'].leadOne, float(v_ego))
     if self.fcw:
       cloudlog.info("FCW triggered")
 
@@ -377,30 +381,18 @@ class LongitudinalPlanner:
                                                                           abs(A_CRUISE_MIN)))
     if ceiling.effective_mps is not None or curve.effective_mps is not None:
       global_floor = min(global_floor, A_CRUISE_MIN)
-    slc_floor = slc_coast_floor(
-      v_ego=v_ego, slc_target=ceiling.effective_mps if curve.effective_mps is None and not traffic_mode else None,
-      driver_cruise=v_cruise_kph * CV.KPH_TO_MS,
-      full_brake_floor=max(ACCEL_MIN, -cruise_profile.cruise_brake_magnitude) if cruise_profile is not None else global_floor,
-      relevant_lead=relevant_lead,
-      stop_context=bool(sm['carState'].standstill or sm['controlsState'].forceDecel or
-                        self.force_stop_plan.forcing or sm['modelV2'].action.shouldStop or output_should_stop_mpc or
-                        sm['selfdriveState'].experimentalMode or not sm['carControl'].longActive or not self.allow_throttle),
-      braking_style=(global_braking_response if global_selected and global_braking_response is not None else
-                     self.profile_smoother.slc_braking_style if self.last_profile is not None else 'standard'),
-    )
     if selected_acceleration is not None and cruise_profile is not None:
       # The selected curve owns acceleration; following/jerks retain their owner.
       cruise_profile = replace(cruise_profile, acceleration_max=selected_acceleration)
     if coast_plan is not None and coast_plan.brake_floor is not None:
       global_floor = coast_plan.brake_floor
       cruise_profile = None
-      slc_floor = None
     if preap_acceleration_cap is not None:
       selected_acceleration = (preap_acceleration_cap if selected_acceleration is None else
                                min(selected_acceleration, preap_acceleration_cap))
     self.a_cruise = get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
-                                     accel_coast, self.allow_throttle, cruise_profile, slc_floor,
+                                     accel_coast, self.allow_throttle, cruise_profile,
                                      base_brake_floor=global_floor, selected_acceleration_max=selected_acceleration, faster_takeoffs=faster_takeoffs,
                                      a_target_prev=self.output_a_target)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
@@ -410,11 +402,11 @@ class LongitudinalPlanner:
       model_accel=output_a_target_e2e, mpc_accel=output_a_target_mpc, cruise_accel=self.a_cruise,
       lateral_accel=(v_ego ** 2 * steer_angle_without_offset * CV.DEG_TO_RAD / (self.CP.steerRatio * self.CP.wheelbase)
                      if self.CP.steerRatio > 0 and self.CP.wheelbase > 0 else math.inf),
-      blocked=bool(reset_state or self.fcw or not self.allow_throttle or self.force_stop_plan.forcing or
+      blocked=bool(experimental_speed_nudge is not True or reset_state or self.fcw or not self.allow_throttle or self.force_stop_plan.forcing or
                    output_should_stop_mpc or cruise_should_stop or self.mpc.solution_status != 0 or
                    curve.effective_mps is not None or traffic_mode is not False))
     manual_model = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
-    output_a_target_e2e = manual_model + (encouraged_model - output_a_target_e2e)
+    output_a_target_e2e = max(manual_model, encouraged_model)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
@@ -459,7 +451,7 @@ class LongitudinalPlanner:
       takeoff_frame = project_takeoff(
         sm, self.CP, now_ns=sample_now_ns, drive_id=takeoff_drive_id, stop_plan=self.force_stop_plan,
         acceleration_max=takeoff_max, mpc_accel=output_a_target_mpc, follow_seconds=float(self.mpc.params[0, 4]),
-        blocked=bool(reset_state or self.fcw or not self.allow_throttle or traffic_mode is not False or
+        blocked=bool(experimental_speed_nudge is not True or reset_state or self.fcw or not self.allow_throttle or traffic_mode is not False or
                      self.mpc.solution_status != 0))
       output_a_target, self.output_should_stop = self.lead_takeoff.step(
         True, takeoff_frame, output_a_target, self.output_should_stop)
@@ -471,8 +463,17 @@ class LongitudinalPlanner:
         target=float(output_a_target), previous_target=float(a_prev), follow_seconds=float(self.mpc.params[0, 4]),
         blocked=bool(self.output_should_stop or self.fcw or self.force_stop_plan.forcing or
                      self.force_stop_plan.approach_distance_m > 0 or self.mpc.solution_status != 0))
+    if self.vision_stop_buffer is not None:
+      output_a_target, self.output_should_stop = self.vision_stop_buffer.sample(
+        sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),
+        stopping=self.output_should_stop, accel_min=ACCEL_MIN,
+        active=profile_eligible and not reset_state and self.mpc.solution_status == 0)
     if preap_acceleration_cap is not None:
       output_a_target = min(output_a_target, preap_acceleration_cap)
+    if self.ford_stop_approach is not None:
+      output_a_target, self.output_should_stop = self.ford_stop_approach.sample(
+        sm, now_ns=sample_now_ns, drive_id=drive_id, target=float(output_a_target),
+        stopping=self.output_should_stop, accel_min=ACCEL_MIN, active=profile_eligible and not reset_state)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0

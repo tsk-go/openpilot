@@ -18,7 +18,7 @@ from openpilot.starpilot.ui.onroad_map import (
   CAR_ANCHOR, ZOOM_FAST_M_PER_PX, ZOOM_SLOW_M_PER_PX, CanvasRequest, MapFix, MapInput, MapOverlay, TileReader,
   build_canvas, line_strip, route_guidance, split_route, zoom_for_speed,
 )
-from openpilot.starpilot.system.android_auto.tests import test_gpu_nv12
+from openpilot.starpilot.system.starport.tests import test_gpu_nv12
 
 gl = test_gpu_nv12.gpu  # the shared GL context fixture, under this module's name
 
@@ -185,7 +185,7 @@ def test_phone_map_keeps_moving_between_delayed_fixes(tmp_path):
     overlay.close()
 
 
-@pytest.mark.parametrize('speed, bearing', [(0., 90.), (20., None)])
+@pytest.mark.parametrize('speed, bearing', [(0., 90.), (20., None), (float('nan'), 90.)])
 def test_phone_map_hold_does_not_invent_stationary_or_unknown_heading_movement(tmp_path, speed, bearing):
   overlay = MapOverlay(tmp_path)
   try:

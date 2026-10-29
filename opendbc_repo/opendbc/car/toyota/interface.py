@@ -43,7 +43,7 @@ class CarInterface(CarInterfaceBase):
   CarController = CarController
   RadarInterface = RadarInterface
 
-  DRIVABLE_GEARS = (structs.CarState.GearShifter.sport,)
+  DRIVABLE_GEARS = (structs.CarState.GearShifter.sport, structs.CarState.GearShifter.brake)
 
   @staticmethod
   def get_pid_accel_limits(CP, current_speed, cruise_speed):
@@ -51,8 +51,9 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
-    from opendbc.car.toyota import pedal_composite
-    composite_pedal = pedal_composite.hardware_supported(candidate, fingerprint, car_fw)
+    from opendbc.car.toyota import pedal_composite, prius_legacy_pedal
+    legacy_prius_pedal = prius_legacy_pedal.hardware_supported(candidate, fingerprint, car_fw)
+    composite_pedal = legacy_prius_pedal or pedal_composite.hardware_supported(candidate, fingerprint, car_fw)
     if composite_pedal:
       fingerprint = pedal_composite.without_pedal(fingerprint)
     ret.brand = "toyota"
@@ -101,8 +102,7 @@ class CarInterface(CarInterfaceBase):
 
     if candidate in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT):
       stop_and_go = True
-      if candidate == CAR.TOYOTA_PRIUS_RETROFIT:
-        ret.flags |= ToyotaFlags.HYBRID.value
+      ret.flags |= ToyotaFlags.HYBRID.value
       # Only give steer angle deadzone to for bad angle sensor prius
       for fw in car_fw:
         if fw.ecu == "eps" and not fw.fwVersion == b'8965B47060\x00\x00\x00\x00\x00\x00':
@@ -142,6 +142,8 @@ class CarInterface(CarInterfaceBase):
     radar_filter = radar_filter_supported(candidate, fingerprint)
     if radar_filter:
       ret.flags |= int(ToyotaFlags.RADAR_CAN_FILTER)
+      if fingerprint.get(0, {}).get(0x2FF) == 4 and ret.steerControlType == SteerControlType.torque:
+        ret.flags |= int(ToyotaFlags.FILTER_BUTTONS)
       ret.safetyConfigs[0].safetyParam |= int(ToyotaSafetyFlags.LONG_FILTER)
 
     # since we don't yet parse radar on TSS2 radar-based ACC cars, gate longitudinal behind alpha toggle
@@ -159,16 +161,18 @@ class CarInterface(CarInterfaceBase):
     ret.openpilotLongitudinalControl = ((bool(ret.flags & ToyotaFlags.TSS2) and not (ret.flags & ToyotaFlags.RADAR_ACC)) or
                                         bool(ret.flags & ToyotaFlags.DISABLE_RADAR.value) or (radar_filter and alpha_long))
 
+    if candidate == CAR.TOYOTA_YARIS and ret.flags & ToyotaFlags.DISABLE_RADAR:
+      ret.safetyConfigs[0].safetyParam |= int(ToyotaSafetyFlags.SECOC_RADAR_LONG)
+
     from opendbc.car.toyota import matrix_filter
     manual_matrix_filter = any(matrix_filter.hardware_supported(candidate, fingerprint, car_fw, length=size) for size in (4, 8))
     if candidate in (CAR.TOYOTA_MATRIX_RETROFIT, CAR.TOYOTA_PRIUS_RETROFIT):
       # These manually selected retrofits currently own stock PCM longitudinal.
       # Observed takeover hardware needs its paired controller/native port.
       camera_fp = fingerprint.get(2, {})
-      late_camera = candidate == CAR.TOYOTA_PRIUS_RETROFIT and any(
-        fw.ecu == Ecu.fwdCamera and bytes(fw.fwVersion).startswith(b"8646F4705") for fw in car_fw)
       bypass = 0x343 in camera_fp or 0x4CB in camera_fp
-      if late_camera:
+      # A camera-bus copy of a still-present native DSU is not a takeover.
+      if candidate == CAR.TOYOTA_PRIUS_RETROFIT:
         bypass = ((0x343 in camera_fp and not any(0x343 in fingerprint.get(bus, {}) for bus in (0, 1))) or
                   (0x4CB in camera_fp and 0x4CB not in fingerprint[0]))
       smart_dsu = (candidate == CAR.TOYOTA_PRIUS_RETROFIT and
@@ -262,7 +266,14 @@ class CarInterface(CarInterfaceBase):
       ret.flags |= int(ToyotaFlags.GAS_INTERCEPTOR)
       ret.safetyConfigs[0].safetyParam = pedal.long_word(candidate)
     if composite_pedal:
-      assert pedal_composite.apply(ret)
+      if legacy_prius_pedal:
+        dsu_bypass.apply(ret)
+      assert pedal_composite.apply(ret, legacy_prius=legacy_prius_pedal)
+    from opendbc.car.toyota import stock_aol
+    if stock_aol.hardware_supported(candidate, fingerprint):
+      stock_aol.apply(ret)
+    from opendbc.car.toyota.dom_defaults import apply_defaults
+    apply_defaults(ret)
     return ret
 
   @staticmethod

@@ -7,7 +7,7 @@ import random
 
 
 class FiveTaps:
-  """Five separate releases, 100 ms to 850 ms apart, within three seconds."""
+  """Five separate releases at a natural pace; use original touch timestamps."""
   def __init__(self):
     self.reset()
 
@@ -19,9 +19,9 @@ class FiveTaps:
     if not math.isfinite(now):
       self.reset()
       return False
-    if self.last is not None and 0 <= now - self.last < .1:
+    if self.last is not None and 0 <= now - self.last < .04:
       return False
-    if self.last is None or not 0 <= now - self.last <= .85 or self.first is None or now - self.first > 3.:
+    if self.last is None or not 0 <= now - self.last <= 1.5 or self.first is None or now - self.first > 6.:
       self.count, self.first = 0, now
     self.count += 1
     self.last = now

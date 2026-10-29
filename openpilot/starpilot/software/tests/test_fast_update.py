@@ -79,6 +79,118 @@ class TestFastUpdate(unittest.TestCase):
     arguments.update(kwargs)
     return owner.fast_update(self.repo, 'Dom', **arguments)
 
+  def legacy_release(self, branch='Dom', version='6.7.9'):
+    self.git(self.repo, 'checkout', '-b', 'SecretGoodStarPilot')
+    self.git(self.remote, 'rm', 'upstream-sync.json')
+    files = {'launch_openpilot.sh': '#!/bin/sh\n', 'launch_chffrplus.sh': '#!/bin/sh\n',
+             'selfdrive/ui/lib/starpilot_version.py': f'STARPILOT_DISPLAY_VERSION = "{version}"\n',
+             'selfdrive/car/card.py': 'pass\n', 'selfdrive/modeld/modeld.py': 'pass\n'}
+    for name, text in files.items():
+      path = self.remote / name
+      path.parent.mkdir(parents=True, exist_ok=True)
+      path.write_text(text)
+      if name.endswith('.sh'):
+        path.chmod(0o755)
+    self.git(self.remote, 'add', '.')
+    self.git(self.remote, 'commit', '-m', 'legacy release')
+    self.target = self.git(self.remote, 'rev-parse', 'HEAD')
+    if branch != 'Dom':
+      self.git(self.remote, 'branch', branch)
+    return self.target
+
+  def test_legacy_dom_and_starpilot_return_without_manifest_or_build_receipt(self):
+    for branch in ('Dom', 'StarPilot'):
+      with self.subTest(branch=branch):
+        if branch == 'Dom':
+          self.legacy_release()
+          self.git(self.remote, 'branch', 'StarPilot')
+        else:
+          self.git(self.repo, 'checkout', '-B', 'SecretGoodStarPilot', self.previous)
+        model = self.repo / 'downloaded-model'
+        model.write_text('keep')
+        stages = []
+        self.assertEqual(owner.fast_update(self.repo, branch, params=self.params, parked=lambda: True,
+                         expected_commit=self.previous, current_os='19.8.1', invalidate=lambda: None,
+                         sleep=lambda _: None, progress=lambda stage, detail, stages=stages: stages.append((stage, detail))), 'reboot-requested')
+        self.assertEqual(self.git(self.repo, 'symbolic-ref', '--short', 'HEAD'), branch)
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.target)
+        self.assertEqual(self.git(self.repo, 'rev-parse', 'refs/starpilot/previous'), self.previous)
+        self.assertEqual(model.read_text(), 'keep')
+        self.assertTrue(any('6.7.9' in detail for _, detail in stages))
+        self.assertFalse((self.repo / 'upstream-sync.json').exists())
+        self.assertEqual(self.params.calls[-1], (('DoReboot', True), {'block': True}))
+
+  def test_legacy_explicit_accepted_os_and_missing_required_os(self):
+    self.legacy_release()
+    launch = self.remote / 'launch_env.sh'
+    launch.write_text('export AGNOS_VERSION="19.8.1"\nexport AGNOS_ACCEPTED_VERSIONS="19.8.1 19.8.2"\n')
+    self.git(self.remote, 'commit', '-am', 'accepted OS')
+    self.assertEqual(self.update(current_os='19.8.2'), 'reboot-requested')
+    self.git(self.repo, 'checkout', '-B', 'SecretGoodStarPilot', self.previous)
+    self.params.calls.clear()
+    launch.write_text('export AGNOS_ACCEPTED_VERSIONS="19.8.2"\n')
+    self.git(self.remote, 'commit', '-am', 'missing required OS')
+    with self.assertRaisesRegex(owner.FastUpdateIncompatible, 'operating system'):
+      self.update(current_os='19.8.2')
+    self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.previous)
+    self.assertEqual(self.params.calls, [])
+
+  def test_legacy_missing_marker_new_major_and_different_os_refused(self):
+    self.legacy_release(version='7.0.0')
+    with self.assertRaisesRegex(owner.FastUpdateIncompatible, '6.x'):
+      self.update()
+    version = self.remote / 'selfdrive/ui/lib/starpilot_version.py'
+    version.write_text('STARPILOT_DISPLAY_VERSION = "6.7.9"\n')
+    self.git(self.remote, 'commit', '-am', 'legacy version')
+    with self.assertRaisesRegex(owner.FastUpdateIncompatible, 'operating system'):
+      self.update(current_os='different')
+    self.git(self.remote, 'rm', 'prebuilt')
+    self.git(self.remote, 'commit', '-m', 'missing prebuilt')
+    with self.assertRaisesRegex(owner.FastUpdateIncompatible, 'prebuilt'):
+      self.update()
+    self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.previous)
+    self.assertEqual(self.params.calls, [])
+
+  def test_legacy_untracked_collision_and_parked_withdrawal_still_refused(self):
+    self.legacy_release()
+    collision = self.repo / 'selfdrive/car/card.py'
+    collision.parent.mkdir(parents=True)
+    collision.write_text('private data')
+    with self.assertRaisesRegex(owner.FastUpdateError, 'untracked data'):
+      self.update()
+    collision.unlink()
+    checks = iter((True, False))
+    with self.assertRaisesRegex(owner.FastUpdateError, 'parked state'):
+      self.update(parked=lambda: next(checks))
+    self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.previous)
+    self.assertEqual(self.params.calls, [])
+
+  def test_legacy_failed_post_apply_validation_restores_rebase(self):
+    self.legacy_release()
+    original = owner.validate_legacy_return
+    def fail_post(git, revision, branch):
+      if revision == 'HEAD':
+        raise owner.FastUpdateIncompatible('legacy post-check failed')
+      return original(git, revision, branch)
+    with patch.object(owner, 'validate_legacy_return', fail_post):
+      with self.assertRaisesRegex(owner.FastUpdateIncompatible, 'legacy post-check'):
+        self.update()
+    self.assertEqual(self.git(self.repo, 'symbolic-ref', '--short', 'HEAD'), 'SecretGoodStarPilot')
+    self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.previous)
+    self.assertTrue((self.repo / 'upstream-sync.json').is_file())
+    self.assertEqual(self.params.calls, [])
+
+  def test_legacy_exception_never_accepts_other_branches_or_malformed_manifest(self):
+    self.legacy_release()
+    with self.assertRaises(owner.FastUpdateIncompatible):
+      owner.validate_legacy_return(lambda *args: self.git(self.remote, *args), self.target, 'other')
+    (self.remote / 'upstream-sync.json').write_text('{}')
+    self.git(self.remote, 'add', '.')
+    self.git(self.remote, 'commit', '-m', 'malformed current manifest')
+    with self.assertRaises(ValueError):
+      self.update()
+    self.assertEqual(self.git(self.repo, 'rev-parse', 'HEAD'), self.previous)
+
   def test_recent_listing_preserves_installed_state_and_rollback_receipt(self):
     self.git(self.repo, 'update-ref', 'refs/starpilot/previous', self.previous)
     (self.repo / 'private-data').write_text('preserved')

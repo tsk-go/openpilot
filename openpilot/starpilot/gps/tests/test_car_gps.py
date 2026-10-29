@@ -198,7 +198,7 @@ def test_actual_card_publishes_fault_companion_before_matching_car_state(brand, 
   card.slc_replay = card.curve_replay = card.aol_replay = False
   card.can_rcv_cum_timeout_counter = 0
   card.rk = SimpleNamespace(remaining=0.)
-  card.v_cruise_helper = SimpleNamespace(slc_cruise_change=None)
+  card.v_cruise_helper = SimpleNamespace(slc_cruise_change=None, toyota=None)
   card.car_gps_publisher = CarGpsPublisher()
   CS = car.CarState.new_message(canValid=valid)
   card.state_publish(CS, None)
@@ -218,7 +218,7 @@ def test_actual_card_monitored_apply_and_sendcan_use_same_boottime(brand, enable
   from openpilot.selfdrive.car.card import Car
 
   card = cast(Any, Car.__new__(Car))
-  card.CP = SimpleNamespace(brand=brand, alternativeExperience=0)
+  card.CP = car.CarParams.new_message(brand=brand, alternativeExperience=0, passive=False)
   card.CI = SimpleNamespace(CS=SimpleNamespace(steering_authority=SimpleNamespace(enabled=enabled)), CC=SimpleNamespace(),
                             apply=Mock(return_value=(car.CarControl.Actuators.new_message(), [])))
   card.pm = Mock()
@@ -226,6 +226,7 @@ def test_actual_card_monitored_apply_and_sendcan_use_same_boottime(brand, enable
                             logMonoTime={'carControl': 101_000_000_000}, recv_time={'carControl': 101.},
                             all_alive=lambda _services: True)
   card.ci_initialized = True
+  card.initialized_prev = True
   card.ioniq6_long_prearmed = False
   card.vehicle_startup = SimpleNamespace(owner=None, check=Mock())
   card.volt_startup_keepalive = Mock(return_value=keepalive)

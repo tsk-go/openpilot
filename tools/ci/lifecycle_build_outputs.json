@@ -119,9 +119,37 @@
     "recipe": "openpilot/selfdrive/pandad/SConscript",
     "required_tracked": true
   },
+  "openpilot/selfdrive/pandad/main.o": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": true
+  },
+  "openpilot/selfdrive/pandad/panda.o": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": true
+  },
+  "openpilot/selfdrive/pandad/panda_safety.o": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": true
+  },
+  "openpilot/selfdrive/pandad/panda_usb.o": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": true
+  },
   "openpilot/selfdrive/pandad/pandad": {
     "recipe": "openpilot/selfdrive/pandad/SConscript",
     "required_tracked": true
+  },
+  "openpilot/selfdrive/pandad/pandad.o": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": true
+  },
+  "openpilot/selfdrive/pandad/spi.o": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": true
+  },
+  "openpilot/selfdrive/pandad/tests/test_panda_debug": {
+    "recipe": "openpilot/selfdrive/pandad/SConscript",
+    "required_tracked": false
   },
   "openpilot/selfdrive/pandad/tests/test_panda_owner": {
     "recipe": "openpilot/selfdrive/pandad/SConscript",

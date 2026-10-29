@@ -26,6 +26,113 @@ from openpilot.starpilot.conditional_mode.tests.test_projection import BOOT, MON
 
 
 class TestConditionalRuntimeLoop(unittest.TestCase):
+  def test_slc_unit_change_keeps_receipts_for_the_current_command(self):
+    from openpilot.selfdrive.car.cruise import slc_target_kph
+    from openpilot.starpilot.speed_limits import offset_document as od
+    from openpilot.starpilot.speed_limits.runtime import Action, CruiseEvent
+    from openpilot.starpilot.speed_limits.tests.test_runtime_replay import RuntimeReplayTests
+    fixture = RuntimeReplayTests()
+    fixture.setUp()
+    sm, cp = fixture.sm, fixture.cp
+    with tempfile.TemporaryDirectory() as directory:
+      params = Params(directory)
+      params.put_bool('SpeedLimitController', True, block=True)
+      params.put_bool('SLCConfirmation', True, block=True)
+      params.put('SLCPriority1', 'Dashboard', block=True)
+      params.put('SLCOffsetSchedule', od.to_value(od.adopt_legacy(False, (0.,) * 7)), block=True)
+      owner = plannerd.SavedSlcLifecycle(params, cp, {})
+      runtime, _ = owner.refresh(2_000_000_000)
+      sm['carState'].vCruise = sm['carState'].vCruiseCluster = 60.
+      sm.advance(2_900_000_000)
+      pending = runtime.step(sm, cp, now_ns=2_900_000_000).message.slcState
+      sm.advance(2_950_000_000)
+      issued = runtime.step(sm, cp, now_ns=2_950_000_000,
+        request=Action(runtime.session_id, 1, pending.decisionId, pending.presentationId, 'accept'))
+      command = issued.command.slcCruiseCommand
+      selected = slc_target_kph(command.targetMps, False)
+      receipts = deque([CruiseEvent(1, 2_990_000_000, 60 / 3.6, selected / 3.6, '', 'card-producer',
+        2_990_000_000, 'commandApplied', runtime.session_id, command.decisionId, command.presentationId, command.commandId)])
+      params.put_bool('IsMetric', True, block=True)
+      metric, _ = owner.refresh(3_000_000_000, pending_cruise=receipts)
+      self.assertEqual(len(receipts), 1)
+      sm['carState'].vCruise = sm['carState'].vCruiseCluster = selected
+      sm.advance(3_000_000_000)
+      applied = metric.step(sm, cp, now_ns=3_000_000_000, cruise_event=receipts.popleft())
+      self.assertEqual(applied.message.slcState.commandStatus, 'applied')
+      self.assertIsNone(applied.command)
+
+  def test_slc_unit_changes_preserve_set_speed_and_driver_choices(self):
+    from openpilot.common.constants import CV
+    from openpilot.selfdrive.car.cruise import slc_target_kph
+    from openpilot.starpilot.speed_limits import offset_document as od
+    from openpilot.starpilot.speed_limits.runtime import Action, CruiseEvent
+    from openpilot.starpilot.speed_limits.tests.test_runtime_replay import RuntimeReplayTests
+    now = 2_000_000_000
+    for confirmation, choice in ((False, 'applied'), (True, 'applied'), (False, 'override'), (True, 'decline')):
+      with self.subTest(confirmation=confirmation, choice=choice), tempfile.TemporaryDirectory() as directory:
+        fixture = RuntimeReplayTests()
+        fixture.setUp()
+        sm, cp = fixture.sm, fixture.cp
+        params = Params(directory)
+        params.put_bool('SpeedLimitController', True, block=True)
+        params.put_bool('SLCConfirmation', confirmation, block=True)
+        params.put('SLCPriority1', 'Dashboard', block=True)
+        params.put('SLCOffsetSchedule', od.to_value(od.adopt_legacy(False, (0.,) * 7)), block=True)
+        owner = plannerd.SavedSlcLifecycle(params, cp, {})
+        original, _ = owner.refresh(now)
+        sm['slcDashboardObservation'].speedMps = 65 * CV.MPH_TO_MS
+        baseline = slc_target_kph(65 * CV.MPH_TO_MS, False)
+        sm['carState'].vCruise = sm['carState'].vCruiseCluster = baseline
+        aligned = original.step(sm, cp, now_ns=now)
+        self.assertIsNone(aligned.command)
+        if choice == 'override':
+          selected = slc_target_kph(70 * CV.MPH_TO_MS, False)
+          sm['carState'].vCruise = sm['carState'].vCruiseCluster = selected
+          sm.advance(now + 50_000_000)
+          chosen = original.step(sm, cp, now_ns=now + 50_000_000, cruise_event=CruiseEvent(
+            1, now + 50_000_000, baseline / 3.6, selected / 3.6, 'accel', 'card-producer', now + 50_000_000))
+          self.assertTrue(chosen.message.slcState.driverOverrideActive)
+        elif choice == 'decline':
+          sm['slcDashboardObservation'].speedMps = 55 * CV.MPH_TO_MS
+          sm.advance(now + 50_000_000)
+          pending = original.step(sm, cp, now_ns=now + 50_000_000).message.slcState
+          sm.advance(now + 100_000_000)
+          original.step(sm, cp, now_ns=now + 100_000_000,
+            request=Action(original.session_id, 1, pending.decisionId, pending.presentationId, 'reject'))
+        selected = float(sm['carState'].vCruise)
+        params.put_bool('IsMetric', True, block=True)
+        metric, changed = owner.refresh(now + 1_000_000_000)
+        self.assertTrue(changed)
+        sm.advance(now + 1_000_000_000)
+        output = metric.step(sm, cp, now_ns=now + 1_000_000_000)
+        self.assertIsNone(output.command)
+        self.assertFalse(output.message.slcState.hasPending)
+        self.assertTrue(output.message.slcState.hasAccepted)
+        self.assertEqual(sm['carState'].vCruise, selected)
+        self.assertEqual(output.message.slcState.driverOverrideActive, choice == 'override')
+        if choice == 'decline':
+          self.assertEqual(output.result.acceptance.basis, 'rejected')
+
+  def test_slc_uses_current_set_units_and_retires_actions_when_units_change(self):
+    cp = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+    with tempfile.TemporaryDirectory() as directory:
+      params = Params(directory)
+      params.put_bool('SpeedLimitController', True, block=True)
+      params.put('SLCPriority1', 'Dashboard', block=True)
+      owner = plannerd.SavedSlcLifecycle(params, cp, {})
+      imperial, _ = owner.refresh(MONO)
+      self.assertFalse(imperial.is_metric)
+      imperial.set_speed_after_ns = MONO + 1_050_000_000
+      actions, cruise = deque([object()]), deque([object()])
+      params.put_bool('IsMetric', True, block=True)
+      metric, changed = owner.refresh(MONO + 1_000_000_000, pending_actions=actions, pending_cruise=cruise)
+      self.assertTrue(changed)
+      self.assertTrue(metric.is_metric)
+      self.assertEqual(metric.set_speed_after_ns, MONO + 1_050_000_000)
+      self.assertIs(metric, imperial)
+      self.assertFalse(actions)
+      self.assertEqual(len(cruise), 1)
+
   def test_starpilot_loop_subscriptions_follow_conditional_selection(self):
     class EndLoop(Exception):
       pass
@@ -155,14 +262,13 @@ class TestConditionalRuntimeLoop(unittest.TestCase):
           self.assertNotIn(service, subscriber.call_args.kwargs[check])
       self.assertIsNone(plannerd.SavedSlcLifecycle(params, cp, {}).refresh(1_000_000_000)[0])
 
-  def test_automatic_chill_joins_native_mpc_radar_and_disabled_slc(self):
+  def test_automatic_chill_ignores_retired_slc_modes_but_keeps_native_radar_veto(self):
     cp = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
     planner = LongitudinalPlanner(cp, init_v=25.0)
     with tempfile.TemporaryDirectory() as directory:
       params = Params(directory)
       params.put(DOCUMENT_KEY, json.loads(encode_preferences(SavedPreferences(mode=ModeChoice.CCM))), block=True)
-      owner = ConditionalPlannerHost(params, slc_runtime_enabled=False)
-      missing_slc = ConditionalPlannerHost(params, slc_runtime_enabled=True)
+      owner = ConditionalPlannerHost(params)
       stamp = MONO
       radar = RadarD(adjacent_enabled=True, radar_available=True,
                      clock_pair_fn=lambda: (stamp + 1_000_000, BOOT + stamp - MONO + 1_000_000, 1000))
@@ -188,7 +294,10 @@ class TestConditionalRuntimeLoop(unittest.TestCase):
         def all_checks(self, service_list=None):
           return all(self.valid[service] for service in ('modelV2', 'carState', 'radarTracks'))
 
+      legacy = Path(params.get_param_path('SLCFallback'))
+      saved_modes = (b'0', b'1', b'2', b'broken')
       for index in range(31):
+        legacy.write_bytes(saved_modes[index % len(saved_modes)])
         stamp = MONO + index * 50_000_000
         payloads = serialized_scene(stamp=BOOT + stamp - MONO, speed=25.0, horizon=300.0,
                                     lead_present=False, experimental_mode=True)
@@ -229,23 +338,14 @@ class TestConditionalRuntimeLoop(unittest.TestCase):
         current, _ = owner.sample(sm, cp, planner, now_mono_ns=stamp + 2_000_000,
                                    now_boot_ns=BOOT + stamp - MONO + 2_000_000, sample_skew_ns=1000,
                                    drive_id=MONO - 1_000_000_000, native_plan_valid=True)
-        unavailable, _ = missing_slc.sample(sm, cp, planner, now_mono_ns=stamp + 2_000_000,
-                                             now_boot_ns=BOOT + stamp - MONO + 2_000_000, sample_skew_ns=1000,
-                                             drive_id=MONO - 1_000_000_000, native_plan_valid=True)
-        if index == 29:
+        self.assertEqual(legacy.read_bytes(), saved_modes[index % len(saved_modes)])
+        if 20 <= index < 30:
           self.assertIs(current.projected.scene.adjacent_lead_ambiguous, False)
           self.assertEqual(current.decision.reason.value, 'ccm_speed')
           self.assertIs(current.override_experimental, False)
-          self.assertIsNone(unavailable.projected.scene.slc_experimental)
-          self.assertEqual(unavailable.decision.reason.value, 'scene_unavailable')
-          self.assertIs(unavailable.override_experimental, True)
-      self.assertIs(current.projected.scene.slc_experimental, False)
       self.assertIs(current.projected.scene.adjacent_lead_ambiguous, True)
       self.assertEqual(current.decision.reason.value, 'ccm_veto')
       self.assertIs(current.override_experimental, True)  # Real adjacent radar veto exits Chill immediately.
-      self.assertIsNone(unavailable.projected.scene.slc_experimental)
-      self.assertEqual(unavailable.decision.reason.value, 'ccm_veto')
-      self.assertIs(unavailable.override_experimental, True)
 
   def test_current_build_disabled_scenes_make_chill_launch_known(self):
     cp = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)

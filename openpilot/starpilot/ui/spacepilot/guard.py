@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import math
+import time
 from typing import Any
 
 from openpilot.starpilot.parked_evidence import PANDA_TTL_NS, RESUME_SKEW_NS
@@ -10,6 +11,19 @@ FAST_AGE_NS = 250_000_000
 SLOW_AGE_NS = 1_000_000_000
 DWELL_NS = 1_000_000_000
 SERVICES = ('carState', 'selfdriveState', 'carControl', 'deviceState', 'pandaStates')
+
+
+def sample_clocks() -> tuple[int, int]:
+  """Discard a preempted clock read, never widen evidence or resume tolerances."""
+  for _ in range(3):
+    before = time.monotonic_ns()
+    boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    after = time.monotonic_ns()
+    if before <= 0 or boot <= 0 or after < before:
+      raise ValueError('Device clock moved backwards or is unavailable')
+    if after - before <= 1_000_000:
+      return after, boot
+  raise ValueError('Waiting for a stable device clock')
 
 
 @dataclass(frozen=True)

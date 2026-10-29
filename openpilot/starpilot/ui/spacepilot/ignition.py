@@ -2,10 +2,9 @@
 
 from dataclasses import dataclass
 import math
-import time
 
 from openpilot.starpilot.parked_evidence import PANDA_TTL_NS, RESUME_SKEW_NS
-from openpilot.starpilot.ui.spacepilot.guard import DWELL_NS, FAST_AGE_NS, SLOW_AGE_NS, read_offroad_witness
+from openpilot.starpilot.ui.spacepilot.guard import DWELL_NS, FAST_AGE_NS, SLOW_AGE_NS, read_offroad_witness, sample_clocks
 
 
 @dataclass(frozen=True)
@@ -21,10 +20,8 @@ class IgnitionSample:
 
 def sample_ignition(ui, *, native_device: bool) -> IgnitionSample | None:
   try:
-    before = time.monotonic_ns()
-    boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-    mono = time.monotonic_ns()
-    if (not native_device or not 0 <= mono - before <= 1_000_000 or ui.projection_read_only or
+    mono, boot = sample_clocks()
+    if (not native_device or ui.projection_read_only or
         ui.replay_clock is not None or getattr(ui.sm, 'replay_sample', None) is not None):
       return None
     sm = ui.sm

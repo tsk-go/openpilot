@@ -882,6 +882,28 @@ class TestRuntimeSnapshot(unittest.TestCase):
     self.assertFalse(RuntimeSnapshotAdapter(ui).build(ShellMode.ONROAD, now_ns=NOW).onroad.slc_system_long_available)
 
 
+@pytest.mark.parametrize('brand,standstill,cruise_standstill,cruise_enabled,expected', [
+  ('honda', False, False, True, True),
+  ('toyota', False, False, True, True),
+  ('toyota', True, False, True, False),
+  ('toyota', False, True, True, False),
+  ('toyota', False, False, False, False),
+])
+def test_wheel_confirmation_hint_preserves_toyota_resume(brand, standstill, cruise_standstill, cruise_enabled, expected):
+  ui = ui_fake()
+  ui.CP = NS(carFingerprint='', brand=brand, openpilotLongitudinalControl=True, pcmCruise=brand == 'toyota')
+  car = ui.sm['carState']
+  car.canTimeout, car.canValid, car.standstill = False, True, standstill
+  car.cruiseState = NS(available=True, enabled=cruise_enabled, standstill=cruise_standstill)
+  ui.sm['carControl'].longActive = ui.sm['carControl'].enabled = True
+  ui.sm['selfdriveState'].enabled = True
+  ui.sm.put('controlsState', NS(longControlState='pid'))
+  adapter = RuntimeSnapshotAdapter(ui)
+  assert adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.slc_wheel_confirmation_available == expected
+  ui.sm.logMonoTime['carControl'] = NOW - 200_000_000
+  assert not adapter.build(ShellMode.ONROAD, now_ns=NOW).onroad.slc_wheel_confirmation_available
+
+
 class TestParkedClockDomains(unittest.TestCase):
   def setUp(self):
     self.ui = ui_fake()

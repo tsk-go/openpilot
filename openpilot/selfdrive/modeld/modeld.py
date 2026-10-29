@@ -35,7 +35,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.hardware.usb import cable_connected
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.realtime import config_realtime_process, DT_MDL
+from openpilot.common.realtime import config_realtime_process, set_core_affinity, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
@@ -349,12 +349,15 @@ def main(demo=False):
   model = None
   big_prepared = None
 
+  # with Jetlink on, the small model's warp output moves where the link sends it from, before warmup links it
+  coherent_warp = jetlink_adapter.coherent_warp()
+
   def load_small():
     if selection.small_path is not None:
       try:
         selected, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                                  selection.small_path, selection.small_version, False,
-                                                 selection.small_id, selection.small_sha256)
+                                                 selection.small_id, selection.small_sha256, coherent_warp=coherent_warp)
         return selected, prepared, False
       except Exception:
         cloudlog.exception("selected small model load failed, using shipped RDFv4")
@@ -364,7 +367,7 @@ def main(demo=False):
       raise RuntimeError("Shipped RDFv4 is missing or corrupt")
     fallback, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,
                                              path, BY_ID[DEFAULT_SMALL].version, False,
-                                             DEFAULT_SMALL, DEFAULT_SMALL_SHA256)
+                                             DEFAULT_SMALL, DEFAULT_SMALL_SHA256, coherent_warp=coherent_warp)
     return fallback, prepared, selection.small_id != DEFAULT_SMALL
 
   # Preload a custom fallback before the GPU worker takes the catalog lock.
@@ -387,6 +390,7 @@ def main(demo=False):
         wait_for_chestnut()
         if not demo:
           wait_for_chestnut_power(CP, timeout=min(30., BIG_MODEL_TIMEOUT / 2))
+        set_core_affinity([7])
         big_stage = "load"
         if selection.big_path is not None:
           m, prepared = load_verified_model(vipc_client_main.width, vipc_client_main.height,

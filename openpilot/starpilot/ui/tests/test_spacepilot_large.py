@@ -34,7 +34,7 @@ def deliver(widget, monkeypatch, index, *, drift=0, duration=.04):
   bounds = widget._version_bounds()
   pos = MousePos(bounds.x + 20, bounds.y + 10)
   now = 10 + index * .2
-  monkeypatch.setattr(large.time, 'monotonic', lambda: now)
+  monkeypatch.setattr(native.time, 'monotonic', lambda: now)
   events = [MouseEvent(pos, 0, True, False, True, now)]
   if drift:
     events.append(MouseEvent(MousePos(pos.x + drift, pos.y), 0, False, False, True, now + .01))

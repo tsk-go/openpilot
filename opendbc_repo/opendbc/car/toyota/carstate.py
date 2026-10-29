@@ -3,7 +3,7 @@ import math
 
 from opendbc.can import CANDefine, CANParser
 from opendbc.car.toyota import (
-  prius_longitudinal, dsu_bypass, pedal_composite, pedal, legacy_sdsu, advert_filter, legacy_advert_filter, prius_sdsu, prius_advert_filter
+  stock_aol, prius_longitudinal, dsu_bypass, pedal_composite, pedal, legacy_sdsu, advert_filter, legacy_advert_filter, prius_sdsu, prius_advert_filter
 )
 from opendbc.car.toyota.lexus_is import LexusIsCANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs
@@ -240,7 +240,7 @@ class CarState(CarStateBase):
     buttonEvents = create_button_events(int(pcm_acc_status) if pcm_acc_status in (9, 10) else 0,
                                        int(previous_pcm_acc_status) if previous_pcm_acc_status in (9, 10) else 0,
                                        {9: ButtonType.accelCruise, 10: ButtonType.decelCruise})
-    if (self.CP.flags & (ToyotaFlags.TSS2 | ToyotaFlags.LONG_FILTER) or self.CP.carFingerprint == CAR.TOYOTA_PRIUS_RETROFIT or
+    if (self.CP.flags & (ToyotaFlags.TSS2 | ToyotaFlags.LONG_FILTER | ToyotaFlags.FILTER_BUTTONS) or self.CP.carFingerprint == CAR.TOYOTA_PRIUS_RETROFIT or
         self.CP.flags & ToyotaFlags.RADAR_CAN_FILTER and legacy_advert_filter.configured(self.CP)):
       # lkas button is wired to the camera
       prev_lkas_button = self.lkas_button
@@ -260,9 +260,9 @@ class CarState(CarStateBase):
         buttonEvents += create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
 
     if (self.CP.carFingerprint in (CAR.TOYOTA_PRIUS, CAR.TOYOTA_PRIUS_RETROFIT) or
-        self.CP.flags & ToyotaFlags.LONG_FILTER or advert_filter.configured(self.CP)):
+        self.CP.flags & (ToyotaFlags.LONG_FILTER | ToyotaFlags.FILTER_BUTTONS) or advert_filter.configured(self.CP)):
       prev_distance_button = self.distance_button
-      if advert_filter.configured(self.CP) or prius_advert_filter.configured(self.CP):
+      if self.CP.flags & ToyotaFlags.FILTER_BUTTONS or advert_filter.configured(self.CP) or prius_advert_filter.configured(self.CP):
         fresh = cp.advert_button_ns > 0 and 0 <= cp._last_update_nanos - cp.advert_button_ns <= 200_000_000
         self.distance_button = cp.advert_distance_button if fresh else 0
       else:
@@ -310,6 +310,15 @@ class CarState(CarStateBase):
       ret.steerFaultTemporary = ret.steerFaultTemporary or not eps_current or cp.hardware_ambiguous
       ret.accFaulted = ret.accFaulted or cp.hardware_ambiguous
 
+    if stock_aol.configured(self.CP):
+      main = 'DSU_CRUISE' if self.CP.safetyConfigs[0].safetyParam in stock_aol.ALT_MAIN_WORDS else 'PCM_CRUISE_2'
+      main_stamp = cp.ts_nanos[main]['MAIN_ON']
+      eps_stamp = cp.ts_nanos['EPS_STATUS']['LKA_STATE']
+      ret.cruiseState.available &= bool(cp.main_valid and main_stamp > 0 and
+                                       0 <= cp._last_update_nanos - main_stamp <= 303_031_000)
+      ret.steerFaultTemporary |= not (cp.eps_valid and eps_stamp > 0 and
+                                     0 <= cp._last_update_nanos - eps_stamp <= 400_000_000)
+
     if pedal.configured(self.CP):
       cp_pedal = can_parsers[Bus.alt] if pedal_composite.configured(self.CP) else cp
       stamp = cp_pedal.ts_nanos.get("GAS_SENSOR", {}).get("STATE", 0)
@@ -331,7 +340,7 @@ class CarState(CarStateBase):
     if pedal_composite.configured(CP):
       parent = CarState.get_can_parsers(pedal_composite.parent_cp(CP))
       for bus in parent:
-        parent[bus] = pedal_composite.ParentPedalParser(parent[bus])
+        parent[bus] = pedal_composite.ParentPedalParser(parent[bus], mirrored_pedal=True)
       parent[Bus.alt] = pedal.PedalCANParser(DBC[CP.carFingerprint][Bus.pt], [('GAS_SENSOR', 50)], 0)
       return parent
     if dsu_bypass.configured(CP):
@@ -372,15 +381,17 @@ class CarState(CarStateBase):
 
     if pedal.configured(CP):
       pt_messages.append(("GAS_SENSOR", 50))
-    pt_parser = (prius_advert_filter.PriusAdvertCANParser if prius_advert_filter.configured(CP) else
+    stock = stock_aol.configured(CP)
+    pt_parser = (stock_aol.StockCANParser if stock else prius_advert_filter.PriusAdvertCANParser if prius_advert_filter.configured(CP) else
                  prius_sdsu.PriusSDSUCANParser if prius_sdsu.configured(CP) or prius_longitudinal.eps73_status_configured(CP) else
                  camera_2aa_filter.CameraTwoAACANParser if camera_twoaa else
                  legacy_advert_filter.LegacyAdvertCANParser if legacy_advert else
                  legacy_sdsu.AlternateMainSDSUCANParser if alternate_sdsu_main else
                  LexusIsCANParser if CP.carFingerprint == CAR.LEXUS_IS else pedal.PedalCANParser if pedal.configured(CP) else
-                 advert_filter.AdvertFilterCANParser if advert_filter.configured(CP) else
+                 advert_filter.AdvertFilterCANParser if CP.flags & ToyotaFlags.FILTER_BUTTONS or advert_filter.configured(CP) else
                  Rav4hCANParser if rav4h_filter_configured(CP) else CANParser)
     return {
-      Bus.pt: pt_parser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0, **({"alternate_main": alternate_sdsu_main} if legacy_advert else {})),
+      Bus.pt: pt_parser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0, **({"stock_word": CP.safetyConfigs[0].safetyParam} if stock else
+        {"alternate_main": alternate_sdsu_main} if legacy_advert else {})),
       Bus.cam: CANParser(dbc_name, cam_messages, 2),
     }

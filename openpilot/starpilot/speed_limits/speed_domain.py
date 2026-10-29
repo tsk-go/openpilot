@@ -1,10 +1,11 @@
 """Pure offset selection and qualified raw/cluster coordinate conversion for SLC."""
 
 import math
+import struct
 from dataclasses import dataclass
 from enum import Enum
 
-from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX
+from openpilot.selfdrive.car.cruise import V_CRUISE_MIN, V_CRUISE_MAX, slc_target_kph
 from openpilot.starpilot.speed_limits import acceptance as acc
 
 
@@ -150,6 +151,20 @@ def adjusted_limit(speed_mps: float, schedule: OffsetSchedule, *, minimum_target
   return min(max(value, V_CRUISE_MIN / 3.6), V_CRUISE_MAX / 3.6) if _number(value, positive=True) else None
 
 
+def set_speed_matches(target_mps: float, raw_kph: float, cluster_kph: float | None, is_metric: bool | None) -> bool:
+  """Compare the SET values Card would actually write, including display-unit rounding."""
+  if type(is_metric) is not bool or not all(_number(v, positive=True) for v in (target_mps, raw_kph, cluster_kph)):
+    return False
+  if not V_CRUISE_MIN / 3.6 <= target_mps <= V_CRUISE_MAX / 3.6:
+    return False
+  assert cluster_kph is not None
+  # Card receives targetMps as Float32; transport can move a half-unit rounding boundary.
+  target_mps = struct.unpack('f', struct.pack('f', target_mps))[0]
+  target_kph = slc_target_kph(target_mps, is_metric)
+  return (math.isclose(target_kph, raw_kph, rel_tol=0, abs_tol=0.001) and
+          math.isclose(target_kph, cluster_kph, rel_tol=0, abs_tol=0.001))
+
+
 def resolve(decision: acc.Decision, schedule: OffsetSchedule, selected: SpeedPair, ego: SpeedPair) -> DomainResolution:
   """Bind an explicit offset and contemporaneous speed pairs to an acceptance output."""
   if (not isinstance(decision, acc.Decision) or not isinstance(decision.state, acc.State) or decision.errors or
@@ -160,7 +175,7 @@ def resolve(decision: acc.Decision, schedule: OffsetSchedule, selected: SpeedPai
       not isinstance(decision.authority, acc.Authority) or
       not acc.authority_is_valid(decision.authority) or not isinstance(decision.policy, acc.Policy) or
       any(type(value) is not bool for value in (decision.policy.confirm_lower, decision.policy.confirm_higher,
-                                                decision.policy.fallback_previous, decision.policy.display_only)) or
+                                                decision.policy.display_only)) or
       not acc.observation_is_valid(decision.state.observation, session_id=decision.state.session_id)):
     return DomainResolution(DomainStatus.INVALID, reason="invalid acceptance, schedule or speed pair")
   accepted = decision.state.accepted
@@ -183,7 +198,7 @@ def resolve(decision: acc.Decision, schedule: OffsetSchedule, selected: SpeedPai
   if (not _number(target, positive=True) or accepted is None or
       accepted.candidate.speed_mps != target or not decision.authority.can_control or
       decision.policy.display_only or
-      (decision.state.observation.kind is not acc.ObservationKind.VALID and not acc.previous_limit_is_qualified(decision))):
+      decision.state.observation.kind is not acc.ObservationKind.VALID):
     return DomainResolution(DomainStatus.INVALID, reason="accepted target mismatch")
   assert selected.raw_mps is not None and selected.cluster_mps is not None
   assert ego.raw_mps is not None and ego.cluster_mps is not None

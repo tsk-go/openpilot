@@ -49,7 +49,7 @@ def publication(monkeypatch, *, changes=None, read_cost=0, retained=None, origin
       raise LoopComplete
 
   sm = SimpleNamespace(updated={'deviceMotion': False}, logMonoTime={'deviceMotion': 0}, update=lambda *args: None)
-  monkeypatch.setattr(steerlearnerd, 'drain', lambda *args: None)
+  monkeypatch.setattr(steerlearnerd, 'drain_pair', lambda *args: None)
   with pytest.raises(LoopComplete):
     steerlearnerd.run(SimpleNamespace(), sm, object(), object(), SimpleNamespace(send=send),
       None, None, lambda stamp: old, None, None, None, None, fitter, None,
@@ -176,7 +176,7 @@ def test_actual_daemon_coalesces_refreshed_status_within_ordinary_receiver_frequ
       sent.append((now[0], message.as_reader()))
 
   monkeypatch.setattr(actor, 'tick', tick)
-  monkeypatch.setattr(steerlearnerd, 'drain', lambda *args: None)
+  monkeypatch.setattr(steerlearnerd, 'drain_pair', lambda *args: None)
   with pytest.raises(LoopComplete):
     steerlearnerd.run(SimpleNamespace(), SM(), object(), object(), SimpleNamespace(send=send),
       None, None, lambda stamp: cached[0], None, None, None, None, fitter, None,

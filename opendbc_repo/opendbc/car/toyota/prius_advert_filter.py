@@ -1,5 +1,6 @@
 """Original EPS66 Prius four-byte filter; no smartDSU status is inferred."""
 from opendbc.car import structs
+from opendbc.car.config_cache import cached_config
 from opendbc.car.toyota.advert_filter import AdvertFilterCANParser
 from opendbc.car.toyota.values import CAR, ToyotaFlags
 
@@ -41,6 +42,7 @@ def apply(cp):
   cp.alphaLongitudinalAvailable = False
 
 
+@cached_config
 def configured(cp):
   from opendbc.car.toyota.pedal_composite import parent_cp
   cp = parent_cp(cp)
@@ -82,6 +84,10 @@ class PriusAdvertCANParser(AdvertFilterCANParser):
     for stamp, frames in strings:
       frames = list(frames)
       for address, data, bus in frames:
+        # pandad marks TX confirmations/rejections with bus >= 128; they
+        # are not received hardware (see panda.h CAN_*_BUS_OFFSET).
+        if bus >= 128:
+          continue
         if address in (0x201, 0x2AA) or address == 0x2FF and (bus not in (0, 2) or len(data) != 4):
           self.hardware_ambiguous = True
       batches.append((stamp, frames))

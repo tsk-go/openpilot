@@ -16,7 +16,7 @@ from functools import partial
 from opendbc.car.structs import car
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
-from openpilot.starpilot.flm.fullrate_collector import FullrateCollector, drain, ControlEvidence, AppliedEvidence
+from openpilot.starpilot.flm.fullrate_collector import FullrateCollector, PairedDrainState, drain_pair, ControlEvidence, AppliedEvidence
 from openpilot.starpilot.flm.learning_wire import read_control, read_applied, result_message, write_source_receipt
 from openpilot.starpilot.flm.runtime_adapter_registry import SOURCE_LEASE_NS
 
@@ -31,6 +31,8 @@ class _SourceDelivery:
   def __init__(self):
     self.pending = False
     self.pose_header = 0
+    self.evidence_poller = None
+    self.evidence_sockets = ()
 
   def refresh(self, sm):
     sm.update(0)
@@ -38,9 +40,21 @@ class _SourceDelivery:
     if sm.updated['deviceMotion']:
       self.pose_header = int(sm.logMonoTime['deviceMotion'])
 
-  def next(self, sm):
+  def next(self, sm, *, pending_evidence=()):
     if not self.pending:
-      sm.update()
+      if pending_evidence:
+        # A received pose may still need a genuinely newer consumed state.
+        # Poll existing tapes without consuming/reordering their FIFO heads.
+        sockets = (sm.sock['deviceMotion'], *pending_evidence)
+        if len(sockets) != len(self.evidence_sockets) or any(a is not b for a, b in zip(sockets, self.evidence_sockets, strict=True)):
+          self.evidence_poller = messaging.Poller()
+          for socket in sockets:
+            self.evidence_poller.registerSocket(socket)
+          self.evidence_sockets = sockets
+        self.evidence_poller.poll(10)
+        sm.update(0)
+      else:
+        sm.update()
     header = self.pose_header or (int(sm.logMonoTime['deviceMotion']) if sm.updated['deviceMotion'] else 0)
     self.pending = False
     self.pose_header = 0
@@ -48,15 +62,44 @@ class _SourceDelivery:
 
 
 def source_receiver(services):
-  # Full-rate control/application tapes are drained separately. This optional
+  # Full-rate control/application tapes retain their original FIFO rows. This optional
   # process conflates CarState, so its receive count cannot measure the 100Hz
   # publisher rate while it processes a batch. Keep the actual envelope,
   # source-age, state-bracket and native checks; do not fabricate freq_ok.
   # Wake on the actual motion/native/state delivery rather than waiting for
   # another CarState. All envelope, source-age and current authority checks
   # still run on the real received messages.
-  return messaging.SubMaster(services, ignore_alive=['aolSafetyWire'],
+  queued_services = {'deviceMotion', 'driverMonitoringState'} & set(services)
+
+  class SourceReceiver(messaging.SubMaster):
+    def update_msgs(self, cur_time, msgs):
+      latest = []
+      received_extra = False
+      for packet in msgs:
+        if packet is not None and packet.which() in queued_services:
+          service, received_at = packet.which(), cur_time
+          # Count actual dequeued packets with actual receipt clocks. Keep only
+          # the newest body for normal SubMaster state; never restamp a source.
+          for _ in range(7):
+            following = messaging.recv_one_or_none(self.sock[service])
+            if following is None:
+              break
+            received_extra = True
+            self.freq_tracker[service].record_recv_time(received_at)
+            packet, received_at = following, time.monotonic()
+        latest.append(packet)
+      super().update_msgs(time.monotonic() if received_extra else cur_time, latest)
+
+  sm = SourceReceiver(services, ignore_alive=['aolSafetyWire'],
     ignore_valid=['aolSafetyWire'], ignore_avg_freq=['aolSafetyWire', 'carState'])
+  for service in queued_services:
+    sm.sock[service] = messaging.sub_sock(service, conflate=False)
+  if 'deviceMotion' in services:
+    poller = messaging.Poller()
+    poller.registerSocket(sm.sock['deviceMotion'])
+    sm.poller = poller
+    sm.non_polled_services = set(services) - {'deviceMotion'}
+  return sm
 
 
 MAX_OBJECTIVES = 12
@@ -132,13 +175,13 @@ def _source_config_known(source, now_ns):
     type(source.observed_ns) is int and type(source.expires_ns) is int and
     0 < source.observed_ns <= now_ns <= source.expires_ns <= source.observed_ns + SOURCE_LEASE_NS and
     type(source.cp_sha256) is str and len(source.cp_sha256) == 64 and
-    all(char in '0123456789abcdef' for char in source.cp_sha256) and
+    not source.cp_sha256.strip('0123456789abcdef') and
     type(source.reset) is str and 1 <= len(source.reset) <= 64 and
-    all(char in '0123456789abcdef' for char in source.reset) and
+    not source.reset.strip('0123456789abcdef') and
     type(source.calibration_generation) is str and (not source.calibration_generation or
-      len(source.calibration_generation) == 32 and all(char in '0123456789abcdef' for char in source.calibration_generation)) and
+      len(source.calibration_generation) == 32 and not source.calibration_generation.strip('0123456789abcdef')) and
     type(source.persistent_source_epoch) is str and (not source.persistent_source_epoch or
-      len(source.persistent_source_epoch) == 64 and all(char in '0123456789abcdef' for char in source.persistent_source_epoch)) and
+      len(source.persistent_source_epoch) == 64 and not source.persistent_source_epoch.strip('0123456789abcdef')) and
     type(source.manual_baseline) is tuple and len(source.manual_baseline) in (0, 3) and
     all(type(value) in (int, float) and math.isfinite(value) for value in source.manual_baseline))
 
@@ -433,7 +476,7 @@ def run(
       return False, now
     valid = bool(known and source.enabled and not source.manual and
       type(source.source_epoch) is str and len(source.source_epoch) == 64 and
-      all(char in '0123456789abcdef' for char in source.source_epoch) and
+      not source.source_epoch.strip('0123456789abcdef') and
       (source_cp_sha256 is None or source.cp_sha256 == source_cp_sha256))
     if not valid:
       source_rejected = True
@@ -468,6 +511,7 @@ def run(
         collector.overrun()
 
   sink = Sink()
+  drain_state = PairedDrainState(control_socket, applied_socket)
   try:
     while True:
       state = (live_actor.ingress.optimizer.offer_state
@@ -485,7 +529,15 @@ def run(
         trial_gc_deferred = False
       # Parent handles bounded primitive ingest and live receipts. Physical
       # calibration and native sensitivity execute in bounded separate children.
-      delivered_pose_header = source_delivery.next(sm)
+      pending_poses = cast(tuple[object, ...], getattr(collector, '_original_source_pose_queue', ()))
+      pending_fresh = False
+      if pending_poses:
+        from openpilot.starpilot.flm.original_source_capture import MAX_GAP_NS
+        pending_stamp = getattr(pending_poses[0], 'mono_ns', 0)
+        pending_now = clock()
+        pending_fresh = type(pending_stamp) is int and 0 < pending_stamp <= pending_now <= pending_stamp + MAX_GAP_NS
+      delivered_pose_header = (source_delivery.next(sm, pending_evidence=(control_socket, applied_socket))
+                               if pending_fresh else source_delivery.next(sm))
       source_rejected = False
       now = clock()
       # This is an ORIGINAL header from the real poll or an already consumed
@@ -583,7 +635,7 @@ def run(
                   # Preserve the actual startup refusal instead of the previous identity-reset status.
                   live_actor.reason = unavailable_reason
                   from openpilot.starpilot.flm.source_stall_log import log_source_stall
-                  log_source_stall(live_actor, collector, now_ns=received_now, bootstrap_allowed=True)
+                  log_source_stall(live_actor, collector, now_ns=received_now, bootstrap_allowed=True, sm=sm)
                 collector = None
                 return
           else:
@@ -645,8 +697,7 @@ def run(
               return
           _collect_applied_output(collector, applied, sm, CP, received_now)
 
-      drain(control_socket, control, messaging.recv_one_or_none, sink, now)
-      drain(applied_socket, output, messaging.recv_one_or_none, sink, now)
+      drain_pair(control_socket, control, applied_socket, output, messaging.recv_one_or_none, sink, now, drain_state)
       if collector is not None:
         # Decoding queued frames may outlast the sampled shared inputs. Consume
         # real pending deliveries before pose/native checks; keep their original
@@ -982,7 +1033,6 @@ def main():
     'deviceMotion',
     'extrinsicsCalibration',
     'carState',
-    'carControl',
     'pandaStates',
     'lateralDelay',
     'vehicleParameters',

@@ -9,7 +9,7 @@ from enum import StrEnum
 import time
 
 from openpilot.starpilot.parked_vehicle import ParkedVehicleReader
-from openpilot.starpilot.ui.spacepilot.guard import ParkGate, read_offroad_witness, read_witness
+from openpilot.starpilot.ui.spacepilot.guard import ParkGate, read_offroad_witness, read_witness, sample_clocks
 from openpilot.starpilot.ui.spacepilot.state import WheelInput
 from openpilot.starpilot.ui.spacepilot.ignition import IgnitionReturn
 
@@ -40,11 +40,7 @@ class GameSession:
     self._clock_offset = None
 
   def _clocks(self):
-    before = time.monotonic_ns()
-    boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-    mono = time.monotonic_ns()
-    if not 0 <= mono - before <= 1_000_000:
-      raise ValueError('Waiting for a stable device clock')
+    mono, boot = sample_clocks()
     offset = boot - mono
     if self._clock_offset is not None and abs(offset - self._clock_offset) > 5_000_000:
       raise ValueError('Device resumed; re-enter SpacePilot')
@@ -78,6 +74,10 @@ class GameSession:
             not 0 < int(sm.logMonoTime['carParams']) <= mono):
           raise ValueError('Current vehicle identity is unavailable')
         self.vehicle = self._reader_factory(sm['carParams'])
+        # Cold imports/parser construction can outlast this frame's UI sample.
+        # Let the normal collector refresh next frame before any admission,
+        # request or input; all original dwell and freshness checks still run.
+        return False
       samples = self.vehicle.poll() if self.vehicle is not None else ()
       mono, boot = self._clocks()
       vehicle_ready = bool(self.vehicle is not None and self.vehicle.ready(mono, boot))

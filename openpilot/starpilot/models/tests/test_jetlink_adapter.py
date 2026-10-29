@@ -211,12 +211,12 @@ def test_the_small_models_history_clears_in_place(layout):
 
 
 def test_the_reset_reads_what_the_catalog_runner_keeps():
-  # small_reset reads these; a rename would leave every fallback on a stale history
+  # small_reset reads these, and jetlink_warp the warp's; a rename would leave every fallback on a stale history
   tree = ast.parse((ROOT / "openpilot/starpilot/models/runner.py").read_text())
   runner = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "CatalogModelState")
   assigned = {n.attr for n in ast.walk(runner) if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Store)
               and isinstance(n.value, ast.Name) and n.value.id == "self"}
-  assert {"input_queues", "npy", "prev_desire"} <= assigned
+  assert {"input_queues", "npy", "prev_desire", "_blob_cache", "camera_warp_descriptor", "frame_buf_size"} <= assigned
 
 
 @pytest.mark.parametrize("mapping", ["missing", "readonly", "short"])

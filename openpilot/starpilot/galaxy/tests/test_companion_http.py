@@ -20,7 +20,7 @@ def companion_http(tmp_path):
   aa = Mock()
   aa.enabled.return_value = False
   parked = Mock(return_value=True)
-  server = make_server(port=0, owner=access, companion=registry, parked=parked, android_auto_setup=aa)
+  server = make_server(port=0, owner=access, companion=registry, parked=parked, starport_setup=aa)
   server.test_parked = parked
   worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
   worker.start()
@@ -65,7 +65,7 @@ def test_auth_and_local_mutations(companion_http):
     status, body, _ = request('/api/companion/status', cookie=cookie)
     assert status == 200 and json.loads(body)['enabled']
     assert b'pass' not in body
-    assert request('/api/companion/qr.svg', cookie=cookie)[0] == 200
+    assert request('/api/companion/qr.svg', cookie=cookie)[0] == 404
 
 
 def test_apk_direct_download_without_cookie_and_head(companion_http, tmp_path):
@@ -166,7 +166,7 @@ def test_phone_location_needs_local_session(tmp_path):
   aa = Mock()
   aa.enabled.return_value = False
   server = make_server(port=0, owner=access, companion=CompanionRegistry(tmp_path / 's', tmp_path / 'l', tmp_path / 't'),
-                       parked=Mock(return_value=True), android_auto_setup=aa, phone_location=phone)
+                       parked=Mock(return_value=True), starport_setup=aa, phone_location=phone)
   worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
   worker.start()
   origin = f'http://127.0.0.1:{server.server_port}'

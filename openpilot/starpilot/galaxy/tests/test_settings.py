@@ -17,7 +17,7 @@ from opendbc.car.toyota.interface import CarInterface as ToyotaInterface
 from opendbc.car.toyota.values import CAR as ToyotaCar
 from openpilot.common.params import Params
 from openpilot.starpilot.galaxy.settings import (
-  AuthorityContext, LiveContextSource, SettingsChanged, SettingsGateway,
+  AuthorityContext, LiveContextSource, PAGES, SettingsChanged, SettingsGateway,
 )
 from openpilot.starpilot.galaxy.access import GalaxyAccessOwner
 from openpilot.starpilot.galaxy.server import make_server
@@ -157,8 +157,10 @@ class SettingsGatewayTest(unittest.TestCase):
     self.params.put('CustomCruise', 2.0, block=True)
     self.params.put('CustomCruiseLong', 8.0, block=True)
     before = {key: read_saved(self.params, key, 128)[0] for key in ('CustomCruise', 'CustomCruiseLong')}
+    self.assertFalse(any(row['label'] in ('Short press', 'Hold', 'Swap Toyota Cruise Steps')
+                         for row in self.page('profiles')['rows']))
     for value, enabled in (('On', True), ('Off', False)):
-      page = self.page('profiles')
+      page = self.page('wheel')
       self.assertFalse(any(row['label'] in ('Short press', 'Hold') for row in page['rows']))
       index = next(i for i, row in enumerate(page['rows']) if row['label'] == 'Swap Toyota Cruise Steps')
       self.assertTrue(page['rows'][index]['available'])
@@ -170,7 +172,7 @@ class SettingsGatewayTest(unittest.TestCase):
         self.gateway.confirm(intent['intent'], self.session, self.generation)
       self.assertEqual({key: read_saved(self.params, key, 128)[0] for key in before}, before)
     self.context.value.cp.brand = 'honda'
-    self.assertFalse(any(row['label'] == 'Swap Toyota Cruise Steps' for row in self.page('profiles')['rows']))
+    self.assertFalse(any(row['label'] == 'Swap Toyota Cruise Steps' for row in self.page('wheel')['rows']))
 
   def test_row_revision_is_stable_only_for_same_source_vehicle_and_session(self):
     first, second = self.page("lane"), self.page("lane")
@@ -192,8 +194,13 @@ class SettingsGatewayTest(unittest.TestCase):
       self.gateway.preview(changed_vehicle["revision"], 0, 1, self.session, self.generation)
 
   def test_direct_switch_and_slider_values_preserve_source_checks(self):
-    page = self.page("profiles")
-    page = self.page("profiles")
+    vehicle = ToyotaInterface.get_non_essential_params(ToyotaCar.TOYOTA_COROLLA_TSS2)
+    vehicle.pcmCruise = False
+    vehicle.openpilotLongitudinalControl = True
+    self.context.value = AuthorityContext(True, vehicle, vehicle.to_bytes())
+    self.assertFalse(any(row['label'] in ('Short press', 'Hold', 'Swap Toyota Cruise Steps')
+                         for row in self.page('profiles')['rows']))
+    page = self.page("wheel")
     index = next(i for i, row in enumerate(page["rows"]) if row["label"] == "Short press")
     for invalid in (True, "nan", float("inf"), 0, 151, 2.5, "bogus"):
       with self.subTest(value=invalid), self.assertRaises(SettingsChanged):
@@ -203,7 +210,7 @@ class SettingsGatewayTest(unittest.TestCase):
     self.assertEqual(self.params.get("CustomCruise"), 7.0)
     with self.assertRaises(SettingsChanged):
       self.gateway.preview(page["view"], index, 0, self.session, self.generation, value=9)
-    page = self.page("profiles")
+    page = self.page("wheel")
     intent = self.gateway.preview(page["view"], index, 0, self.session, self.generation, value=9)
     self.context.value = AuthorityContext(False, self.context.value.cp, self.context.value.cp_raw)
     self.assertTrue(self.gateway.confirm(intent["intent"], self.session, self.generation))
@@ -247,17 +254,29 @@ class SettingsGatewayTest(unittest.TestCase):
         self.assertFalse(self.params.get_bool("SpeedLimitController"))
 
   def test_all_saved_groups_are_display_only_projection(self):
+    self.context.value = replace(self.context.value,
+                                 cp=ToyotaInterface.get_non_essential_params(ToyotaCar.TOYOTA_COROLLA_TSS2))
     hub = self.page("hub")
+    self.assertTrue(hub["sections"])
+    self.assertTrue(all(section["pages"] and all(page["id"] in PAGES for page in section["pages"])
+                        for section in hub["sections"]))
+    lateral = next(section for section in hub["sections"] if section["id"] == "lateral")
+    self.assertEqual(next(page for page in lateral["pages"] if page["id"] == "aol")["title"], self.page("aol")["title"])
     self.assertEqual([row["page"] for row in hub["rows"]],
                      ["curve", "slc", "lane", "lane_change", "profiles", "conditional", "torque", "aol", "wheel",
-                      "aggressive", "standard", "relaxed", "traffic"])
+                     "vehicle", "personalities"])
+    self.assertEqual([row["page"] for row in self.page("personalities")["rows"]],
+                     ["aggressive", "standard", "relaxed", "traffic"])
     for page in ("slc", "lane", "lane_change", "profiles", "conditional", "conditional/cem", "conditional/ccm",
-                 "curve", "torque", "aol", "appearance", "display", "sounds", "pip", "sentry", "aggressive/following"):
+                 "curve", "torque", "aol", "appearance", "display", "sounds", "pip", "sentry", "personalities",
+                 "aggressive", "standard", "relaxed", "traffic", "aggressive/following"):
       with self.subTest(page=page):
         result = self.page(page)
         self.assertTrue(result["rows"])
         for row in result["rows"]:
           self.assertFalse({"source", "related_source", "dependencies", "capability", "vehicle_fingerprint"} & row.keys())
+          if row["page"]:
+            self.assertIsInstance(row["carVisible"], bool)
 
   def test_appearance_confirmation_is_source_and_session_bound_without_cp(self):
     from openpilot.starpilot.ui.appearance_preferences import read_visibility
@@ -268,7 +287,7 @@ class SettingsGatewayTest(unittest.TestCase):
     self.assertEqual([rows[label][1]["value"] for label in
                       ("Hide Personality Alerts", "Wheel brake and acceleration colors", "C4 amber signal border", "C4 red blind-spot border")],
                      ["Off", "Off", "Off", "On"])
-    # Widget visibility, the stopped timer and Rainbow Road are edited with the layout instead.
+    # Layout owns widgets/timer/Rainbow Road.
     self.assertFalse({"Stopped Timer", "Show Torque Bar", "Rainbow Road", "Hide Driver Monitoring Icon"} & rows.keys())
     self.assertFalse(rows["C4 amber signal border"][1]["confirm"])
     intent = self.gateway.preview(page["view"], rows["C4 amber signal border"][0], 1, self.session, self.generation)
@@ -453,11 +472,11 @@ class SettingsGatewayTest(unittest.TestCase):
         self.assertNotIn("require your confirmation", primary["reason"])
         confirmation = next(row for row in rows if row["label"] == "Automatic adoption")
         self.assertEqual(confirmation["value"], "On")
-        self.assertIn("3-second flash", confirmation["reason"])
+        self.assertIn("immediately", confirmation["reason"])
         self.assertIn("accepts", confirmation["reason"])
 
     with mock.patch.dict(os.environ, {"SLC_REPLAY_RUNTIME": "0", "SLC_VISION_DEVELOPMENT": "0"}):
-      # A normal finalized car offers Vision without development/replay flags.
+      # Vision needs no dev/replay flags.
       page = self.page("slc")
       index = next(i for i, row in enumerate(page["rows"]) if row["label"] == "Primary source")
       intent = self.gateway.preview(page["view"], index, 1, self.session, self.generation)
@@ -483,8 +502,7 @@ class SettingsGatewayTest(unittest.TestCase):
             self.gateway.confirm(intent["intent"], self.session, self.generation)
           self.assertEqual(read_saved(self.params, "SLCPriority1", 128)[0], b"Dashboard")
 
-      # Source choice is display access on a native stock-ACC car, never a
-      # grant of longitudinal control from a remembered controller switch.
+      # Stock-ACC display cannot grant LONG.
       from openpilot.starpilot.feature_runtime import slc_runtime_settings, vision_control_enabled
       stock = HondaInterface.get_params(HondaCAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], False, False, False)
       self.assertFalse(stock.openpilotLongitudinalControl)
@@ -630,7 +648,7 @@ class SettingsGatewayTest(unittest.TestCase):
 
   def test_conditional_intent_can_save_during_drive_and_rechecks_source(self):
     from openpilot.starpilot.conditional_mode.preferences import decode_preferences
-    self.context.value.cp.pcmCruise = True  # Honda Nidec can still have native longitudinal control.
+    self.context.value.cp.pcmCruise = True  # Nidec still supports native long.
     page = self.page("conditional")
     self.assertEqual(page["rows"][0]["value"], "Conditional Experimental")
     intent = self.gateway.preview(page["view"], 0, 1, self.session, self.generation)
@@ -1022,7 +1040,7 @@ class SettingsGatewayTest(unittest.TestCase):
     def revoked():
       nonlocal checks
       checks += 1
-      return checks == 1  # Initial check passes; owner callback sees revoked credential.
+      return checks == 1  # Revoke before owner callback.
     self.assertFalse(self.gateway.confirm(intent["intent"], self.session, self.generation, session_valid=revoked))
     self.assertFalse(self.params.get_bool("LaneCentering"))
 
@@ -1204,7 +1222,7 @@ class SettingsGatewayTest(unittest.TestCase):
     self.assertIsNone(self.params.get("LaneCenteringE2EAuthority"))
 
   def test_uploads_missing_default_off_saved_values_and_vehicle_independence(self):
-    # Owner/projection contract; native key registration is qualified separately.
+    # Native keys tested separately.
     root = Path(self.params.get_param_path("IsMetric")).parent
     class Files:
       def get_param_path(self, key):
@@ -1342,8 +1360,8 @@ class LiveContextTest(unittest.TestCase):
     self.assertTrue(self.source.sample().parked)
     self.messages.updated["deviceState"] = False
     self.boot += 1_600_000_000
-    self.assertFalse(self.source.sample().parked)  # Python mono stamp ages against boot after resume.
-    # A queued pre-resume frame must remain blocked even if received again.
+    self.assertFalse(self.source.sample().parked)  # Mono stamp ages against boot on resume.
+    # Pre-resume frames stay blocked.
     self.messages.updated["deviceState"] = True
     self.assertFalse(self.source.sample().parked)
     self.mono += 30_000_000
@@ -1357,7 +1375,7 @@ class LiveContextTest(unittest.TestCase):
     self.assertFalse(self.source.sample().parked)
 
   def test_startup_queued_frame_and_unbounded_clock_pair(self):
-    # Reconstruct at current time so the already queued frame predates startup.
+    # Queued frames predate this source.
     source = LiveContextSource(self.params, self.messages, mono_clock=lambda: self.mono,
                                boot_clock=lambda: self.boot, evidence_wait_ms=0)
     self.assertFalse(source.sample().parked)
@@ -1379,8 +1397,8 @@ class LiveContextTest(unittest.TestCase):
     self.assertFalse(self.source.sample().parked)
     self.params.put_bool("IsOffroad", True, block=True)
     self.messages.pandas[0].ignitionCan = True
-    self.assertTrue(self.source.sample().parked)  # Effective Offroad permits configuration with ignition on.
-    self.assertTrue(self.source.parked())       # Operations also follow the effective offroad state.
+    self.assertTrue(self.source.sample().parked)  # Offroad permits config with ignition.
+    self.assertTrue(self.source.parked())       # Operations use effective offroad.
     self.messages.pandas[0].ignitionCan = False
     self.messages.device.started = True
     self.assertFalse(self.source.sample().parked)

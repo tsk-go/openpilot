@@ -11,9 +11,10 @@ from openpilot.starpilot.aol.tests.test_input_deadline_continuity import BASE, i
 from openpilot.starpilot.aol.tests.test_toyota_parking_brake_deadline import refresh_saved_settings
 
 
-def rolling(brake=True, gas=False):
+def rolling(brake=True, gas=False, gear='drive'):
   state = fixture.car_state(brake=brake)
   state.gasPressed = gas
+  state.gearShifter = gear
   state.vEgo = state.vEgoRaw = 17.76392555237 if gas else .63179683685
   state.standstill = False
   state.cruiseState.available = True
@@ -21,9 +22,10 @@ def rolling(brake=True, gas=False):
   return state
 
 
+@pytest.mark.parametrize('gear', ('drive', 'sport', 'brake'))
 @pytest.mark.parametrize('pedal', ('none', 'brake', 'gas'))
 @pytest.mark.parametrize('bsm', (False, True))
-def test_rav4_held_brake_source_gap_preserves_armed_intent(pedal, bsm):
+def test_rav4_held_brake_source_gap_preserves_armed_intent(pedal, bsm, gear):
   brake, gas = pedal == 'brake', pedal == 'gas'
   with ExitStack() as cleanup:
     cleanup.enter_context(OpenpilotPrefix())
@@ -35,10 +37,10 @@ def test_rav4_held_brake_source_gap_preserves_armed_intent(pedal, bsm):
     sd, controls, drive = case._authority_callers(False, cp=cp, genuine_events=True)
     refresh_saved_settings(sd)
     for tick in (0, 1):
-      axis, _, command = drive(tick, observed_state=rolling(brake, gas), brake=brake, gas=gas, native_request_long=False)
+      axis, _, command = drive(tick, observed_state=rolling(brake, gas, gear), brake=brake, gas=gas, native_request_long=False)
       assert axis.lateralActive and command.latActive and not command.longActive
     prior, _, command = drive(2, offset_ns=5_209_427, state_stamp=BASE,
-      intent_message=intent(BASE, 3), observed_state=rolling(brake, gas), brake=brake, gas=gas, native_request_long=False)
+      intent_message=intent(BASE, 3), observed_state=rolling(brake, gas, gear), brake=brake, gas=gas, native_request_long=False)
     assert prior.lateralActive and command.latActive
     # Recorded gap: source32.074ms old, prior command still3.135ms live.
     axis, host, command = drive(5, offset_ns=2_073_802, timeout=True,
@@ -49,7 +51,7 @@ def test_rav4_held_brake_source_gap_preserves_armed_intent(pedal, bsm):
     assert axis.desiredLateral and axis.nativeAcknowledged and not sd.aol_authority_lost
     source = BASE + 28_454_011
     axis, host, command = drive(6, state_stamp=source, intent_message=intent(source, 4),
-      observed_state=rolling(brake, gas), brake=brake, gas=gas, native_request_long=False)
+      observed_state=rolling(brake, gas, gear), brake=brake, gas=gas, native_request_long=False)
     assert axis.lateralActive and command.latActive and not command.longActive and not host.enabled
     assert not sd.aol_authority_lost
 

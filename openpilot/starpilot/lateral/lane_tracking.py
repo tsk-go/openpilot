@@ -13,7 +13,7 @@ class TrackingTarget:
 
 
 class SingleLineTracker:
-  ACQUIRE_SECONDS = 0.20
+  DEFAULT_SPACING = 1.7
   MAX_SOURCE_GAP = 0.15
   WIDTH_MAX_AGE = 5.0
   WIDTH_MAX_DISTANCE = 75.0
@@ -93,7 +93,9 @@ class SingleLineTracker:
             raise ValueError
           slope = sum(float(np.interp(distance, x, np.gradient(y, x))) for x, y in valid_lines) * 0.5
           widths.append((right - left) / math.hypot(1.0, slope))
-        width = float(np.median(widths))
+        if not all(math.isfinite(value) for value in widths):
+          raise ValueError
+        width = sorted(widths)[1]
         if not 2.6 <= width <= 4.8:
           raise ValueError
         self.width, self.width_at, self.width_travel = width, self.clock, self.travel
@@ -137,7 +139,7 @@ class SingleLineTracker:
         self._clear_line()
         self.side = side
         self.acquired_at = self.clock
-        self.pending = max(self.MIN_CLEARANCE, float(np.median(distances)))
+        self.pending = max(self.MIN_CLEARANCE, sorted(distances)[1])
         if (
           not jump
           and self.width is not None
@@ -145,13 +147,10 @@ class SingleLineTracker:
           and self.travel - self.width_travel <= self.WIDTH_MAX_DISTANCE
         ):
           self.spacing = self.width * 0.5
-      elif self.spacing is None and self.clock - self.acquired_at >= self.ACQUIRE_SECONDS:
-        assert self.pending is not None
-        if abs(float(np.median(distances)) - self.pending) > 0.25:
-          self.acquired_at = self.clock
-          self.pending = max(self.MIN_CLEARANCE, float(np.median(distances)))
-        else:
-          self.spacing = self.pending
+      elif self.spacing is None and sample_id != previous_id:
+        # Confirm the line on a second distinct model frame. Its spacing target
+        # is already known, so model-path drift must not restart acquisition.
+        self.spacing = self.DEFAULT_SPACING
       self.last_good_at, self.last_near, self.last_slope = self.clock, near, slope
       self.blocked = jump
       if self.spacing is None:
@@ -165,7 +164,8 @@ class SingleLineTracker:
       self.path = target_x, target_y
       target = self._target(lookahead, offset)
       model_y = self._at(position, lookahead)
-      if target.y is None or abs(target.y - model_y) > self.MAX_PATH_DISAGREEMENT:
+      # Allow for Float32 model-coordinate rounding at the disagreement bound.
+      if target.y is None or abs(target.y - model_y) > self.MAX_PATH_DISAGREEMENT + 1e-6:
         raise ValueError
       # An observed road edge vetoes a conflicting target. A distant edge is
       # not interpreted as the missing lane line or a lane-width measurement.

@@ -10,7 +10,7 @@ from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
 from openpilot.selfdrive.ui.ui_state import device, ui_state
-from openpilot.starpilot.ui.spacepilot.guard import ParkGate, Witness, read_offroad_witness, read_witness
+from openpilot.starpilot.ui.spacepilot.guard import ParkGate, Witness, read_offroad_witness, read_witness, sample_clocks
 from openpilot.starpilot.ui.spacepilot.session import GameSession, Stage
 from openpilot.starpilot.ui.spacepilot.ignition import IgnitionReturn
 from openpilot.starpilot.drive_state.owner import DriveStateOwner
@@ -50,11 +50,7 @@ def poll_game_mode() -> None:
 
 def live_witness() -> Witness | None:
   try:
-    before = time.monotonic_ns()
-    boot = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-    after = time.monotonic_ns()
-    if not 0 <= after - before <= 1_000_000:
-      return None
+    after, boot = sample_clocks()
     native_device = HARDWARE.get_device_type() in ('mici', 'tici', 'tizi')
     if ui_state.started:
       return read_witness(ui_state, after, boot, c4=native_device)
@@ -84,7 +80,12 @@ class SpacePilotPage(Widget):
     super().show_event()
     self.closed = False
     _open_games.add(self)
-    if not self.gate.update(live_witness()):
+    witness = live_witness()
+    self.gate.update(witness)
+    # A fresh Park sample can start preparation even if opening the page took
+    # long enough to reset the UI dwell. GameSession earns its own full dwell
+    # before requesting Offroad and again before accepting game input.
+    if witness is None:
       self.session.close('Entry evidence changed')
     self.last_tick = time.monotonic()
     self.touch_held = self.exit_pressed = False
@@ -206,12 +207,13 @@ class VersionButton(BigButton):
     self.taps = FiveTaps()
     self.gate = ParkGate()
     self.press: MouseEvent | None = None
-    self.completed = False
+    self.completed: float | None = None
 
   def show_event(self) -> None:
     self.taps.reset()
     self.gate.reset()
     self.press = None
+    self.completed = None
     self.set_value(ui_state.params.get('Version') or 'N/A')
     super().show_event()
 
@@ -219,18 +221,21 @@ class VersionButton(BigButton):
     self.taps.reset()
     self.gate.reset()
     self.press = None
+    self.completed = None
     super().hide_event()
 
   def _update_state(self) -> None:
     super()._update_state()
-    if not self.enabled or not self.gate.update(live_witness()):
+    witness = live_witness()
+    self.gate.update(witness)
+    if not self.enabled or witness is None:
       self.taps.reset()
 
   def _process_mouse_events(self) -> None:
     if not self._touch_valid():
       self.taps.reset()
       self.press = None
-      self.completed = False
+      self.completed = None
     for event in gui_app.mouse_events:
       if event.slot == 0 and event.left_pressed and not rl.check_collision_point_rec(event.pos, self._sub_label.rect):
         self.taps.reset()
@@ -240,21 +245,23 @@ class VersionButton(BigButton):
     event = mouse_event
     if event.left_pressed:
       self.press = event if rl.check_collision_point_rec(event.pos, self._sub_label.rect) else None
-      self.completed = False
+      self.completed = None
     elif self.press is not None:
       if (not 0 <= event.t - self.press.t <= .45 or
           math.hypot(event.pos.x - self.press.pos.x, event.pos.y - self.press.pos.y) > 12 or not self._touch_valid()):
         self.press = None
         self.taps.reset()
       elif event.left_released:
-        self.completed = bool(rl.check_collision_point_rec(event.pos, self._sub_label.rect))
+        self.completed = event.t if rl.check_collision_point_rec(event.pos, self._sub_label.rect) else None
         self.press = None
 
   def _handle_mouse_release(self, pos: MousePos) -> None:
-    if not self.completed or not self.gate.update(live_witness()):
+    witness = live_witness()
+    self.gate.update(witness)
+    completed, self.completed = self.completed, None
+    if completed is None or witness is None:
       self.taps.reset()
       return
-    self.completed = False
-    if self.taps.tap(time.monotonic()):
+    if self.taps.tap(completed):
       gui_app.mouse_events.clear()
       gui_app.push_widget(SpacePilotPage(self.gate, self.on_unsafe))

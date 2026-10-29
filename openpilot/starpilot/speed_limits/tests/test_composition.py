@@ -6,18 +6,14 @@ from dataclasses import replace
 from openpilot.starpilot.speed_limits import acceptance as acc
 from openpilot.starpilot.speed_limits import action_arbitration as arb
 from openpilot.starpilot.speed_limits import composition as comp
-from openpilot.starpilot.speed_limits import lead_relaxation as lr
 from openpilot.starpilot.speed_limits import selection as sel
 from openpilot.starpilot.speed_limits import speed_domain as sd
 
 SESSION = "composed-drive"
 ACTIVE = acc.Authority(acc.Mode.LONGITUDINAL_ONLY, acc.LongitudinalOwner.SYSTEM, False, True, False, False)
-POLICY = acc.Policy(confirm_lower=False, confirm_higher=False, fallback_previous=True)
+POLICY = acc.Policy(confirm_lower=False, confirm_higher=False)
 SELECT = sel.SelectionPolicy(sel.SelectionMode.ORDERED, (sel.Source.DASHBOARD, sel.Source.MAP), False)
 OFFSET = sd.OffsetSchedule((sd.OffsetBand(0.0, None, 2.0),))
-LEAD_POLICY = lr.Policy(20.0 * 0.44704, 30.0, 1.2, 0.35, 0.25, 0.001, 0.05,
-                        tuple(v * 0.44704 for v in (0.0, 5.0, 10.0, 15.0)), (0.7, 0.9, 1.15, 1.35))
-NO_LEAD = lr.LeadEvidence(lr.LeadKind.ABSENT)
 HOST = comp.HostState(True, True, True, False, False, 100.0, 100.0)
 
 
@@ -39,12 +35,11 @@ def frame(now: int, *, speed: float | None = 15.0, source_kind: acc.ObservationK
           policy: acc.Policy = POLICY, offset: sd.OffsetSchedule = OFFSET,
           selected_kind: sd.DomainStatus = sd.DomainStatus.VALID,
           ego_kind: sd.DomainStatus = sd.DomainStatus.VALID,
-          ego_raw: float = 20.0, ego_cluster: float = 20.0,
-          lead: lr.LeadEvidence = NO_LEAD, action: acc.DriverAction | None = None) -> comp.Frame:
+          ego_raw: float = 20.0, ego_cluster: float = 20.0, action: acc.DriverAction | None = None) -> comp.Frame:
   ego_pair = (sd.SpeedPair(ego_kind, ego_raw, ego_cluster, SESSION, now) if ego_kind is sd.DomainStatus.VALID
               else sd.SpeedPair(ego_kind))
   return comp.Frame(now, observations(speed, kind=source_kind), SELECT, authority, policy, offset,
-                    selected_kind, ego_pair, False, lead, LEAD_POLICY, host, action=action)
+                    selected_kind, ego_pair, False, host, action=action)
 
 
 class CompositionTests(unittest.TestCase):
@@ -65,33 +60,27 @@ class CompositionTests(unittest.TestCase):
     self.assertEqual(result.acceptance.control_target_mps, 15.0)
     self.assertEqual(result.domain.context.offset_mps, 2.0)
     self.assertEqual(result.coordinate.cap_mps, 16.0)
-    self.assertIsNone(result.relaxation)
     self.assertIsNone(result.ceiling)
     self.assertEqual(result.state.control_generation, 1)
 
-  def test_all_source_gaps_use_only_qualified_previous_limit(self):
+  def test_source_gaps_keep_history_without_a_control_target_or_ceiling(self):
     self.run_frame(frame(0))
-    absent = self.run_frame(frame(1, source_kind=acc.ObservationKind.ABSENT))
-    self.assertEqual(absent.acceptance.basis, "previous_accepted")
-    self.assertIsNone(absent.ceiling)
-    self.assertEqual(absent.domain.context.effective_cluster_mps, 17.0)
-    for now, kind in ((2, acc.ObservationKind.UNKNOWN), (3, acc.ObservationKind.STALE)):
+    accepted = self.state.acceptance.accepted
+    for now, kind in enumerate((acc.ObservationKind.ABSENT, acc.ObservationKind.UNKNOWN, acc.ObservationKind.STALE), 1):
       result = self.run_frame(frame(now, source_kind=kind))
-      self.assertEqual(result.domain.context.effective_cluster_mps, 17.0)
+      self.assertEqual(result.acceptance.basis, kind.value)
+      self.assertIsNone(result.acceptance.control_target_mps)
+      self.assertEqual(result.state.acceptance.accepted, accepted)
+      self.assertIsNone(result.domain.context)
+      self.assertIsNone(result.coordinate)
       self.assertIsNone(result.ceiling)
-      self.assertEqual(result.acceptance.state.observation.kind, kind)
-      disabled = self.run_frame(frame(now + 1, source_kind=kind, policy=replace(POLICY, fallback_previous=False)))
-      self.assertIsNone(disabled.ceiling)
-      self.assertIsNone(disabled.state.lead_prior)
 
   def test_uninitialized_driver_and_missing_coordinates_suppress(self):
     unset = self.run_frame(frame(0, host=replace(HOST, driver_v_cruise_kph=255.0)))
     self.assertIsNone(unset.ceiling)
-    self.assertIsNone(unset.state.lead_prior)
     self.assertEqual(unset.acceptance.control_target_mps, 15.0)
     missing = self.run_frame(frame(1, selected_kind=sd.DomainStatus.STALE))
     self.assertIsNone(missing.ceiling)
-    self.assertIsNone(missing.state.lead_prior)
     resumed = self.run_frame(frame(2))
     self.assertEqual(resumed.domain.context.effective_cluster_mps, 17.0)
 
@@ -114,7 +103,6 @@ class CompositionTests(unittest.TestCase):
     lost = self.run_frame(frame(1, authority=replace(ACTIVE, longitudinal_active=False),
                                 host=replace(HOST, long_control_active=False)))
     self.assertIsNone(lost.ceiling)
-    self.assertIsNone(lost.state.lead_prior)
     self.assertFalse(lost.state.reset_required)
     resumed = self.run_frame(frame(2))
     self.assertEqual(resumed.state.control_generation, 2)
@@ -127,7 +115,6 @@ class CompositionTests(unittest.TestCase):
     self.assertTrue(mismatch.errors)
     self.assertTrue(mismatch.state.reset_required)
     self.assertEqual(mismatch.state.acceptance, old_acc)
-    self.assertIsNone(mismatch.state.lead_prior)
 
   def test_late_error_preserves_consumed_action_receipt_and_history(self):
     pending_policy = replace(POLICY, confirm_lower=True)
@@ -144,7 +131,7 @@ class CompositionTests(unittest.TestCase):
     self.assertEqual(failed.acceptance.state.accepted.candidate.speed_mps, 15.0)
     self.assertEqual(failed.state.acceptance, failed.acceptance.state)
 
-  def test_rejected_lower_limit_survives_absent_fallback_and_reconnect(self):
+  def test_rejected_lower_limit_survives_source_loss_and_reconnect(self):
     confirmation = replace(POLICY, confirm_lower=True)
     initial = self.run_frame(frame(0, speed=25.0, policy=confirmation))
     self.assertIsNone(initial.ceiling)
@@ -157,12 +144,15 @@ class CompositionTests(unittest.TestCase):
     absent = self.run_frame(frame(3, source_kind=acc.ObservationKind.ABSENT, policy=confirmation))
     reconnected = self.run_frame(frame(4, speed=15.0, policy=confirmation))
     self.assertTrue(rejected.acceptance.action_receipt.consumed)
-    self.assertEqual(absent.acceptance.basis, "previous_accepted")
+    self.assertEqual(absent.acceptance.basis, "absent")
     self.assertEqual(reconnected.acceptance.basis, "rejected")
     for result in (rejected, absent, reconnected):
       self.assertFalse(result.errors)
       self.assertEqual(result.acceptance.state.accepted.candidate.speed_mps, 25.0)
-      self.assertEqual(result.domain.context.accepted_raw_mps, 25.0)
+      if result is absent:
+        self.assertIsNone(result.domain.context)
+      else:
+        self.assertEqual(result.domain.context.accepted_raw_mps, 25.0)
       self.assertIsNone(result.ceiling)
 
   def test_reversed_monotonic_clock_latches_without_ceiling(self):
@@ -173,7 +163,6 @@ class CompositionTests(unittest.TestCase):
     self.assertEqual(reversed_time.status, "invalid_frame")
     self.assertTrue(reversed_time.state.reset_required)
     self.assertIsNone(reversed_time.ceiling)
-    self.assertIsNone(reversed_time.state.lead_prior)
     self.assertEqual(reversed_time.state.acceptance, prior_acceptance)
     latched = self.run_frame(frame(11))
     self.assertEqual(latched.status, "session_reset_required")
@@ -214,13 +203,10 @@ class CompositionTests(unittest.TestCase):
     self.assertEqual(rejected.state.acceptance.last_timestamp_ns, 0)
 
   def test_new_limit_never_creates_a_hidden_planner_target(self):
-    pending = self.run_frame(frame(0, speed=20.))
-    self.assertEqual(pending.acceptance.basis, 'automatic_pending')
-    self.assertIsNone(pending.ceiling)
-    accepted = self.run_frame(frame(acc.AUTOMATIC_ADOPTION_NS, speed=20.))
+    accepted = self.run_frame(frame(0, speed=20.))
+    self.assertEqual(accepted.acceptance.basis, 'accepted')
     self.assertEqual(accepted.domain.context.effective_cluster_mps, 22.)
     self.assertIsNone(accepted.ceiling)
-    self.assertIsNone(accepted.state.lead_prior)
 
   def test_actual_native_planner_default_and_optional_cap_transitions(self):
     from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner

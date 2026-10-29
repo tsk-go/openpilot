@@ -5,6 +5,7 @@ from opendbc.car.lateral import (apply_driver_steer_torque_limits, apply_std_ste
                                 apply_steer_angle_limits_vm, common_fault_avoidance)
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.subaru import subarucan
+from opendbc.car.subaru.jacobw_angle import limit_angle as jacobw_limit_angle
 from opendbc.car.subaru.stock_aol import qualified as subaru_aol_qualified
 from opendbc.car.subaru.values import CAR, DBC, GLOBAL_ES_ADDR, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
@@ -120,7 +121,9 @@ class CarController(CarControllerBase):
     if (self.frame % self.p.STEER_STEP) == 0:
       if self.CP.carFingerprint in GEN2_ANGLE_PORTS:
         independent_lateral = subaru_aol_qualified(self.CP, marked_only=True)
-        angle_available = (CC.latActive and CS.out.cruiseState.available and
+        # Match Dom's independent-lateral envelope during large manual turns and parking speeds.
+        aol_motion_ok = CC.enabled or (CS.out.vEgoRaw > 0.44704 and abs(CS.out.steeringAngleDeg) < 120.)
+        angle_available = (CC.latActive and aol_motion_ok and CS.out.cruiseState.available and
                            (independent_lateral or CC.enabled and CS.out.cruiseState.enabled and not CS.out.brakePressed) and
                            CS.out.gearShifter == structs.CarState.GearShifter.drive and
                            not CS.out.standstill and not CS.out.steerFaultTemporary and not CS.out.steerFaultPermanent)
@@ -135,6 +138,11 @@ class CarController(CarControllerBase):
           apply_angle = apply_std_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last,
                                                      CS.out.vEgoRaw, CS.out.steeringAngleDeg, angle_active,
                                                      self.p.FIXED_ANGLE_LIMITS)
+        elif self.CP.carFingerprint == CAR.SUBARU_CROSSTREK_2025:
+          assert self.VM is not None
+          apply_angle, angle_active = jacobw_limit_angle(
+            actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw,
+            CS.out.steeringAngleDeg, angle_active, self.p, self.VM)
         else:
           assert self.VM is not None
           apply_angle = apply_steer_angle_limits_vm(actuators.steeringAngleDeg, self.apply_angle_last,
@@ -142,7 +150,7 @@ class CarController(CarControllerBase):
                                                     self.p, self.VM)
         self.apply_angle_last = apply_angle
         self.angle_was_active = angle_active
-        angle_bus = CanBus.main if self.CP.carFingerprint in (CAR.SUBARU_ASCENT_2023, CAR.SUBARU_FORESTER_2022, CAR.SUBARU_OUTBACK_2023) else CanBus.alt
+        angle_bus = CanBus.main
         can_sends.append(subarucan.create_steering_control_angle(self.packer, apply_angle, angle_active, angle_bus))
       else:
         apply_torque = int(round(actuators.torque * self.p.STEER_MAX))

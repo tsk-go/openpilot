@@ -62,6 +62,7 @@ class CarState(CarStateBase):
     self.cluster_min_speed = CV.KPH_TO_MS / 2.
 
     self.loopback_lka_steering_cmd_updated = False
+    self.loopback_lka_steering_cmd_counter = 0
     self.loopback_lka_steering_cmd_ts_nanos = 0
     self.pt_lka_steering_cmd_counter = 0
     self.cam_lka_steering_cmd_counter = 0
@@ -75,6 +76,9 @@ class CarState(CarStateBase):
     self.pedal_sensor_counter = None
     self.pedal_packer = CANPacker(DBC[CP.carFingerprint][Bus.pt]) if CP.flags & GMFlags.PEDAL_LONG.value else None
     self.stock_acc_status_ts_nanos = 0
+    self.bolt_acc_pedal_secondary_friction = (CP.carFingerprint == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and
+                                             int(CP.safetyConfigs[0].safetyParam) == 0x1CD and is_bolt_pedal_profile(CP))
+    self.bolt_acc_pedal_friction_unavailable = False
     self.bolt_acc_brake_clock_ns = 0
     self.bolt_acc_brake_clock_counter = 0
     self.bolt_pedal_removed_sources = ()
@@ -370,6 +374,7 @@ class CarState(CarStateBase):
     # Variables used for avoiding LKAS faults
     self.loopback_lka_steering_cmd_updated = len(loopback_cp.vl_all["ASCMLKASteeringCmd"]["RollingCounter"]) > 0
     if self.loopback_lka_steering_cmd_updated:
+      self.loopback_lka_steering_cmd_counter = loopback_cp.vl["ASCMLKASteeringCmd"]["RollingCounter"]
       self.loopback_lka_steering_cmd_ts_nanos = loopback_cp.ts_nanos["ASCMLKASteeringCmd"]["RollingCounter"]
     if (self.CP.networkLocation == NetworkLocation.fwdCamera and
         not (is_conventional_cc_pedal_profile(self.CP) and self.CP.flags & GMFlags.NO_CAMERA) and
@@ -516,8 +521,13 @@ class CarState(CarStateBase):
     ret.parkingBrake = pt_cp.vl["BCMGeneralPlatformStatus"]["ParkBrakeSwActive"] == 1
     ret.cruiseState.available = pt_cp.vl["ECMEngineStatus"]["CruiseMainOn"] != 0
     ret.espDisabled = pt_cp.vl["ESPStatus"]["TractionControlOn"] != 1
-    ret.accFaulted = (pt_cp.vl["AcceleratorPedal2"]["CruiseState"] == AccState.FAULTED or
-                      pt_cp.vl["EBCMFrictionBrakeStatus"]["FrictionBrakeUnavailable"] == 1)
+    acc_state = pt_cp.vl["AcceleratorPedal2"]["CruiseState"]
+    friction_unavailable = pt_cp.vl["EBCMFrictionBrakeStatus"]["FrictionBrakeUnavailable"] == 1
+    self.bolt_acc_pedal_friction_unavailable = self.bolt_acc_pedal_secondary_friction and friction_unavailable
+    # This exact interceptor owner drives through pedal/regen; friction is secondary.
+    # Retain the ECU bit for controller withdrawal and never hide a stock ACC fault.
+    secondary_only = self.bolt_acc_pedal_secondary_friction and acc_state == AccState.OFF
+    ret.accFaulted = acc_state == AccState.FAULTED or (friction_unavailable and not secondary_only)
 
     ret.cruiseState.enabled = pt_cp.vl["AcceleratorPedal2"]["CruiseState"] != AccState.OFF
     if is_volt_camera_removed(self.CP):

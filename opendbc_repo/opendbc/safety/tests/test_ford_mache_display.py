@@ -8,7 +8,7 @@ from opendbc.safety.tests.libsafety import libsafety_py
 from opendbc.safety.tests import test_ford_aol
 
 
-@pytest.fixture(params=(18, 19, 274, 275))
+@pytest.fixture(params=(18, 19, 274, 275, 66, 67, 322, 323))
 def owner(request):
   native = test_ford_aol.TestFordAolDriverIntent()
   native.setUp()
@@ -46,11 +46,16 @@ def acquire(owner):
 def stock_display(owner, *, relay=False):
   for address in (0x18A, 0x3D8):
     assert owner.safety.safety_fwd_hook(2, address) == (-1 if relay else 0)
-    assert not owner.safety.safety_tx_hook(libsafety_py.make_CANPacket(address, 0, bytes(8)))
+    active = bytearray(8)
+    if address == 0x18A:
+      active[5] = 7 << 2  # Hands-free/active status, never neutral Off.
+    else:
+      active[6] = 6 << 3  # Both active lane lines.
+    assert not owner.safety.safety_tx_hook(libsafety_py.make_CANPacket(address, 0, active))
 
 
 @pytest.mark.parametrize('first', ('none', 'inactive', 'rejected'))
-def test_display_needs_first_accepted_active_command(owner, first):
+def test_active_display_needs_first_accepted_active_command(owner, first):
   announce(owner)
   if first == 'inactive':
     assert owner.safety.safety_tx_hook(command(owner, active=False))
@@ -113,7 +118,7 @@ def test_display_drops_on_actual_authority_loss_and_does_not_reacquire_inactive(
   stock_display(owner, relay=loss == 'relay')
 
 
-@pytest.mark.parametrize('word', (8, 66))
+@pytest.mark.parametrize('word', (8,))
 def test_other_ford_owners_keep_original_inactive_forwarding(word):
   native = test_ford_aol.TestFordAolDriverIntent()
   native.setUp()

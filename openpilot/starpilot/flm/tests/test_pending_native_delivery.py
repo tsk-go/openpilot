@@ -1,4 +1,5 @@
 """Actual daemon/native-parser boundary units; declared inputs, no road/fit proof."""
+from openpilot.starpilot.flm.tests._drain_fixture import separate_drain_fixture
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -155,7 +156,7 @@ def exercise(monkeypatch, mode):
     return now[0]
 
   monkeypatch.setattr(steerlearnerd, 'FullrateCollector', factory)
-  monkeypatch.setattr(steerlearnerd, 'drain', drain)
+  monkeypatch.setattr(steerlearnerd, 'drain_pair', separate_drain_fixture(drain))
   monkeypatch.setattr(steerlearnerd._SourceDelivery, 'next', delivery_next)
   with pytest.raises(Finished):
     steerlearnerd.run(cp, sm, control_socket, output_socket, pm, lambda *args: Adapter(),

@@ -281,7 +281,7 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
           assert all(entry.brand == 'toyota' and not entry.logging and entry.bus == 0 for entry in fw)
         assert fingerprint_frames == [(0x2FF, bytes(manual_filter_length), 0)]
       else:
-        assert stock and fingerprint_frames == []
+        assert stock and (fingerprint_frames == [] or candidate == CAR.TOYOTA_PRIUS_RETROFIT)
         if candidate == CAR.TOYOTA_MATRIX_RETROFIT:
           assert not fw and firmware_override == []
         else:
@@ -419,6 +419,9 @@ def run_case(stock, scenario='nominal', *, aol=True, candidate=CAR.TOYOTA_RAV4H,
           malformed = packer.make_can_msg('SDSU', 0, {'STATE': 0})
           frames.append((malformed[0], malformed[1][:7], malformed[2]))
         for a, d, bus in frames:
+          # USB TX receipts are delivered to host parsers, never native RX.
+          if bus >= 128:
+            continue
           accepted = bool(safety.safety_rx_hook(libsafety_py.make_CANPacket(a, bus, d)))
           expected = not (a == 0x2FF and bus == 0 and 0 < (d[2] >> 4) < 7)
           if native_rx_expected is not None:

@@ -52,6 +52,12 @@ class Frame:
   def all_checks(self, _services):
     return self.checked
 
+  def all_alive(self, _services):
+    return True
+
+  def all_valid(self, _services):
+    return True
+
   def __getitem__(self, _service):
     return self.state
 
@@ -142,6 +148,107 @@ def feed(controls, timestamp, tick, *, active=True, enabled=True, fault=False, o
 
 
 class LaneRuntimeTests(unittest.TestCase):
+  def test_receive_queued_state_before_control_without_extending_old_input(self):
+    from openpilot.starpilot.lateral.tests.test_lane_centering import single
+    for queued in ('fresh', 'empty', 'override', 'fault', 'disabled'):
+      with self.subTest(queued=queued), OpenpilotPrefix(), \
+           mock.patch.dict(os.environ, {'AOL_REPLAY_RUNTIME': '0', 'REPLAY': '1'}), \
+           mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+        params = Params()
+        publish_corolla_params(params)
+        params.put_bool('LaneCentering', True, block=True)
+        params.put('LaneCenteringE2EAuthority', 0., block=True)
+        controls = Controls()
+        with mock.patch(f'{__name__}.model', return_value=single(line=-1.4, edge=10.)):
+          for tick in range(100):
+            feed(controls, 1_000_000_000 + tick * 10_000_000, tick)
+            controls.state_control()
+          now = 2_030_000_000
+          held = dict(controls.sm.logMonoTime)
+
+          def receive(timeout, queued=queued, controls=controls, now=now):
+            self.assertEqual(timeout, 0)
+            if queued != 'empty':
+              feed(controls, now, 100, override=queued == 'override', fault=queued == 'fault',
+                   active=queued != 'disabled', enabled=queued != 'disabled')
+
+          with mock.patch.dict(os.environ, {'REPLAY': '0'}), \
+               mock.patch('openpilot.selfdrive.controls.controlsd.time.monotonic_ns', return_value=now), \
+               mock.patch.object(controls, 'update', side_effect=receive) as refresh:
+            command, _ = controls.state_control()
+          refresh.assert_called_once_with(0)
+          if queued == 'fresh':
+            self.assertIsNotNone(controls.last_lane_centering_result)
+            self.assertGreater(controls.lane_centering_applied, 0.)
+          else:
+            self.assertEqual(controls.lane_centering_applied, 0.)
+          if queued == 'empty':
+            self.assertEqual(controls.sm.logMonoTime, held)
+            self.assertEqual(controls.lane_centering_inactive_reason, 'host_carState_stale')
+          if queued in ('fault', 'disabled'):
+            self.assertFalse(command.latActive)
+
+  def test_input_refresh_stays_off_for_disabled_or_current_preferences(self):
+    from dataclasses import replace
+    with OpenpilotPrefix():
+      host = LaneCenteringHost(Params())
+      now = 1_000_000_000
+      frame = Frame(now - 30_000_000)
+      self.assertFalse(host.inputs_need_refresh(frame, now_ns=now))
+      host.settings = replace(host.settings, enabled=True)
+      self.assertTrue(host.inputs_need_refresh(frame, now_ns=now))
+      frame.logMonoTime = dict.fromkeys(host.REQUIRED, now)
+      self.assertFalse(host.inputs_need_refresh(frame, now_ns=now))
+      frame.logMonoTime['carState'] = now + 1
+      self.assertFalse(host.inputs_need_refresh(frame, now_ns=now))
+
+  def test_single_line_recovers_between_brief_refusals_without_retaining_output(self):
+    from openpilot.starpilot.lateral.tests.test_lane_centering import single
+    for missing_right, sign in ((True, 1), (False, -1)):
+      with self.subTest(missing_right=missing_right), OpenpilotPrefix(), \
+           mock.patch.dict(os.environ, {'AOL_REPLAY_RUNTIME': '0', 'REPLAY': '1'}), \
+           mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+        params = Params()
+        publish_corolla_params(params)
+        params.put_bool('LaneCentering', True, block=True)
+        params.put('LaneCenteringE2EAuthority', 0., block=True)
+        controls = Controls()
+        m = single(missing_right=missing_right, line=-1.5, edge=10.)
+        with mock.patch(f'{__name__}.model', return_value=m):
+          for tick in range(220):
+            phase = tick - 100
+            now = 1_000_000_000 + tick * 10_000_000
+            feed(controls, now, tick)
+            if phase >= 0 and phase % 12 == 0:
+              controls.sm.logMonoTime['selfdriveState'] = now - 25_000_001
+            controls.state_control()
+            if phase >= 0 and phase % 12 == 0:
+              self.assertIsNone(controls.last_lane_centering_result)
+              self.assertEqual(controls.lane_centering_applied, 0.)
+              self.assertEqual(controls.lane_centering_controller._correction, 0.)
+              self.assertIsNone(controls.lane_centering_controller._tracker.path)
+            elif phase >= 0 and phase % 12 == 11:
+              self.assertGreater(sign * controls.lane_centering_applied, 0.)
+
+  def test_precise_single_line_corrects_small_spacing_error_in_actual_controls(self):
+    from openpilot.starpilot.lateral.tests.test_lane_centering import single
+    for missing_right, sign in ((True, 1), (False, -1)):
+      with self.subTest(missing_right=missing_right), OpenpilotPrefix(), \
+           mock.patch.dict(os.environ, {'AOL_REPLAY_RUNTIME': '0', 'REPLAY': '1'}), \
+           mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+        params = Params()
+        publish_corolla_params(params)
+        params.put_bool('LaneCentering', True, block=True)
+        params.put('LaneCenteringE2EAuthority', 0., block=True)
+        controls = Controls()
+        m = single(missing_right=missing_right, line=-1.64, edge=10.)
+        m.laneLineStds[1 if missing_right else 2] = .02
+        with mock.patch(f'{__name__}.model', return_value=m):
+          for tick in range(100):
+            feed(controls, 1_000_000_000 + tick * 10_000_000, tick)
+            controls.state_control()
+        self.assertGreater(sign * controls.lane_centering_applied, 0.)
+
   def test_body_profile_reaches_actual_controls_and_clearance_withdraws_only_added_curvature(self):
     from opendbc.car.hyundai.tests.test_lane_body import identity
     with OpenpilotPrefix(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
@@ -156,7 +263,7 @@ class LaneRuntimeTests(unittest.TestCase):
       params.put('CarParams', cp.to_bytes(), block=True)
       params.put_bool('LaneCentering', True, block=True)
       params.put('LaneCenteringE2EAuthority', 0., block=True)
-      baseline, candidate = Controls(), Controls()
+      baseline, candidate = Controls(), Controls(predict_lane_clearance=True)
       baseline.lane_centering_host = None
       body = candidate.lane_centering_controller._body
       self.assertIsNotNone(body)
@@ -218,7 +325,7 @@ class LaneRuntimeTests(unittest.TestCase):
         params.put('CarParams', cp.to_bytes(), block=True)
         params.put_bool('LaneCentering', True, block=True)
         params.put('LaneCenteringE2EAuthority', 0., block=True)
-        baseline, candidate = Controls(), Controls()
+        baseline, candidate = Controls(), Controls(predict_lane_clearance=True)
         baseline.lane_centering_host = None
         for tick in range(40):
           now = 2_000_000_000 + tick * 10_000_000
@@ -297,7 +404,7 @@ class LaneRuntimeTests(unittest.TestCase):
       params.put('CarParams', tagged.to_bytes(), block=True)
       params.put_bool('LaneCentering', True, block=True)
       params.put('LaneCenteringE2EAuthority', 0., block=True)
-      controls = Controls()
+      controls = Controls(predict_lane_clearance=True)
       for tick in range(35):
         feed(controls, 2_000_000_000 + tick * 10_000_000, tick)
         command, _ = controls.state_control()
@@ -533,7 +640,7 @@ class LaneRuntimeTests(unittest.TestCase):
       stock, tagged = ioniq_candidate()
       params.put('LaneCenteringE2EAuthority', 0.0, block=True)
       params.put('CarParams', tagged.to_bytes(), block=True)
-      disabled = Controls()
+      disabled = Controls(predict_lane_clearance=True)
       self.assertIsNotNone(disabled.lane_centering_host)
       frame = Frame(1_000_000_000)
       self.assertIsNone(disabled.lane_centering_host.sample(frame, now_ns=1_000_000_000,
@@ -637,6 +744,8 @@ class LaneRuntimeTests(unittest.TestCase):
       sm.data['carState'] = car_state.as_reader().carState
       for flag, reason in (('alive', 'not_alive'), ('freq_ok', 'frequency'), ('valid', 'invalid')):
         for service in host.REQUIRED:
+          if flag == 'freq_ok' and service == 'selfdriveState':
+            continue
           with self.subTest(flag=flag, service=service):
             getattr(sm, flag)[service] = False
             self.assertIsNone(sample(sm))
@@ -690,6 +799,8 @@ class LaneRuntimeTests(unittest.TestCase):
         controls.state_control()
       for flag, reason in (('alive', 'not_alive'), ('freq_ok', 'frequency'), ('valid', 'invalid')):
         for service in LaneCenteringHost.REQUIRED:
+          if flag == 'freq_ok' and service == 'selfdriveState':
+            continue
           tick += 1
           feed(controls, 1_000_000_000 + tick * 10_000_000, tick)
           getattr(controls.sm, flag)[service] = False
@@ -754,6 +865,111 @@ class LaneRuntimeTests(unittest.TestCase):
                 self.assertEqual(candidate.lane_centering_controller._correction, 0.)
                 self.assertIsNone(candidate.lane_centering_controller._tracker.path)
 
+
+  def test_fresh_polled_state_with_slow_consumer_keeps_actual_centering(self):
+    with OpenpilotPrefix(), mock.patch.dict(os.environ, {'AOL_REPLAY_RUNTIME': '0', 'REPLAY': '1'}), \
+         mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+      params = Params()
+      publish_corolla_params(params)
+      params.put_bool('LaneCentering', True, block=True)
+      params.put('LaneCenteringE2EAuthority', 0., block=True)
+      reference, candidate = Controls(), Controls()
+      for tick in range(100):
+        now = 1_000_000_000 + tick * 10_000_000
+        feed(reference, now, tick)
+        feed(candidate, now, tick)
+        if tick >= 30:
+          candidate.sm.freq_ok['selfdriveState'] = False
+        nominal, _ = reference.state_control()
+        command, _ = candidate.state_control()
+        self.assertEqual(command.to_dict(), nominal.to_dict())
+        if tick >= 30:
+          self.assertIsNotNone(candidate.last_lane_centering_result)
+          self.assertGreater(candidate.lane_centering_applied, 0.)
+      for age in (25_000_001, -1):
+        tick += 1
+        now = 1_000_000_000 + tick * 10_000_000
+        feed(candidate, now, tick)
+        candidate.sm.freq_ok['selfdriveState'] = False
+        candidate.sm.logMonoTime['selfdriveState'] = now - age
+        candidate.state_control()
+        self.assertIsNone(candidate.last_lane_centering_result)
+        self.assertEqual(candidate.lane_centering_applied, 0.)
+        self.assertEqual(candidate.lane_centering_controller._correction, 0.)
+      for flag in ('alive', 'valid'):
+        tick += 1
+        now = 1_000_000_000 + tick * 10_000_000
+        feed(candidate, now, tick)
+        candidate.sm.freq_ok['selfdriveState'] = False
+        getattr(candidate.sm, flag)['selfdriveState'] = False
+        candidate.state_control()
+        self.assertIsNone(candidate.last_lane_centering_result)
+        self.assertEqual(candidate.lane_centering_applied, 0.)
+        getattr(candidate.sm, flag)['selfdriveState'] = True
+
+  def test_actual_single_line_cold_start_moves_from_biased_path_and_clears_for_lane_change(self):
+    from openpilot.starpilot.lateral.tests.test_lane_centering import single
+    for missing_right, sign in ((True, 1), (False, -1)):
+      with self.subTest(missing_right=missing_right), OpenpilotPrefix(), \
+           mock.patch.dict(os.environ, {'AOL_REPLAY_RUNTIME': '0', 'REPLAY': '1'}), \
+           mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+        params = Params()
+        publish_corolla_params(params)
+        params.put_bool('LaneCentering', True, block=True)
+        params.put('LaneCenteringE2EAuthority', 0., block=True)
+        candidate = Controls()
+        m = single(missing_right=missing_right, line=-1.5, edge=10.)
+        with mock.patch(f'{__name__}.model', return_value=m):
+          for tick in range(100):
+            feed(candidate, 1_000_000_000 + tick * 10_000_000, tick)
+            candidate.state_control()
+          self.assertGreater(sign * candidate.last_lane_centering_result.correction, 0.)
+          self.assertGreater(sign * candidate.lane_centering_applied, 0.)
+          self.assertIsNone(candidate.lane_centering_controller._tracker.width)
+          assert candidate.lane_centering_controller._tracker.spacing is not None
+          self.assertAlmostEqual(candidate.lane_centering_controller._tracker.spacing, 1.7)
+          m.meta.laneChangeState = 'laneChangeStarting'
+          feed(candidate, 2_000_000_000, 100)
+          candidate.state_control()
+          self.assertEqual(candidate.last_lane_centering_result.reason, 'lane_change')
+          self.assertEqual(candidate.lane_centering_applied, 0.)
+          self.assertEqual(candidate.lane_centering_controller._correction, 0.)
+          self.assertIsNone(candidate.lane_centering_controller._tracker.path)
+
+
+  def test_ordinary_centering_and_explicit_prediction_on_close_observed_edge(self):
+    from opendbc.car.hyundai.tests.test_lane_body import identity
+    with OpenpilotPrefix(), mock.patch.dict(os.environ, {'LANE_CENTERING_REPLAY_RUNTIME': '0', 'REPLAY': '1',
+                                                        'AOL_REPLAY_RUNTIME': '0'}), \
+         mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+      params = Params()
+      _, cp = ioniq_candidate()
+      metadata = identity()
+      cp.carVin, cp.carFw = metadata.carVin, [vars(fw) for fw in metadata.carFw]
+      params.put('CarParams', cp.to_bytes(), block=True)
+      params.put_bool('LaneCentering', True, block=True)
+      params.put('LaneCenteringE2EAuthority', 0., block=True)
+      ordinary = Controls()
+      m = model(left=-1.2, right=1.8)
+      m.init('roadEdges', 2)
+      for edge, side in zip(m.roadEdges, (-1., 1.), strict=True):
+        edge.x, edge.y = list(range(51)), [2.5 * side] * 51
+      m.roadEdgeStds = [.17, 1.]
+      with mock.patch(f'{__name__}.model', return_value=m):
+        for tick in range(80):
+          feed(ordinary, 1_000_000_000 + tick * 10_000_000, tick)
+          ordinary.state_control()
+      self.assertGreater(ordinary.lane_centering_applied, 0.)
+      self.assertIsNone(ordinary.lane_centering_controller._body)
+      predicted = Controls(predict_lane_clearance=True)
+      self.assertIsNotNone(predicted.lane_centering_controller._body)
+      with mock.patch(f'{__name__}.model', return_value=m):
+        for tick in range(80):
+          feed(predicted, 1_000_000_000 + tick * 10_000_000, tick)
+          predicted.state_control()
+      self.assertEqual(predicted.last_lane_centering_result.reason, 'clearance_limited')
+      self.assertEqual(predicted.lane_centering_applied, 0.)
+      self.assertEqual(predicted.CP.to_dict(), ordinary.CP.to_dict())
 
   def test_saved_settings_bounds_and_corruption(self):
     with OpenpilotPrefix():

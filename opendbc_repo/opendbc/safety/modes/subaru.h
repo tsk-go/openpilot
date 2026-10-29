@@ -6,6 +6,7 @@
 #include "opendbc/safety/modes/subaru_sng.h"
 #include "opendbc/safety/modes/subaru_stop_start.h"
 #include "opendbc/safety/modes/subaru_avh.h"
+#include "opendbc/safety/modes/subaru_jacobw.h"
 
 #define SUBARU_STEERING_LIMITS_GENERATOR(steer_max, rate_up, rate_down)               \
   {                                                                                   \
@@ -183,7 +184,7 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
   const TorqueSteeringLimits SUBARU_STEERING_LIMITS      = SUBARU_STEERING_LIMITS_GENERATOR(2047, 50, 70);
   const TorqueSteeringLimits SUBARU_GEN2_STEERING_LIMITS = SUBARU_STEERING_LIMITS_GENERATOR(1000, 40, 40);
   const AngleSteeringLimits SUBARU_ANGLE_STEERING_LIMITS = {
-    .max_angle = 650 * 100,
+    .max_angle = (subaru_forester_angle ? 650 : SUBARU_JACOBW_MAX_ANGLE) * 100,
     .angle_deg_to_can = 100.,
     .frequency = 50U,
   };
@@ -252,6 +253,9 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
       if (subaru_fixed_angle_limits) {
         violation |= steer_angle_cmd_checks(desired_angle, lkas_request, SUBARU_FIXED_ANGLE_STEERING_LIMITS);
       } else {
+        if (!subaru_forester_angle) {
+          violation |= SAFETY_ABS(desired_angle) > SUBARU_ANGLE_STEERING_LIMITS.max_angle;
+        }
         violation |= steer_angle_cmd_checks_vm(desired_angle, lkas_request, SUBARU_ANGLE_STEERING_LIMITS, subaru_forester_angle ? SUBARU_FORESTER_2022_ANGLE_PARAMS : SUBARU_CROSSTREK_2025_ANGLE_PARAMS);
       }
     }
@@ -325,7 +329,7 @@ static safety_config subaru_init(uint16_t param) {
     SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
   };
   static const CanMsg SUBARU_GEN2_ANGLE_TX_MSGS_LIST[] = {
-    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_MAIN_BUS)
   };
 
   static const CanMsg SUBARU_ASCENT_ANGLE_TX_MSGS_LIST[] = {
@@ -338,16 +342,16 @@ static safety_config subaru_init(uint16_t param) {
   };
 
   static const CanMsg SUBARU_STOP_START_TX_MSGS[] = {
-    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_MAIN_BUS)
     {0x390U, SUBARU_ALT_BUS, 8, .check_relay = false},
   };
 
   static const CanMsg SUBARU_AVH_TX_MSGS[] = {
-    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_MAIN_BUS)
     {0x6BBU, SUBARU_ALT_BUS, 8, .check_relay = false},
   };
   static const CanMsg SUBARU_AVH_STOP_START_TX_MSGS[] = {
-    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_GEN2_ANGLE_TX_MSGS(SUBARU_MAIN_BUS)
     {0x6BBU, SUBARU_ALT_BUS, 8, .check_relay = false},
     {0x390U, SUBARU_ALT_BUS, 8, .check_relay = false},
   };

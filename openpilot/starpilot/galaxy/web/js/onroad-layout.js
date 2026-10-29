@@ -15,13 +15,15 @@ import { snapTargets, snapMove, snapResize, snapThreshold } from "./layout-snap.
 import { PROFILES, ROAD_COLORS, PATH_MODES, HEX, PROJECTION_DISPLAY_SWITCHES, layoutDocument, previewDocument, withDisplay, orderedWidgetIds, widgetPalette, withAlpha, widgetSize, placementLimits, clampBox, clampPlacement, overlapsReserved, previewPoint, validDocument, validSnapshot } from "./onroad-layout-document.js"
 export { layoutDocument, previewDocument, withDisplay, orderedWidgetIds, widgetPalette, withAlpha, widgetSize, placementLimits, clampBox, clampPlacement, overlapsReserved, previewPoint, validDocument, validSnapshot } from "./onroad-layout-document.js"
 
-const previewVisibilityKey = projection => "gx-layout-preview-visibility-v2:" + (projection ? "android-auto" : "comma")
+const previewVisibilityKey = projection => "gx-layout-preview-visibility-v2:" + (projection ? "starport" : "comma")
+const oldProjectionVisibilityKey = "gx-layout-preview-visibility-v2:android-auto"
 function loadPreviewVisibility(projection) {
   const hidden = { large: {}, compact: {} }
   try {
-    const raw = localStorage.getItem(previewVisibilityKey(projection))
+    const currentKey = previewVisibilityKey(projection)
+    const raw = localStorage.getItem(currentKey) ?? (projection ? localStorage.getItem(oldProjectionVisibilityKey) : null)
     const legacy = raw === null
-    const saved = JSON.parse(raw ?? localStorage.getItem(previewVisibilityKey(projection).replace('-v2:', '-v1:')))
+    const saved = JSON.parse(raw ?? localStorage.getItem(currentKey.replace('-v2:', '-v1:')))
     for (const profile of PROFILES) {
       const widgets = saved?.[profile]
       if (!widgets || typeof widgets !== "object" || Array.isArray(widgets)) continue
@@ -106,7 +108,7 @@ export class OnroadLayoutFeed {
         "Reading colors and layouts timed out. Try reloading.")
     }, 5000)
     try {
-      const response = await this.fetcher(this.projection ? "./api/android-auto/layout" : "./api/ui/layout", {
+      const response = await this.fetcher(this.projection ? "./api/starport/layout" : "./api/ui/layout", {
         credentials: "same-origin", cache: "no-store", signal: request.signal,
         ...(saving ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(this.projection ? projectionPayload(body, this.data.metadata) : body) } : {})
       })
@@ -128,9 +130,9 @@ export class OnroadLayoutFeed {
       this.needsReload = false
       this.publish({
         status: "ready", data, ...((saving || initial || !background) ? { draft: clone(data.document) } : {}), error: "", needsReload: false,
-        notice: saving ? (this.projection ? "Android Auto layout saved." : data.failed?.length ?
+        notice: saving ? (this.projection ? "StarPort layout saved." : data.failed?.length ?
           "Layout saved, but these display options did not change: " + data.failed.join(", ") + ". Reload and try again." :
-          "Colors and both layouts saved.") + (mapMoved ? " The map overlay is now off in the " + (this.projection ? "Big screen" : "Android Auto") + " layout." : "") :
+          "Colors and both layouts saved.") + (mapMoved ? " The map overlay is now off in the " + (this.projection ? "Big screen" : "StarPort") + " layout." : "") :
           !background && !initial ? "Reloaded the saved layout." : ""
       })
       return true
@@ -222,7 +224,8 @@ export const LayoutWidgetPreview = {
             :y="profile === 'large' ? 72 : 24" text-anchor="middle" dominant-baseline="middle"
             :font-size="profile === 'large' ? 64 : 50" font-weight="500">{{ label }}</text>
         </template>
-        <text v-else-if="profile === 'large'" :x="widget.width / 2" y="72" text-anchor="middle" dominant-baseline="middle" font-size="64">Use limit 49</text>
+        <text v-else :x="widget.width / 2" :y="profile === 'large' ? 72 : 24" text-anchor="middle"
+          dominant-baseline="middle" :font-size="profile === 'large' ? 48 : 28">Toyota guidance</text>
       </template>
       <g v-else-if="widget.kind === 'torque_bar'" fill="none" stroke="white" stroke-linecap="round">
         <path :d="'M 12 ' + widget.height * .8 + ' Q ' + widget.width / 2 + ' ' + widget.height * .55 + ' ' + (widget.width - 12) + ' ' + widget.height * .8" :stroke-width="widget.height * .18" opacity=".3" />
@@ -352,7 +355,7 @@ export const OnroadLayoutPage = {
       for (const [key, value] of Object.entries(update)) {
         if (JSON.stringify(state[key]) !== JSON.stringify(value)) state[key] = value
       }
-      if (draftChanged || ["Colors and both layouts saved.", "Android Auto layout saved."].some(saved => update.notice?.startsWith(saved))) state.history = { undo: [], redo: [], group: null }
+      if (draftChanged || ["Colors and both layouts saved.", "StarPort layout saved."].some(saved => update.notice?.startsWith(saved))) state.history = { undo: [], redo: [], group: null }
     }
     const feed = new OnroadLayoutFeed({ projection: props.projection, unauthorized: props.unauthorized, publish: apply })
     watch(() => !!state.drag || !!state.layerDrag, (dragging) => { if (!dragging && deferred) apply({}) }, { flush: "sync" })
@@ -889,10 +892,19 @@ export const OnroadLayoutPage = {
       if (!this.editable || this.state.drag || this.state.layerDrag || this.selectedWidget?.kind !== "cruise_limits" ||
         !["speedSources", "speedSourcesCard"].includes(key)) return
       const before = clone(this.state.draft), oldHeight = this.profile.widgets.cruise_limits.height
+      const widgets = this.state.data.metadata.profiles[this.state.profile].widgets
+      const dx = widgets.speed_limit_actions.default.x - widgets.cruise_limits.default.x
+      const gap = widgets.speed_limit_actions.default.y - widgets.cruise_limits.default.y - widgets.cruise_limits.height
+      const sourceGap = widgets.cruise_limits.sourcesExtent?.actionGap ?? gap
+      const oldGap = this.state.draft.speedSources === true ? sourceGap : gap
       this.state.draft[key] = value === true
       const card = this.layout.cruise_limits, actions = this.layout.speed_limit_actions, height = this.profile.widgets.cruise_limits.height
       // Actions that sat right under the card follow its new bottom; both stay on screen.
-      if (actions && actions.x === card.x && actions.y === card.y + oldHeight + 22) actions.y = card.y + height + 22
+      if (actions && actions.x === card.x + dx && actions.y === card.y + oldHeight + oldGap) {
+        const nextGap = this.state.draft.speedSources === true ? sourceGap : gap
+        card.y = Math.min(card.y, placementLimits(this.limitProfile, "speed_limit_actions", this.layout).maxY - height - nextGap)
+        actions.y = card.y + height + nextGap
+      }
       for (const id of ["cruise_limits", "speed_limit_actions"].filter(id => this.layout[id])) {
         const limits = placementLimits(this.limitProfile, id, this.layout)
         this.layout[id].y = Math.max(limits.minY, Math.min(this.layout[id].y, limits.maxY))
@@ -905,7 +917,7 @@ export const OnroadLayoutPage = {
       const before = clone(this.state.draft)
       this.state.draft.largeUiGammaTrial = value === "On"
       this.recordChange(before)
-      this.state.notice = "Save to apply the camera effect on Android Auto."
+      this.state.notice = "Save to apply the camera effect on StarPort."
     },
     setProjectionDisplay(key, value) {
       if (!this.projection || !this.editable || this.state.drag || this.state.layerDrag || !PROJECTION_DISPLAY_SWITCHES.includes(key)) return
@@ -913,7 +925,7 @@ export const OnroadLayoutPage = {
       const before = clone(this.state.draft)
       this.state.draft[key] = value === "On"
       this.recordChange(before)
-      this.state.notice = "Save to apply the screen options on Android Auto."
+      this.state.notice = "Save to apply the screen options on StarPort."
     },
     setProjectionLeadInfo(value) {
       if (!this.projection || !this.editable || this.state.drag || this.state.layerDrag ||
@@ -921,7 +933,7 @@ export const OnroadLayoutPage = {
       const before = clone(this.state.draft)
       this.state.draft.leadInfo = value
       this.recordChange(before)
-      this.state.notice = "Save to apply the screen options on Android Auto."
+      this.state.notice = "Save to apply the screen options on StarPort."
     },
     projectionLeadInfoRow() {
       const marker = this.state.draft.leadIndicator === true

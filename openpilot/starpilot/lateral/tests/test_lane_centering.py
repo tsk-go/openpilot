@@ -49,6 +49,33 @@ def settled(controller, source, ticks=300):
 
 
 class TestLaneCentering(unittest.TestCase):
+  def test_lane_width_avoids_first_use_numpy_median_import(self):
+    from openpilot.starpilot.lateral.lane_tracking import SingleLineTracker
+    tracker = SingleLineTracker()
+    with patch.object(np, 'median', side_effect=AssertionError('No lazy masked-array import in Controls')):
+      result = tracker.target(model(), 1, 10.0, 0.01, 0.0)
+    self.assertFalse(result.blocked)
+    assert tracker.width is not None
+    self.assertAlmostEqual(tracker.width, 3.6, places=5)
+
+  def test_single_line_spacing_avoids_first_use_numpy_median_import(self):
+    from openpilot.starpilot.lateral.lane_tracking import SingleLineTracker
+    tracker = SingleLineTracker()
+    with patch.object(np, 'median', side_effect=AssertionError('No lazy masked-array import in Controls')):
+      for frame in range(8):
+        tracker.target(single(line=-1.7, edge=10.), frame, 20., .05, 0.)
+    assert tracker.spacing is not None
+    self.assertAlmostEqual(tracker.spacing, 1.7, places=5)
+
+  def test_lane_width_rejects_nonfinite_gradient_before_median(self):
+    from openpilot.starpilot.lateral.lane_tracking import SingleLineTracker
+    for value in (float('nan'), float('inf'), float('-inf')):
+      tracker = SingleLineTracker()
+      with patch.object(np, 'gradient', return_value=np.full(len(XS), value)):
+        result = tracker.target(model(), 1, 10.0, 0.01, 0.0)
+      self.assertTrue(result.blocked)
+      self.assertIsNone(tracker.width)
+
   def test_reader_cache_detects_mutation_samples_and_reset(self):
     from openpilot.starpilot.lateral import lane_centering as module
     builder = model()
@@ -450,6 +477,96 @@ class TestSingleBoundary(unittest.TestCase):
 
 
 class TestSingleLineTracking(unittest.TestCase):
+  def test_tracking_guard_has_continuous_small_corrections_near_the_objective(self):
+    from openpilot.starpilot.lateral.lane_clearance import _center_motion, limit_tracking
+    for sign in (1., -1.):
+      previous = 0.
+      for step in range(1, 51):
+        target = sign * step * 1e-6
+        x, y, _ = _center_motion(target, 0., 20., .1)
+        path = np.r_[0., x, 50.], np.r_[0., y, y[-1]]
+        allowed = limit_tracking(path, 0., sign * .0012, 0., 20., .1)
+        self.assertGreater(sign * allowed, 0.)
+        self.assertLess(abs(allowed - previous), 2e-6)
+        bx, by, _ = _center_motion(0., 0., 20., .1)
+        cx, cy, _ = _center_motion(allowed, 0., 20., .1)
+        selected = bx >= 2.
+        self.assertLess(np.mean((cy[selected] - np.interp(cx[selected], *path)) ** 2),
+                        np.mean((by[selected] - np.interp(bx[selected], *path)) ** 2))
+        previous = allowed
+      self.assertEqual(limit_tracking(path, 0., -sign * .0012, 0., 20., .1), 0.)
+
+  def test_two_distinct_frames_confirm_line_without_learning_model_drift(self):
+    from openpilot.starpilot.lateral.lane_tracking import SingleLineTracker
+    tracker = SingleLineTracker()
+    m = single(line=-1.5, edge=10.)
+    self.assertIsNone(tracker.target(m, 1, 20., .01, 0., revision=0).y)
+    m.position.y = [.3] * len(XS)
+    for revision in range(1, 7):
+      self.assertIsNone(tracker.target(m, 1, 20., .01, 0., revision=revision).y)
+    target = tracker.target(m, 2, 20., .01, 0.)
+    self.assertFalse(target.blocked)
+    assert target.y is not None
+    self.assertAlmostEqual(target.y, .2)
+    assert tracker.spacing is not None
+    self.assertAlmostEqual(tracker.spacing, 1.7)
+
+  def test_precise_tracked_line_uses_smaller_quiet_zone_without_chasing_noise(self):
+    for missing_right, sign in ((True, 1), (False, -1)):
+      with self.subTest(missing_right=missing_right):
+        m = single(missing_right=missing_right, line=-1.64, edge=10.)
+        index = 1 if missing_right else 2
+        m.laneLineStds[index] = .02
+        raw = raw_correction(m, 20., 0., 0., _single_target=sign * .06)
+        assert raw is not None
+        self.assertAlmostEqual(raw, sign * .0001, places=8)
+        self.assertEqual(raw_correction(m, 20., 0., 0., _single_target=sign * .03), 0.)
+        self.assertEqual(raw_correction(m, 20., 0., 1., _single_target=sign * .6), 0.)
+        m.laneLineStds[index] = .1
+        self.assertEqual(raw_correction(m, 20., 0., 0., _single_target=sign * .06), 0.)
+    self.assertEqual(raw_correction(model(left=-1.8, right=1.8, path=.06), 20., 0., 0.), 0.)
+
+  def test_without_width_tracks_independent_spacing_in_both_directions(self):
+    from openpilot.starpilot.lateral.lane_tracking import SingleLineTracker
+    for missing_right, sign in ((True, 1), (False, -1)):
+      for distance in (1.45, 1.5, 1.55):
+        with self.subTest(missing_right=missing_right, distance=distance):
+          tracker = SingleLineTracker()
+          m = single(missing_right=missing_right, line=-distance, edge=10.)
+          for frame in range(8):
+            target = tracker.target(m, frame, 20., .05, 0.)
+          self.assertIsNone(tracker.width)
+          assert tracker.pending is not None and tracker.spacing is not None and target.y is not None
+          self.assertAlmostEqual(tracker.pending, distance)
+          self.assertAlmostEqual(tracker.spacing, 1.7)
+          self.assertFalse(target.blocked)
+          self.assertAlmostEqual(target.y, sign * (1.7 - distance))
+          raw = raw_correction(m, 20., 0., 0., _single_target=target.y)
+          assert raw is not None
+          self.assertGreater(sign * raw, 0.)
+
+  def test_observed_narrow_width_precedes_nominal_and_edge_still_vetoes(self):
+    from openpilot.starpilot.lateral.lane_tracking import SingleLineTracker
+    for known_width in (False, True):
+      with self.subTest(known_width=known_width):
+        tracker = SingleLineTracker()
+        if known_width:
+          tracker.target(model(left=-1.35, right=1.35), 0, 20., .05, 0.)
+        blocked = False
+        for frame in range(1, 10):
+          target = tracker.target(single(line=-1.35, edge=1.35), frame, 20., .05, 0.)
+          blocked |= target.blocked
+          if not known_width:
+            self.assertIsNone(target.y)
+        if known_width:
+          self.assertFalse(target.blocked)
+          assert tracker.spacing is not None and target.y is not None
+          self.assertAlmostEqual(tracker.spacing, 1.35)
+          self.assertAlmostEqual(target.y, 0.)
+        else:
+          self.assertTrue(blocked)
+          self.assertIsNone(target.y)
+
   def test_spacing_preference_cannot_bypass_current_line_geometry_or_path_uncertainty(self):
     m = single(line=-1.2, edge=10.)
     m.laneLines[1].x = XS[:10]
@@ -496,8 +613,10 @@ class TestSingleLineTracking(unittest.TestCase):
     tracker = SingleLineTracker()
     for frame in range(8):
       target = tracker.target(single(line=-1.7, edge=10.), frame, 20., .05, 0.)
-      if frame < 4:
+      if frame == 0:
         self.assertIsNone(target.y)
+      else:
+        self.assertIsNotNone(target.y)
     assert tracker.spacing is not None
     self.assertAlmostEqual(tracker.spacing, 1.7, places=6)
     jump = tracker.target(single(line=-1.1, edge=10.), 9, 20., .05, 0.)

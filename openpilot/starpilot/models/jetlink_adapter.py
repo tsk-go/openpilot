@@ -80,6 +80,22 @@ def _adapter_class():
                             () if axes is None else [getattr(axes, axis) for axis in AOL_AXES],
                             waiting=time.monotonic() - self._aol_since < AOL_GRACE_S)
 
+    def model_warp(self, small, cam_w, cam_h, model_w, model_h):
+      # None under legacy9d, whose tinygrad is the one Jetlink's stock pickle and its own warp are built for; any
+      # other runtime cannot load that pickle, so it sends the small model's own warp (jetlink_warp). A failure
+      # raises, and Jetlink logs it and keeps the small model
+      from openpilot.starpilot.models.runner import CatalogModelState
+      from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy
+      if selected_legacy():
+        return None
+      if not isinstance(small, CatalogModelState):
+        raise RuntimeError(f"the small model is a {type(small).__name__}, not a catalog model")
+      from openpilot.starpilot.models.jetlink_warp import CatalogWarp
+      warp = CatalogWarp(small, (model_w, model_h))
+      self.log.warning("jetlink: the link sends the small model's warp (%s, %d bytes a frame, %s)",
+                       small.camera_warp_descriptor.output_shape, warp.output.nbytes, warp.sending)
+      return warp
+
     def small_reset(self, small):
       # CatalogModelState's history zeroed in place: GPU queues, numpy inputs (prev_feat, packed inputs) and
       # the desire edge. Never _reset_state(), which makes tensors the run JIT was not captured with
@@ -140,6 +156,21 @@ def link_on() -> bool:
       return f.read().strip() in ("1", "2")
   except OSError:
     return False
+
+
+def coherent_warp():
+  """What modeld's small model moves its warp's output with before warmup links the warp: Jetlink's
+  make_coherent, with Jetlink on and off legacy9d, where the link sends that output (jetlink_warp). Else None."""
+  if not link_on():
+    return None
+  from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy
+  if selected_legacy():
+    return None
+  try:
+    from jetlink.openpilot.warp import make_coherent
+  except Exception:
+    return None
+  return make_coherent
 
 
 def _cloudlog():

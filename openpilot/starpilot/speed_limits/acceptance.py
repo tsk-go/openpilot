@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 CONFIRMATION_NS = 10_000_000_000
-AUTOMATIC_ADOPTION_NS = 3_000_000_000
 MAX_REJECTIONS = 256
 
 
@@ -78,7 +77,6 @@ class Authority:
 class Policy:
   confirm_lower: bool = True
   confirm_higher: bool = True
-  fallback_previous: bool = False
   display_only: bool = False
 
 
@@ -173,16 +171,6 @@ class Decision:
   adoption: AdoptionProposal | None = None
   authority: Authority | None = None
   policy: Policy | None = None
-
-
-def previous_limit_is_qualified(decision: Decision) -> bool:
-  """Recognize retained control after the caller validates the decision structure."""
-  accepted = decision.state.accepted
-  return (not decision.errors and decision.basis == "previous_accepted" and
-          decision.policy is not None and decision.policy.fallback_previous is True and not decision.policy.display_only and
-          decision.authority is not None and decision.authority.can_control and
-          decision.state.observation.kind is not ObservationKind.VALID and accepted is not None and
-          decision.control_target_mps is not None and decision.control_target_mps == accepted.candidate.speed_mps)
 
 
 def _token(value: object) -> bool:
@@ -342,7 +330,7 @@ def _reject(state: State, candidate: Candidate) -> State:
 
 
 def step(state: State, observation: Observation, authority: Authority, policy: Policy, *, now_ns: int,
-         action: DriverAction | None = None, adopt: AdoptRequest | None = None) -> Decision:
+         action: DriverAction | None = None, adopt: AdoptRequest | None = None, set_speed_matches: bool = False) -> Decision:
   """Return a decision, never a cruise command. Invalid input produces no control target."""
   state_errors = _state_errors(state)
   if state_errors:
@@ -351,7 +339,7 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
   if not observation_is_valid(observation, session_id=state.session_id):
     errors.append("invalid observation")
   if not isinstance(policy, Policy) or any(type(v) is not bool for v in (
-      policy.confirm_lower, policy.confirm_higher, policy.fallback_previous, policy.display_only)):
+      policy.confirm_lower, policy.confirm_higher, policy.display_only)):
     errors.append("invalid policy")
   if not _integer(now_ns) or (state.last_timestamp_ns is not None and now_ns < state.last_timestamp_ns):
     errors.append("invalid or reversed monotonic clock")
@@ -361,6 +349,8 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
     errors.append("invalid adopt request")
   if action is not None and adopt is not None:
     errors.append("ambiguous action and adopt request")
+  if type(set_speed_matches) is not bool:
+    errors.append("invalid SET alignment")
   if errors:
     # Do not defer a stale prompt or credit the invalid interval on recovery.
     invalid = replace(state, observation=Observation(ObservationKind.UNKNOWN), pending=None, timer_running=False, presentation=None)
@@ -400,8 +390,7 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
     return finish("display_only")
   if observation.kind is not ObservationKind.VALID:
     state = replace(state, pending=None, timer_running=False)
-    target = previous_target() if policy.fallback_previous else None
-    return finish("previous_accepted" if target is not None else observation.kind.value, target=target)
+    return finish(observation.kind.value)
 
   assert candidate is not None
   new_limit = state.received_speed_mps != candidate.speed_mps
@@ -443,7 +432,7 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
   state = replace(state, pending=pending, timer_running=True)
 
   if pending.automatic:
-    if pending.active_elapsed_ns >= AUTOMATIC_ADOPTION_NS and (authority.can_control or authority.fully_disengaged):
+    if authority.can_control or authority.fully_disengaged:
       state, history = _accept(state, candidate, now_ns)
       return finish("accepted" if authority.can_control else "disengaged_accept",
                     target=candidate.speed_mps if authority.can_control else None, history=history)
@@ -455,6 +444,8 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
       receipt = replace(receipt, status="different_decision")
     elif old.pending is None or old.pending.decision_id != pending.decision_id:
       receipt = replace(receipt, status="not_presented")
+    elif old.presentation is None or old.presentation.candidate != candidate:
+      receipt = replace(receipt, status="different_presentation")
     else:
       # The driver is always asked, even with only lateral or stock ACC active; the
       # choice is recorded as accepted history and only commands a target when
@@ -469,4 +460,10 @@ def step(state: State, observation: Observation, authority: Authority, policy: P
   if pending.active_elapsed_ns >= CONFIRMATION_NS:
     state = _reject(state, candidate)
     return finish("timeout_reject", target=None if state.rejection_capacity_exhausted else previous_target())
+
+  # An explicit choice above wins; alignment is approval only while we own speed control.
+  if set_speed_matches and authority.can_control:
+    state, history = _accept(state, candidate, now_ns)
+    return finish("accepted", target=candidate.speed_mps, history=history)
+
   return finish("pending", target=previous_target())

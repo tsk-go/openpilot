@@ -11,14 +11,14 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 import hashlib
 import math
 import statistics
 from openpilot.starpilot.flm.automatic import T95
 
 from openpilot.starpilot.flm.canonical_surface_adapter import NAMES, GROUPS, coordinate_bounds, full_profile_sha256
-from openpilot.starpilot.flm.live_trial_contract import LiveTrialBinding, LiveTrialOffer, VERSION, MAX_STEP, MAX_LEASE_NS
+from openpilot.starpilot.flm.live_trial_contract import LiveTrialBinding, LiveTrialOffer, VERSION, MAX_STEP, MAX_LEASE_NS, SOURCE_EXPERIMENT_STEP
 
 if TYPE_CHECKING:
   from openpilot.starpilot.flm.live_tracking_response import ResponseCertificate, ValidatedResponseWitness
@@ -101,6 +101,21 @@ class HookSensitivity:
   native_endpoints: int
   max_step_physical_rms: float  # RMS physical acceleration DELTA at .005, after native encoding and retained slope.
   native_gradient_complete: bool = False
+  minus_native_separated: int | None = None
+  plus_native_separated: int | None = None
+  minus_max_step_physical_rms: float | None = None
+  plus_max_step_physical_rms: float | None = None
+
+  def native_effect(self, step: float) -> tuple[int, float]:
+    if step == 0:
+      return 0, 0.0
+    if self.minus_native_separated is None:
+      # Older numerical episodes retain their original secant contract.
+      # Production probe episodes record both actual directions below.
+      return self.native_separated, self.max_step_physical_rms
+    if step < 0:
+      return self.minus_native_separated, cast(float, self.minus_max_step_physical_rms)
+    return cast(int, self.plus_native_separated), cast(float, self.plus_max_step_physical_rms)
 
   def validate(self):
     if (
@@ -117,6 +132,14 @@ class HookSensitivity:
       and self.native_endpoints < 4
     ):
       raise ValueError('actual finite hook/native probe support required')
+    directional = (self.minus_native_separated, self.plus_native_separated,
+                   self.minus_max_step_physical_rms, self.plus_max_step_physical_rms)
+    if any(value is not None for value in directional) and (
+      any(type(value) is not int or not 0 <= value <= self.native_endpoints for value in directional[:2])
+      or any(value is None or type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in directional[2:])
+      or any(count == 0 and effect != 0 for count, effect in zip(directional[:2], directional[2:], strict=True))
+    ):
+      raise ValueError('complete finite directional native probe support required')
     return self
 
 
@@ -589,7 +612,11 @@ class LiveTrackingOptimizer:
         return None
       # No error/error_feature_sum/sign is inspected: the earlier coordinate
       # and bounded direction were fixed before these observations existed.
-      effects.append(feature.max_step_physical_rms * abs(target[name] - self.accepted[name]) / MAX_STEP / _score_scale(row))
+      delta = target[name] - self.accepted[name]
+      separated, effect = feature.native_effect(delta)
+      if separated / feature.native_endpoints < 0.09 or effect <= 0:
+        return None
+      effects.append(effect * abs(delta) / MAX_STEP / _score_scale(row))
     return min(effects) if effects else None
 
   def _comparison_allocation(
@@ -1049,7 +1076,7 @@ class LiveTrackingOptimizer:
           # Actual worse/inconclusive directions below remain disqualified;
           # independent baseline, later feedback and slew are unchanged.
           low, high = coordinate_bounds(name)
-          step_limit = MAX_STEP if self.rmse is None else min(MAX_STEP, 0.1 * confidence)
+          step_limit = SOURCE_EXPERIMENT_STEP if self.rmse is None else min(MAX_STEP, 0.1 * confidence)
           if self.rmse is None and min(high, max(low, self.accepted[name] + sign * step_limit)) == self.accepted[name]:
             sign = -sign
 
@@ -1060,7 +1087,11 @@ class LiveTrackingOptimizer:
           if self.rmse is None and self._same_inconclusive_trial(name, sign, rows[-1], now_ns):
             continue
           delta = sign * step_limit
-          predicted = min(features[id(row)][name].max_step_physical_rms for row in rows)
+          directed = [features[id(row)][name].native_effect(delta) for row in rows]
+          if any(separated / features[id(row)][name].native_endpoints < 0.09
+                 for row, (separated, _) in zip(rows, directed, strict=True)):
+            continue
+          predicted = min(effect for _, effect in directed)
           expected = predicted * abs(delta) / MAX_STEP / max(_score_scale(row) for row in rows)
           if expected <= 0.0001:
             continue  # The original native effect must be visible.

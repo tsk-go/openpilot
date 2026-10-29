@@ -7,10 +7,10 @@ from opendbc.safety.tests.libsafety import libsafety_py
 CAPTURE = Path(__file__).parent / 'testdata/ev9_route40_active_cb.json'
 
 
-def ready(param=0x5c95):
+def ready(param=0x5c95, experience=32):
   safety = libsafety_py.libsafety
   safety.init_tests()
-  safety.set_alternative_experience(32)
+  safety.set_alternative_experience(experience)
   assert safety.set_safety_hooks(28, param) == 0
   first = None
   active = []
@@ -30,7 +30,7 @@ def ready(param=0x5c95):
         # The first active packet is tested separately before any active TX.
         if len(active) == 1:
           assert safety.get_controls_allowed()
-          assert safety.aol_get_permission_mask() == 3
+          assert safety.aol_get_permission_mask() == (3 if experience else 0)
           return safety, first
       else:
         safety.safety_tx_hook(packet)
@@ -51,7 +51,7 @@ def test_captured_ev9_ordinary_cb_uses_advertised_combined_permission(param):
 @pytest.mark.parametrize('param', [0x5c95, 0x5495])
 @pytest.mark.parametrize('fault', ['no_request', 'no_heartbeat', 'ordinary_disabled', 'stale_sources', 'bad_crc', 'wrong_bus'])
 def test_captured_ev9_combined_permission_keeps_all_refusals(fault, param):
-  safety, (stamp, frame) = ready(param)
+  safety, (stamp, frame) = ready(param, experience=0 if fault == 'ordinary_disabled' else 32)
   data = bytearray.fromhex(frame['d'])
   bus = frame['b']
   if fault == 'no_request':
@@ -59,6 +59,7 @@ def test_captured_ev9_combined_permission_keeps_all_refusals(fault, param):
   elif fault == 'no_heartbeat':
     safety.set_aol_test_heartbeat(False)
   elif fault == 'ordinary_disabled':
+    # With independent AOL disabled, ordinary disengagement must refuse TX.
     safety.set_controls_allowed(False)
   elif fault == 'stale_sources':
     safety.set_timer(stamp + 100_001)
@@ -67,3 +68,23 @@ def test_captured_ev9_combined_permission_keeps_all_refusals(fault, param):
   elif fault == 'wrong_bus':
     bus = 0
   assert not safety.safety_tx_hook(libsafety_py.make_CANPacket(frame['a'], bus, data))
+
+
+@pytest.mark.parametrize('param', [0x5c95, 0x5495])
+def test_captured_physically_armed_aol_retains_lateral_without_ordinary_controls(param):
+  safety, (_, frame) = ready(param)
+  safety.set_controls_allowed(False)
+  assert not safety.get_controls_allowed()
+  assert safety.aol_get_permission_mask() == 1
+  packet = libsafety_py.make_CANPacket(frame['a'], frame['b'], bytes.fromhex(frame['d']))
+  assert safety.safety_tx_hook(packet)
+  assert not safety.safety_tx_hook(packet), 'Duplicate counter still rejected'
+
+
+@pytest.mark.parametrize('param', [0x5c95, 0x5495])
+def test_captured_ordinary_engagement_without_independent_aol_can_transmit(param):
+  safety, (_, frame) = ready(param, experience=0)
+  packet = libsafety_py.make_CANPacket(frame['a'], frame['b'], bytes.fromhex(frame['d']))
+  assert safety.safety_tx_hook(packet)
+  safety.set_controls_allowed(False)
+  assert not safety.safety_tx_hook(packet)

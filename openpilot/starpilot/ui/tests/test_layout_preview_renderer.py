@@ -58,7 +58,7 @@ class LayoutPreviewRendererTests(unittest.TestCase):
       sidebar.assert_not_called()
 
   def test_native_and_projection_previews_supply_timer_sample(self):
-    from openpilot.starpilot.system.android_auto.projection_layout import default_layout_for_viewport
+    from openpilot.starpilot.system.starport.projection_layout import default_layout_for_viewport
     from openpilot.starpilot.ui.layout_preview_transport import SCENES
     from openpilot.starpilot.ui.onroad_customization import STOPPED_TIMER_WIDGET
     native = default_document()
@@ -88,7 +88,7 @@ class LayoutPreviewRendererTests(unittest.TestCase):
         renderer.close()
 
   def test_big_and_projection_previews_supply_route_and_timer_samples_but_compact_does_not(self):
-    from openpilot.starpilot.system.android_auto.projection_layout import default_layout_for_viewport
+    from openpilot.starpilot.system.starport.projection_layout import default_layout_for_viewport
     from openpilot.starpilot.ui.onroad_customization import STOPPED_TIMER_WIDGET
     native = default_document()
     native['layouts']['large'][STOPPED_TIMER_WIDGET]['enabled'] = True
@@ -112,7 +112,9 @@ class LayoutPreviewRendererTests(unittest.TestCase):
   def test_big_preview_fits_widgets_to_the_road_that_is_showing(self):
     from openpilot.starpilot.ui.onroad_customization import widget_size
     document = default_document()
-    card = widget_size(document, 'large', 'cruise_limits')[0]
+    from openpilot.starpilot.ui.large_speed_geometry import confirmation_footprint
+    area = confirmation_footprint('large')
+    card = max(widget_size(document, 'large', 'cruise_limits')[0], area['x'] + area['width'])
     document['layouts']['large']['cruise_limits']['x'] = 2130 - card
     document['layouts']['large']['steering_wheel']['x'] = -270
     with patch('openpilot.starpilot.ui.layout_preview_renderer.rl.is_window_ready', return_value=True), \
@@ -155,7 +157,7 @@ class LayoutPreviewRendererTests(unittest.TestCase):
     pending = sample_state("slc_pending", document)
     for profile in (Profile.LARGE, Profile.COMPACT):
       self.assertEqual([item.label for item in slc_controls(profile, pending)],
-                       ["Accept", "Decline"])
+                       ["Accept", "Reject"])
       # The engaged sample already uses its accepted limit, so there is no redundant adopt action.
       self.assertEqual(slc_controls(profile, sample_state("engaged", document)), ())
     manual = sample_state("experimental", document)

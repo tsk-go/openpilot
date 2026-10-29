@@ -76,8 +76,8 @@ from openpilot.starpilot.ui.onroad_dm import DriverMonitorLayer
 from openpilot.starpilot.favorites.owner import FavoritesOwner
 from openpilot.starpilot.controllers.cruise_action import CruiseActionPublisher, ui_authority as cruise_action_authority
 from openpilot.starpilot.controllers.wheel_actions import WheelConsumer
-from openpilot.starpilot.system.android_auto.projection_bookmark import BookmarkReceiver
-from openpilot.starpilot.system.android_auto.projection_slc_action import SlcActionReceiver
+from openpilot.starpilot.system.starport.projection_bookmark import BookmarkReceiver
+from openpilot.starpilot.system.starport.projection_slc_action import SlcActionReceiver
 from openpilot.starpilot.controllers.mode_actions import ModeActionPublisher, producer_available, authority as mode_action_authority
 from openpilot.starpilot.favorites.actions import (BOOKMARK, CYCLE_PERSONALITY, EXPERIMENTAL, INCREASE_SPEED, DECREASE_SPEED, SET_SPEED,
                                                   FORCE_COAST, PULSE_GLIDE, DISENGAGE, TRAFFIC, SWITCHBACK, SCREEN_OFF, mapped_actions)
@@ -280,7 +280,8 @@ class StarShellSession:
     self._wheel_personality = None
     self.conditional_actions: ConditionalUiActionOwner | None = None
     self.cruise_actions = CruiseActionPublisher()
-    self.favorites_owner = FavoritesOwner(ui_state.params, self._favorite_actions, self._favorite_authority, self._favorite_render_actions)
+    self.favorites_owner = FavoritesOwner(ui_state.params, self._favorite_actions, self._favorite_authority, self._favorite_render_actions,
+                                         current_action=lambda key: self._resolve_favorite_actions(frozenset((key,))).get(key))
     self.favorites = OnroadFavorites(self.fonts, self._favorite_request)
     self._favorite_snapshot = None
     self._favorite_data = None
@@ -616,9 +617,10 @@ class StarShellSession:
     else:
       return False
     if success:
-      self._favorite_snapshot = self.favorites_owner.snapshot()
+      include_options = request.kind != "activate"
+      self._favorite_snapshot = self.favorites_owner.snapshot(include_options=include_options)
       self._favorite_data = asdict(self._favorite_snapshot)
-      self._favorite_include_options = True
+      self._favorite_include_options = include_options
       self.favorites.data = self._favorite_data
       self._favorite_read_at = time.monotonic()
     else:
@@ -2086,6 +2088,16 @@ class StarMiciMainLayout(MiciMainLayout):
                                              lambda index: panel().request_personality(index),
                                              lambda: panel().request_experimental())
 
+  def _handle_transitions(self):
+    from openpilot.starpilot.ui.spacepilot.native import SpacePilotPage, Stage, live_witness
+    page = gui_app.get_active_widget()
+    if (isinstance(page, SpacePilotPage) and not page.closed and page.session.stage != Stage.CLOSED and
+        live_witness() is not None):
+      # Cancel only the cosmetic delayed startup redirect for a freshly parked
+      # game. The base movement transition and the game's own gates still run.
+      self._onroad_time_delay = None
+    super()._handle_transitions()
+
   def _exit_spacepilot(self) -> None:
     # An unsafe game exit must reveal the existing road/alert presentation now,
     # including when engagement/alerts change while the car still reports Park.
@@ -2093,17 +2105,6 @@ class StarMiciMainLayout(MiciMainLayout):
     self._scroller.scroll_to(self._onroad_layout.rect.x if ui_state.started else self._home_layout.rect.x, smooth=False)
 
   def _open_compact_destination(self, destination: Destination) -> None:
-    if destination == Destination.NETWORK and not self.star.connectivity_allowed():
-      from openpilot.selfdrive.ui.mici.widgets.button import GreyBigButton
-      from openpilot.system.ui.widgets.scroller import NavScroller
-      page = NavScroller()
-      current = self.star.snapshot(ShellMode.SETTINGS).home.network
-      label = {"wifi": "Wi-Fi", "ethernet": "Ethernet", "cell2G": "Cellular 2G", "cell3G": "Cellular 3G",
-               "cell4G": "Cellular 4G", "cell5G": "Cellular 5G"}.get(current, "No connection shown")
-      page._scroller.add_widgets([GreyBigButton("network", label),
-                                  GreyBigButton("network changes", "Use Offroad mode to change network settings")])
-      gui_app.push_widget(page)
-      return
     if destination == Destination.BLUETOOTH:
       from openpilot.starpilot.ui.bluetooth_compact import BluetoothCompact
       panel = self._compact_panels.get(destination)
@@ -2117,7 +2118,9 @@ class StarMiciMainLayout(MiciMainLayout):
       return
     if destination == Destination.DRIVING_MODEL:
       from openpilot.starpilot.ui.models_compact import ModelsCompact
-      ModelsCompact(self.star).open()
+      if not hasattr(self, "_models_compact"):
+        self._models_compact = ModelsCompact(self.star)
+      self._models_compact.open()
       return
     if destination == Destination.DRIVING_CONTROLS:
       from openpilot.starpilot.ui.feature_settings_compact import FeatureSettingsCompact

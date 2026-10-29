@@ -505,7 +505,8 @@ class RuntimeReplayTests(unittest.TestCase):
     self.assertTrue(first.message.slcState.hasPending)
     self.sm.advance(2_010_000_000)
     first = runtime.step(self.sm, self.cp, now_ns=2_010_000_000,
-                         request=Action(runtime.session_id, 1, first.message.slcState.decisionId, 0, 'accept'))
+                         request=Action(runtime.session_id, 1, first.message.slcState.decisionId,
+                                        first.message.slcState.presentationId, 'accept'))
     self.assertTrue(first.message.slcState.hasAccepted)
     source = self.sm['slcDashboardObservation']
     source.speedMps = 15.0
@@ -1077,7 +1078,9 @@ class RuntimeReplayTests(unittest.TestCase):
     self.assertIn('longitudinalPlan', services)
     state = next(message.slcState for service, message in publisher.sent if service == 'slcState')
     self.assertFalse(state.hasCeiling)
-    self.assertTrue(state.automaticAdoptionPending)
+    self.assertTrue(state.hasAccepted)
+    self.assertFalse(state.hasPending)
+    self.assertFalse(state.automaticAdoptionPending)
     self.assertEqual(state.observationKind, 'valid')
     self.assertEqual(state.frameMonoTime, 2_010_000_000)
 
@@ -1117,7 +1120,6 @@ class RuntimeReplayTests(unittest.TestCase):
       restored = read_params(params)
       self.assertTrue(restored.enabled)
       self.assertTrue(restored.acceptance.confirm_lower)
-      self.assertTrue(restored.acceptance.fallback_previous)
       self.assertEqual(restored.selection.slots[0], Source.MAP)
       self.assertEqual(restored.selection.slots[1], Source.DASHBOARD)
       self.assertFalse(restored.errors)
@@ -1177,7 +1179,7 @@ class RuntimeReplayTests(unittest.TestCase):
     self.assertEqual(runtime._observations(self.sm, self.cp, 9_100_000_000)[Source.DASHBOARD].kind, ObservationKind.STALE)
     self.assertEqual(stale.message.slcState.observationKind, 'stale')  # both configured slots use the expired dashboard
     self.assertFalse(stale.message.slcState.hasCeiling)
-    self.assertEqual(stale.result.acceptance.basis, 'previous_accepted')
+    self.assertEqual(stale.result.acceptance.basis, 'stale')
     self.assertEqual(stale.result.override.contribution_mps, 105 / 3.6)
     planner.update(self.sm, cruise_ceiling=stale.result.ceiling)
     self.assertEqual(planner.last_cruise_ceiling_status, 'absent')
@@ -1308,7 +1310,7 @@ class RuntimeReplayTests(unittest.TestCase):
     pending = runtime.step(self.sm, self.cp, now_ns=2_050_000_000)
     self.assertTrue(pending.message.slcState.hasPending)
     self.sm.advance(2_100_000_000)
-    request = Action(runtime.session_id, 17, pending.message.slcState.decisionId, 0, 'reject')
+    request = Action(runtime.session_id, 17, pending.message.slcState.decisionId, pending.message.slcState.presentationId, 'reject')
     rejected = runtime.step(self.sm, self.cp, now_ns=2_100_000_000, request=request)
     self.assertEqual(rejected.action_result.status, 'resolved')
     self.assertEqual(rejected.message.slcState.actionSequenceId, 17)
@@ -1332,10 +1334,12 @@ class RuntimeReplayTests(unittest.TestCase):
     source.carStateLogMonoTime = 2_000_000_000
     matched = runtime.step(self.sm, self.cp, now_ns=2_000_000_000)
     first_identity = matched.result.selection.observation.candidate.observation_identity.value
-    self.assertTrue(matched.message.slcState.hasPending)
+    self.assertTrue(matched.message.slcState.hasAccepted)
+    self.assertFalse(matched.message.slcState.hasPending)
     self.sm.logMonoTime['carState'] = 2_010_000_000  # independent sockets deliver the next card tick first
     lagged = runtime.step(self.sm, self.cp, now_ns=2_010_000_000)
-    self.assertTrue(lagged.message.slcState.hasPending)
+    self.assertTrue(lagged.message.slcState.hasAccepted)
+    self.assertFalse(lagged.message.slcState.hasPending)
     source.producerSessionId = 'restarted-card'
     restarted = runtime.step(self.sm, self.cp, now_ns=2_010_000_000)
     second_identity = restarted.result.selection.observation.candidate.observation_identity.value

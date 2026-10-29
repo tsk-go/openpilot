@@ -1,7 +1,6 @@
 """The native Big UI Developer version row, sharing the parked game and gesture."""
 
 import math
-import time
 
 import pyray as rl
 
@@ -45,7 +44,9 @@ class SpacePilotDeveloperAdapter(StarPilotSettingsAdapterLarge):
 
   def _update_state(self):
     super()._update_state()
-    if not self.active or not self.enabled or not self.gate.update(live_witness()):
+    witness = live_witness()
+    self.gate.update(witness)
+    if not self.active or not self.enabled or witness is None:
       self._reset_gesture()
 
   def _version_bounds(self):
@@ -97,10 +98,11 @@ class SpacePilotDeveloperAdapter(StarPilotSettingsAdapterLarge):
         self.taps.reset()
       elif event.left_released:
         self.press = None
-        if (not rl.check_collision_point_rec(event.pos, self._version_bounds()) or
-            not self.gate.update(live_witness())):
+        witness = live_witness()
+        self.gate.update(witness)
+        if not rl.check_collision_point_rec(event.pos, self._version_bounds()) or witness is None:
           self.taps.reset()
-        elif self.taps.tap(time.monotonic()):
+        elif self.taps.tap(event.t):
           gui_app.mouse_events.clear()
           gui_app.push_widget(SpacePilotPage(self.gate, self.on_unsafe))
 

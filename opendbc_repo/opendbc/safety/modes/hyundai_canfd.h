@@ -194,6 +194,7 @@ static uint32_t aol_optional_release_ts = 0U;
 static bool aol_optional_release_counter_seen = false;
 static bool hyundai_torque_aol_cancel_preserves_lateral = false;
 static bool hyundai_canfd_torque_ev_long = false;
+static bool hyundai_canfd_lkas_damping_100 = false;
 static bool aol_ioniq6_lateral_latch = false;
 static bool aol_ioniq6_buttons_seen = false;
 static bool aol_ioniq6_button_prev = false;
@@ -239,6 +240,13 @@ static uint8_t hyundai_canfd_angle_model = 0U;
 static uint8_t hyundai_canfd_carnival_consumed_counter = 0U;
 static uint8_t hyundai_canfd_carnival_source[16] = {0};
 
+// Standard CRUISE_BUTTONS sources use either 0..14 or 0..15. Only the
+// observed terminal rollover may omit 15; repeats and other gaps stay invalid.
+static bool hyundai_canfd_button_counter_follows(uint8_t previous, uint8_t current, uint8_t maximum) {
+  return (current == (uint8_t)((previous + 1U) & maximum)) ||
+         ((maximum == 0xFU) && (previous == 0xEU) && (current == 0U));
+}
+
 static void aol_ioniq6_enable_reset(void) {
   aol_ioniq6_enable_counter_seen = false;
   aol_ioniq6_enable_neutral = false;
@@ -259,6 +267,7 @@ static void aol_ioniq6_reset(void) {
 
   hyundai_torque_aol_cancel_preserves_lateral = false;
   hyundai_canfd_torque_ev_long = false;
+  hyundai_canfd_lkas_damping_100 = false;
   aol_ioniq6_lateral_latch = false;
   aol_ioniq6_buttons_seen = false;
   aol_ioniq6_button_prev = false;
@@ -587,7 +596,7 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
       const uint32_t now = microsecond_timer_get();
       const uint32_t elapsed = safety_get_ts_elapsed(now, aol_ioniq6_enable_ts);
       const bool fresh = aol_ioniq6_enable_counter_seen &&
-        (counter == ((aol_ioniq6_enable_counter + 1U) & 0xFU)) && (elapsed > 0U) && (elapsed <= 100000U);
+        hyundai_canfd_button_counter_follows(aol_ioniq6_enable_counter, counter, 0xFU) && (elapsed > 0U) && (elapsed <= 100000U);
       if (!fresh || main_button || GET_BIT(msg, 23U)) {
         aol_ioniq6_enable_pending = false;
         aol_ioniq6_enable_release = false;
@@ -624,7 +633,7 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
         const uint32_t sample_ts = microsecond_timer_get();
         const uint32_t elapsed = safety_get_ts_elapsed(sample_ts, aol_optional_release_sample_ts);
         const bool fresh = !aol_optional_release_counter_seen ||
-          (((uint8_t)((aol_optional_release_counter + 1U) & maximum) == counter) &&
+          (hyundai_canfd_button_counter_follows(aol_optional_release_counter, counter, maximum) &&
            (elapsed > 0U) && (elapsed <= 100000U));
         aol_optional_release_counter_seen = true;
         aol_optional_release_counter = counter;
@@ -892,7 +901,7 @@ static bool hyundai_canfd_tx_hook_valid(const CANPacket_t *msg) {
       mirror &= (msg->data[13] & 0x08U) == 0U; // no FCA_ESA actuation
     }
     for (uint8_t i = 7U; i < GET_LEN(msg); i++) {
-      mirror &= msg->data[i] == (((i == 8U) && !hyundai_canfd_ioniq6_long) ? 0x64U : 0U);
+      mirror &= msg->data[i] == (((i == 8U) && hyundai_canfd_lkas_damping_100) ? 0x64U : 0U);
     }
     mirror &= hyundai_canfd_get_checksum(msg) == (hyundai_common_canfd_compute_checksum(msg) ^
                                                  ((GET_LEN(msg) == 16U) ? 0x041DU : 0U));
@@ -1236,6 +1245,7 @@ static void hyundai_canfd_reset_ioniq6_state(void) {
   aol_optional_release_latch = false;
 
   hyundai_canfd_torque_ev_long = false;
+  hyundai_canfd_lkas_damping_100 = false;
   hyundai_canfd_ioniq6_lfa_unpaired = false;
   hyundai_canfd_ioniq6_lfa_ts = 0U;
   hyundai_canfd_gv60_long = false;
@@ -1270,7 +1280,8 @@ static bool hyundai_canfd_angle_aol_capacity(safety_config *ret) {
   return bounded;
 }
 
-static safety_config hyundai_canfd_init_validated(uint16_t param) {
+static safety_config hyundai_canfd_init_validated(uint16_t supplied_param) {
+  uint16_t param = supplied_param;
   const uint16_t HYUNDAI_PARAM_LONGITUDINAL = 4U;
   const uint16_t HYUNDAI_PARAM_CANFD_LKA_STEER_MSG_ALT = 128;
   const uint16_t HYUNDAI_PARAM_CANFD_ALT_BUTTONS = 32;
@@ -1281,6 +1292,13 @@ static safety_config hyundai_canfd_init_validated(uint16_t param) {
   const uint16_t HYUNDAI_PARAM_ANGLE_MODEL_BANK = 8192U;
   const uint16_t HYUNDAI_PARAM_ANGLE_MODEL_MASK = 2048U | 4096U | HYUNDAI_PARAM_ANGLE_MODEL_BANK;
   const uint16_t HYUNDAI_PARAM_ANGLE_TOPOLOGY_MASK = 8U | 16U | 32U | 128U;
+  // Bit 13 names Dom's explicit Carnival/GV70 camera damping calibration only
+  // under torque LKA + LONG. Other uses of the bit retain their original meaning.
+  const uint16_t damping_profile_mask = HYUNDAI_PARAM_CANFD_ANGLE | 16U | HYUNDAI_PARAM_LONGITUDINAL | 8192U;
+  hyundai_canfd_lkas_damping_100 = (param & damping_profile_mask) == (16U | HYUNDAI_PARAM_LONGITUDINAL | 8192U);
+  if (hyundai_canfd_lkas_damping_100) {
+    param &= (uint16_t)~8192U;
+  }
   const bool angle_requested = GET_FLAG(param, HYUNDAI_PARAM_CANFD_ANGLE);
   const bool ioniq6_stock_aol_requested = hyundai_canfd_stock_torque_aol_param(param);
 #ifdef ALLOW_DEBUG

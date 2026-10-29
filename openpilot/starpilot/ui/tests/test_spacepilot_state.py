@@ -127,11 +127,11 @@ def test_five_distinct_taps_debounce_timeout_clock_and_reset():
   assert taps.tap(1.8)
   assert taps.count == 0
   assert not taps.tap(2.)
-  assert not taps.tap(3.)
+  assert not taps.tap(3.6)
   assert taps.count == 1
   taps.reset()
   assert taps.count == 0
-  for now in (10., 10.8, 11.6, 12.4, 13.2):
+  for now in (10., 11.6, 13.2, 14.8, 16.4):
     assert not taps.tap(now)
   assert taps.count == 1
   assert not taps.tap(1.)

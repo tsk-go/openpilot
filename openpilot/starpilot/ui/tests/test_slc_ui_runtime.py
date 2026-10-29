@@ -97,6 +97,42 @@ def accepted_runtime(sm, cp, settings, *, session_id):
 
 
 class TestSlcUiRuntime(unittest.TestCase):
+  def test_confirmation_requires_current_presentation_through_source_handoff(self):
+    for profile in Profile:
+      for kind in (SlcActionKind.ACCEPT, SlcActionKind.REJECT):
+        for change in ('none', 'wrong_id', 'earlier_handoff', 'same_step_handoff', 'new_limit'):
+          with self.subTest(profile=profile, kind=kind, change=change):
+            sm, cp = replay_inputs()
+            runtime = Runtime(parse({'SpeedLimitController': True, 'SLCConfirmation': True,
+                                     'SLCPriority1': 'Dashboard'}))
+            pending = runtime.step(sm, cp, now_ns=START).message
+            request = ui_request(pending, profile=profile, kind=kind)
+            action = publish_request(pending.slcState, request, START + 10_000_000)
+            if change == 'wrong_id':
+              action = replace(action, presentation_id=action.presentation_id + 1000)
+            elif change != 'none':
+              sm['slcDashboardObservation'].episode += 1
+              sm['slcDashboardObservation'].observedMonoTime = START + 40_000_000
+              if change == 'new_limit':
+                sm['slcDashboardObservation'].speedMps = 30.0
+            if change == 'earlier_handoff':
+              sm.advance(START + 50_000_000)
+              renewed = runtime.step(sm, cp, now_ns=START + 50_000_000).message.slcState
+              self.assertEqual(renewed.decisionId, pending.slcState.decisionId)
+              self.assertNotEqual(renewed.presentationId, pending.slcState.presentationId)
+            now_ns = START + (100_000_000 if change == 'earlier_handoff' else 50_000_000)
+            sm.advance(now_ns)
+            output = runtime.step(sm, cp, now_ns=now_ns, request=action)
+            if change == 'none':
+              self.assertEqual(output.message.slcState.actionStatus, kind.value)
+              self.assertFalse(output.message.slcState.hasPending)
+              self.assertEqual(output.command is not None, kind == SlcActionKind.ACCEPT)
+            else:
+              self.assertTrue(output.message.slcState.hasPending)
+              self.assertFalse(output.message.slcState.hasAccepted)
+              self.assertIsNone(output.command)
+            self.assertEqual(runtime.ledger.transactions, ())
+
   def test_card_accept_produces_planner_receipt_and_bounded_command(self):
     sm, cp = replay_inputs()
     runtime = Runtime(parse({"SpeedLimitController": True, "SLCConfirmation": True,
@@ -113,83 +149,72 @@ class TestSlcUiRuntime(unittest.TestCase):
     self.assertIsNotNone(result.command)
     self.assertGreater(result.command.slcCruiseCommand.targetMps, 60.0 / 3.6)
 
-  def test_visible_reject_then_use_limit_restores_rejected_presentation(self):
-    sm, cp = replay_inputs()
-    runtime = Runtime(parse({"SpeedLimitController": True, "SLCConfirmation": True,
-                             "SLCConfirmationHigher": True, "SLCPriority1": "Dashboard"}), session_id="ui-reject")
-    pending = runtime.step(sm, cp, now_ns=START).message
-    reject = ui_request(pending, profile=Profile.COMPACT, kind=SlcActionKind.REJECT)
-    self.assertEqual(reject.kind, SlcActionKind.REJECT)
-    action = publish_request(pending.slcState, reject, START)
-    sm.advance(START + 50_000_000)
-    rejected = runtime.step(sm, cp, now_ns=START + 50_000_000, request=action)
-    self.assertEqual(rejected.message.slcState.actionStatus, "reject")
-    self.assertFalse(rejected.message.slcState.hasPending)
-    self.assertIsNone(rejected.command)
-    observation = speed_limit_from_message(rejected.message.slcState)
-    view_state = OnroadState(True, False, 20.0, 60.0, observation,
-                             longitudinal_active=True, slc_system_long_available=True)
-    self.assertEqual(slc_controls(Profile.COMPACT, view_state), ())
-    adopt = ui_request(rejected.message, profile=Profile.LARGE, kind=SlcActionKind.ADOPT)
-    self.assertEqual(adopt.kind, SlcActionKind.ADOPT)
-    restore = publish_request(rejected.message.slcState, adopt, START + 50_000_000)
-    sm.advance(START + 100_000_000)
-    restored = runtime.step(sm, cp, now_ns=START + 100_000_000, request=restore)
-    self.assertEqual(restored.message.slcState.actionStatus, "adopt")
-    self.assertIsNotNone(restored.command)
+  def test_reject_or_timeout_hides_use_and_adoption_request_still_works(self):
+    for profile in Profile:
+      for response in ('reject', 'timeout'):
+        with self.subTest(profile=profile, response=response):
+          sm, cp = replay_inputs()
+          sm['slcDashboardObservation'].validUntilMonoTime = START + 20_000_000_000
+          runtime = Runtime(parse({"SpeedLimitController": True, "SLCConfirmation": True,
+                                   "SLCPriority1": "Dashboard"}), session_id="ui-reject")
+          pending = runtime.step(sm, cp, now_ns=START).message
+          action = None
+          now_ns = START + 10_000_000_000
+          if response == 'reject':
+            reject = ui_request(pending, profile=profile, kind=SlcActionKind.REJECT)
+            action = publish_request(pending.slcState, reject, START)
+            now_ns = START + 50_000_000
+          sm.advance(now_ns)
+          rejected = runtime.step(sm, cp, now_ns=now_ns, request=action)
+          self.assertEqual(rejected.result.acceptance.basis, 'driver_reject' if action else 'timeout_reject')
+          self.assertFalse(rejected.message.slcState.hasPending)
+          self.assertIsNone(rejected.command)
+          state = OnroadState(True, False, 20.0, 60.0, speed_limit_from_message(rejected.message.slcState),
+                              longitudinal_active=True, slc_system_long_available=True)
+          self.assertEqual(slc_controls(profile, state), ())
+          adopt = SlcUiRequest(SlcActionKind.ADOPT, str(rejected.message.slcState.sessionId),
+                               int(rejected.message.slcState.decisionId), int(rejected.message.slcState.presentationId),
+                               float(rejected.message.slcState.speedLimit))
+          restore = publish_request(rejected.message.slcState, adopt, now_ns)
+          sm.advance(now_ns + 50_000_000)
+          restored = runtime.step(sm, cp, now_ns=now_ns + 50_000_000, request=restore)
+          self.assertEqual(restored.message.slcState.actionStatus, "adopt")
+          self.assertIsNotNone(restored.command)
+          self.assertAlmostEqual(restored.command.slcCruiseCommand.targetMps, 25.0)
 
-  def test_same_accepted_limit_can_be_used_with_lower_selected_cruise(self):
+  def test_adoption_request_still_works_with_lower_selected_cruise(self):
     sm, cp = replay_inputs()
     runtime = accepted_runtime(sm, cp, parse({"SpeedLimitController": True, "SLCPriority1": "Dashboard"}), session_id="ui-readopt")
     shown = runtime.step(sm, cp, now_ns=START).message
     self.assertTrue(shown.slcState.hasAccepted)
     self.assertAlmostEqual(shown.slcState.acceptedSpeedLimit, shown.slcState.speedLimit)
-    request = ui_request(shown, profile=Profile.LARGE, kind=SlcActionKind.ADOPT)
-    self.assertEqual(request.kind, SlcActionKind.ADOPT)
+    request = SlcUiRequest(SlcActionKind.ADOPT, str(shown.slcState.sessionId), int(shown.slcState.decisionId),
+                           int(shown.slcState.presentationId), float(shown.slcState.speedLimit))
     action = publish_request(shown.slcState, request, START)
     sm.advance(START + 50_000_000)
     result = runtime.step(sm, cp, now_ns=START + 50_000_000, request=action)
     self.assertEqual(result.message.slcState.actionStatus, "adopt")
     self.assertIsNotNone(result.command)
 
-  def test_projected_use_limit_disappears_after_card_applies_rounded_set_speed(self):
-    from openpilot.selfdrive.car.cruise import VCruiseHelper
-    from openpilot.starpilot.system.android_auto.projection_onroad import ProjectionOnroad
+  def test_projection_does_not_claim_the_removed_use_button(self):
+    from openpilot.starpilot.system.starport.projection_onroad import ProjectionOnroad
+    from openpilot.starpilot.ui.onroad_state import slc_action_bounds
 
-    for metric, limit in ((False, 70 / 2.2369362921), (True, 90.4 / 3.6)):
-      with self.subTest(metric=metric):
-        sm, cp = replay_inputs()
-        sm['slcDashboardObservation'].speedMps = limit
-        runtime = accepted_runtime(sm, cp, parse({'SpeedLimitController': True, 'SLCPriority1': 'Dashboard'}), session_id='aa-adopt')
-        shown = runtime.step(sm, cp, now_ns=START).message
-        state = OnroadState(True, False, 20.0, 60.0, speed_limit_from_message(shown.slcState),
-                            metric=metric, longitudinal_active=True, slc_system_long_available=True)
-        control, = slc_controls(Profile.LARGE, state)
-        left, top, right, bottom = control.bounds
-        x, y = (left + right) / 2, (top + bottom) / 2
-        emitted = []
-        view = ProjectionOnroad.__new__(ProjectionOnroad)
-        view.native = NS(ui_state=NS(started=True))
-        view._state = state
-        view._slc_input = OnroadInput(emitted.append, Profile.LARGE)
-        self.assertTrue(view._slc_touch('down', x, y))
-        self.assertTrue(view._slc_touch('up', x, y))
-        request, = emitted
-        self.assertEqual(request.kind, SlcActionKind.ADOPT)
-
-        action = publish_request(shown.slcState, request, START)
-        sm.advance(START + 50_000_000)
-        result = runtime.step(sm, cp, now_ns=START + 50_000_000, request=action)
-        self.assertEqual(result.message.slcState.actionStatus, 'adopt')
-        self.assertIsNotNone(result.command)
-        cruise = VCruiseHelper.__new__(VCruiseHelper)
-        cruise.apply_slc_target(result.command.slcCruiseCommand.targetMps, metric)
-        applied = replace(state, cruise_kph=cruise.v_cruise_cluster_kph,
-                          speed_limit=speed_limit_from_message(result.message.slcState))
-        self.assertEqual(slc_controls(Profile.LARGE, applied), ())
-        # A later driver reduction must still offer the same limit again.
-        self.assertEqual(slc_controls(Profile.LARGE, replace(applied, cruise_kph=60.0))[0].request.kind,
-                         SlcActionKind.ADOPT)
+    sm, cp = replay_inputs()
+    runtime = accepted_runtime(sm, cp, parse({'SpeedLimitController': True, 'SLCPriority1': 'Dashboard'}), session_id='projection')
+    shown = runtime.step(sm, cp, now_ns=START).message
+    state = OnroadState(True, False, 20.0, 60.0, speed_limit_from_message(shown.slcState),
+                        longitudinal_active=True, slc_system_long_available=True)
+    emitted = []
+    view = ProjectionOnroad.__new__(ProjectionOnroad)
+    view.native = NS(ui_state=NS(started=True))
+    view._state = state
+    view._slc_input = OnroadInput(emitted.append, Profile.LARGE)
+    first, last = slc_action_bounds(Profile.LARGE, state)
+    x, y = (first[0] + last[2]) / 2, (first[1] + last[3]) / 2
+    self.assertFalse(view._slc_touch('down', x, y))
+    self.assertFalse(view._slc_touch('up', x, y))
+    self.assertFalse(emitted)
 
   def test_old_press_cannot_publish_after_new_runtime_presentation_or_staleness(self):
     sm, cp = replay_inputs()

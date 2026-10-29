@@ -2,7 +2,9 @@
 
 `selection.select_limit` chooses an observation for the acceptance reducer. It
 does not accept a speed, command a car, request an online provider, read settings
-or judge sensor health. There is no production adapter yet.
+or judge sensor health. `runtime.py` supplies the live source observations and
+`runtime_settings.py` translates saved choices. Adoption and car-control behavior
+are defined in the [controller contract](README.md).
 
 Each of dashboard, map, vision and online must supply an explicit `Observation`.
 Source adapters own normalized m/s, typed observation identity, freshness and eligibility.
@@ -15,8 +17,7 @@ must verify session-value applicability against its current session before use.
 
 `SelectionPolicy` has an explicit mode, exactly two primary source slots and an
 online-fallback Boolean. A slot may be empty or repeat another slot. Online is
-never a primary slot. Saved UI labels need a separately reviewed settings adapter;
-this module does not activate or translate preferences.
+never a primary slot. This module does not activate or translate preferences.
 
 | Mode | Primary candidates | Choice |
 | --- | --- | --- |
@@ -34,18 +35,21 @@ and fallback is enabled. It cannot override a valid primary. An eligible
 secondary or online observation can replace an unavailable primary; all
 considered unavailable sources remain in the result. Disabled and unconfigured
 sources cannot create uncertainty in that choice.
+The live settings adapter disables online fallback; online providers do not
+authorize SLC commands.
 
 If no eligible alternative exists, the result retains unknown or stale state.
 Unknown takes precedence over stale, which takes precedence over absence; the
 full per-source statuses remain available. Explicit absence, exclusion below the
 minimum or an empty configured source set produces an absent result. Acceptance
-independently applies the saved previous-limit policy without changing those
-source statuses. Malformed input produces `invalid_input`, errors and
+keeps accepted history but supplies no control target during source loss.
+Malformed input produces `invalid_input`, errors and
 an unknown observation without selecting a source.
 
 The tests include composition through the acceptance reducer: accepted 65 mph,
 proposed 45, driver rejection, then source loss and reconnect. Last accepted
-history remains 65 for both longitudinal-only and combined authority. Unknown
-or stale sources retain that limit only when fallback is enabled; lateral-only or stock ownership
-cannot turn a selected speed into a system longitudinal target. These are
+history remains 65 for both longitudinal-only and combined authority. Source loss
+does not change the already applied cruise SET or authorize a new command.
+Lateral-only or stock ownership cannot turn a selected
+speed into a system longitudinal target. These are
 deterministic policy tests, not native producer, planner, CAN or vehicle evidence.

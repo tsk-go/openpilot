@@ -22,6 +22,7 @@ from openpilot.starpilot.longitudinal.accel_profile import A_CRUISE_MAX_VALS_TRA
 from openpilot.starpilot.longitudinal.profile_runtime import TRAFFIC_CRUISE_BRAKE_MAGNITUDE
 from openpilot.starpilot.longitudinal.lead_approach_runtime import KEY as LEAD_APPROACH_KEY
 from openpilot.starpilot.longitudinal.lead_takeoff_preferences import KEY as LEAD_TAKEOFF_KEY
+from openpilot.starpilot.longitudinal.encouragement import KEY as NUDGE_KEY
 from openpilot.starpilot.longitudinal.planner_selection import KEY as PLANNER_SELECTION_KEY, save_selection
 
 from openpilot.starpilot.longitudinal.profile_document import (
@@ -53,6 +54,7 @@ from openpilot.starpilot.ui.wheel_feature import WheelFeature, PREFIX as WHEEL_P
 from openpilot.starpilot.longitudinal.output_max import KEY as OUTPUT_MAX_KEY
 from openpilot.starpilot.ui.tesla_screen_feature import TeslaScreenFeature, KEYS as TESLA_SCREEN_KEYS
 from openpilot.starpilot.ui.ford_lateral_feature import FordLateralFeature, FordClusterFeature
+from openpilot.starpilot.ui.ford_pinion_feature import FordPinionFeature
 from openpilot.starpilot.ui.preap_radar_feature import PreAPRadarFeature, KEYS as PREAP_RADAR_KEYS, capability as preap_radar_capability
 from openpilot.starpilot.ui.gm_tune_feature import GmTuneFeature, GmTruckFeature, GmEvPresetFeature
 from openpilot.starpilot.car.gm.tune_preferences import KEY as GM_TUNE_KEY
@@ -87,6 +89,7 @@ BOOL_DEFAULTS = {
   "CustomPersonalities": False, PLANNER_SELECTION_KEY: True,
   LEAD_APPROACH_KEY: False,
   LEAD_TAKEOFF_KEY: False,
+  NUDGE_KEY: True,
   CURVE_MASTER_KEY: False, CURVE_NO_LEAD_KEY: False,
   "ShowCSCStatus": False,
   "ForceAutoTuneOff": False, "AlwaysOnLateral": True, "NostalgiaMode": False,
@@ -102,7 +105,6 @@ FLOAT_SPECS = {
      for name in ("Aggressive", "Standard", "Relaxed")
      for suffix in ("JerkAcceleration", "JerkDeceleration", "JerkDanger", "JerkSpeedDecrease", "JerkSpeed")},
 }
-SLC_FALLBACK = "SLCFallback"
 SLC_PRIORITY = "SLCPriority1"
 SLC_SECONDARY = "SLCPriority2"
 LONG_PREFIX = "profile:"
@@ -464,7 +466,7 @@ class FeatureSettingsOwner:
     if toyota_cruise_capability(cp) is not None:
       return None
     try:
-      if (cp is None or not cp.carFingerprint or not self.longitudinal_available() or (cp.pcmCruise and not self.configuration_longitudinal()) or
+      if (cp is None or not cp.carFingerprint or not self.longitudinal_available() or
           cp.notCar or cp.passive or cp.dashcamOnly):
         return None
       return (str(cp.carFingerprint), self.longitudinal_available(), bool(cp.pcmCruise and not self.configuration_longitudinal()),
@@ -473,7 +475,7 @@ class FeatureSettingsOwner:
       return None
 
   def _apply_lead_preference(self, request: FeatureSettingsRequest) -> bool:
-    if (request.key not in (LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY) or request.value not in ("On", "Off") or
+    if (request.key not in (LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY, NUDGE_KEY) or request.value not in ("On", "Off") or
         request.dependencies or request.capability is not None or request.vehicle_fingerprint is not None):
       return False
     if request.expected not in (None, b"0", b"1"):
@@ -500,7 +502,7 @@ class FeatureSettingsOwner:
       value, raw, valid = self._value("ReverseCruise")
       rows.append(FeatureRow("ReverseCruise", "Swap Toyota Cruise Steps", "On" if value == "1" else "Off" if value == "0" else "Invalid saved value",
                              raw, ("Off", "On") if valid else (), available=allowed and valid,
-                             reason="Short press changes the dash set speed by 5; hold changes it by 1",
+                             reason="Short press changes set speed by 5; hold changes it by 1",
                              capability=toyota_capability, dependencies=()))
       return rows
     for key, label, default in (("CustomCruise", "Short press", 1.0), ("CustomCruiseLong", "Hold", 5.0)):
@@ -615,8 +617,6 @@ class FeatureSettingsOwner:
       return "1" if BOOL_DEFAULTS[key] else "0"
     if key in ("CustomCruise", "CustomCruiseLong"):
       return "1.0" if key == "CustomCruise" else "5.0"
-    if key == SLC_FALLBACK:
-      return "2"
     if key == SLC_PRIORITY:
       return "Vision"
     if key == "IsMetric":
@@ -826,8 +826,12 @@ class FeatureSettingsOwner:
           self.gm_ev_preset.capability() is not None or self.volt_radar.capability() is not None or
           self.panda_wake.capability() is not None or preap_radar_capability(self.vehicle_params()) is not None):
         rows.append(FeatureRow("", "Vehicle Settings", "Configure features supported by your vehicle", page=FeaturePage.VEHICLE, available=True))
-      rows.extend(FeatureRow("", name.title() + " Personality", "", page=name, available=True)
-                  for name in (*PROFILE_NAMES, "traffic"))
+      rows.append(FeatureRow("", "Driving Personalities", "Adjust Aggressive, Standard, Relaxed and Traffic profiles",
+                             page=FeaturePage.PERSONALITIES, available=True))
+    elif page == FeaturePage.PERSONALITIES:
+      title = "Driving Personalities"
+      rows = [FeatureRow("", name.title() + " Personality", "", page=name, available=True)
+              for name in (*PROFILE_NAMES, "traffic")]
     elif page == FeaturePage.VEHICLE:
       title = "Vehicle Settings"
       rows = list(self._alpha_long_rows(parked))
@@ -992,6 +996,7 @@ class FeatureSettingsOwner:
     elif page == FeaturePage.TORQUE:
       title = "Steering and Torque"
       rows.extend(FordLateralFeature(self).rows(parked))
+      rows.extend(FordPinionFeature(self).rows(parked))
       rows.extend(FordClusterFeature(self).rows(parked))
       controller_row = self.controller.row()
       if controller_row is not None:
@@ -1049,6 +1054,8 @@ class FeatureSettingsOwner:
                              repair_value="0" if not threshold_valid and unit_valid else "", default_value="0"))
     elif page == FeaturePage.WHEEL:
       title = "Wheel Controls"
+      if self.show_cruise_intervals or toyota_cruise_capability(self.vehicle_params()) is not None:
+        rows.extend(self._cruise_rows(configurable))
       rows.extend(self.wheel.rows())
     elif page == FeaturePage.SLC:
       system_long = (system_long if self.vehicle_params() is None else self.longitudinal_available()) and self.authority("slc")
@@ -1073,7 +1080,7 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row("ShowSpeedLimits", "Show speed limit signs", self.authority("preferences"),
                                  reason="Display signs independently of Speed Limit Controller; does not change cruise speed"))
       confirmation = self._bool_row("SLCConfirmation", "Automatic adoption", allowed,
-        reason="On flashes new limits for 3 seconds, then sets cruise speed; Off asks for confirmation within 10 seconds")
+        reason="On adopts new limits immediately; Off asks for confirmation within 10 seconds")
       rows.append(replace(confirmation, value={"On": "Off", "Off": "On"}.get(confirmation.value, confirmation.value), default_value="On"))
       source_capability = self._source_capability()
       vision_dev, maps_available = source_capability
@@ -1094,11 +1101,6 @@ class FeatureSettingsOwner:
           (source, *choices) if valid and source not in choices else choices,
           available=source_allowed and valid and readable and (vision_dev or maps_available or source != "Dashboard"),
           reason=reason, capability=source_capability))
-      fallback, raw, valid = self._value(SLC_FALLBACK)
-      rows.append(FeatureRow(SLC_FALLBACK, "Previous accepted limit", "On" if fallback == "2" else
-                             "Off (saved mode 0 or 1)" if fallback in ("0", "1") else "Invalid saved value", raw,
-                             ("Off", "On") if valid and fallback in ("0", "1", "2") else (),
-                             available=allowed and valid and fallback in ("0", "1", "2"), default_value="On"))
       rows.extend(offset_rows)
       title = "Speed Limit Controller"
     elif page == FeaturePage.LANE:
@@ -1130,8 +1132,6 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row(PLANNER_SELECTION_KEY, "Use StarPilot Longitudinal Planner", self.authority("preferences"),
                                  reason="Off uses the upstream planner. Supported longitudinal control stays active. Changes apply on the next drive."))
       allowed = configurable and system_long
-      if self.show_cruise_intervals or toyota_cruise_capability(self.vehicle_params()) is not None:
-        rows.extend(self._cruise_rows(configurable))
       force_enabled, _, _ = self._value("ForceStops")
       rows.append(self._bool_row("ForceStops", "Force Stop", allowed or
                                  (force_enabled == "1" and self.authority("preferences")),
@@ -1146,6 +1146,9 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row(LEAD_TAKEOFF_KEY, "Faster Takeoffs", self.authority("preferences"),
                                 reason="Improves launches from a stop and responds sooner when a lead starts moving. " +
                                        "Selected acceleration profiles, stop detection and vehicle limits still apply."))
+      rows.append(self._bool_row(NUDGE_KEY, "Experimental Speed Nudge", self.authority("preferences"),
+                                reason="Gently recovers toward set speed when Experimental mode hesitates on a clear road. " +
+                                       "Leads, stops, curve limits and driver overrides retain priority."))
       document, raw, valid = self._document()
       for category, field, label, choices in (
         ('acceleration', 'selectedAccelerationProfile', 'Selected Acceleration Profile',
@@ -1158,7 +1161,8 @@ class FeatureSettingsOwner:
                                preset_label(selected) if valid else 'Invalid document', raw,
                                tuple(preset_label(choice) for choice in choices) if valid else (),
                                available=allowed and valid,
-                               reason='Personalities set to Selected Profile follow this choice; explicit overrides stay unchanged.',
+                               reason=(CATEGORY_HELP[category] if category == 'braking' else
+                                       'Personalities set to Selected Profile follow this choice; explicit overrides stay unchanged.'),
                                default_value=preset_label('dom_default' if category == 'acceleration' else DEFAULT_DECELERATION_PROFILE)))
       health = read_profile_health(self.params)
       master = health.values["CustomPersonalities"]
@@ -1258,7 +1262,7 @@ class FeatureSettingsOwner:
                                    capability=capability, dependencies=traffic_dependencies,
                                    default_value=str(round(max(low, min(high, default_curve[index])), 4))))
     fingerprint = self.vehicle_fingerprint()
-    rows = [replace(row, vehicle_fingerprint=None if row.key in (PLANNER_SELECTION_KEY, LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY,
+    rows = [replace(row, vehicle_fingerprint=None if row.key in (PLANNER_SELECTION_KEY, LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY, NUDGE_KEY,
                                                               "ShowSpeedLimits", "AlwaysAllowUploads") or
                     row.key.startswith('conditional:') and not row.key.startswith(BUTTON_PREFIX) else fingerprint)
             for row in rows]
@@ -1309,6 +1313,8 @@ class FeatureSettingsOwner:
       return self._apply_lateral_pause(request)
     if key == "FordHandsFreeCluster":
       return FordClusterFeature(self).apply(request)
+    if key == "FordPrefSteerAngleCurvature":
+      return FordPinionFeature(self).apply(request)
     if key == "FordLateralMode":
       return FordLateralFeature(self).apply(request)
     if key == "TurnAssist":
@@ -1370,7 +1376,7 @@ class FeatureSettingsOwner:
         return False
       return save_selection(self.params, request.value, request.expected,
                             authorized=lambda: self.authority("preferences"))
-    if key in (LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY):
+    if key in (LEAD_APPROACH_KEY, LEAD_TAKEOFF_KEY, NUDGE_KEY):
       return self._apply_lead_preference(request)
     if key in CRUISE_KEYS:
       return self._apply_cruise(request)
@@ -1417,7 +1423,7 @@ class FeatureSettingsOwner:
     elif key.startswith(LONG_PREFIX):
       source_key = PERSONALITY_PROFILES_PARAM
       group = "long"
-    elif key in BOOL_DEFAULTS or key in FLOAT_SPECS or key in (SLC_FALLBACK, SLC_PRIORITY, SLC_SECONDARY):
+    elif key in BOOL_DEFAULTS or key in FLOAT_SPECS or key in (SLC_PRIORITY, SLC_SECONDARY):
       source_key = key
       long_key = (key in ("CustomPersonalities", "ForceStops", "ForceStopDistanceOffset") or "Personality" in key or
                   key.endswith(("Follow", "FollowHigh")) or "Jerk" in key)
@@ -1569,11 +1575,6 @@ class FeatureSettingsOwner:
         if key == "ForceStopDistanceOffset" and not number.is_integer():
           return False
         encoded = str(int(number)) if key == "ForceStopDistanceOffset" else str(round(number, 4))
-      elif key == SLC_FALLBACK:
-        current, _, valid = self._value(key)
-        if not valid or current not in ("0", "1", "2") or request.value not in ("On", "Off"):
-          return False
-        encoded = "2" if request.value == "On" else "0"
       else:
         if request.value not in self._source_choices():
           return False
@@ -1674,8 +1675,6 @@ class FeatureSettingsOwner:
         self.params.put(source_key, encoded, block=True)
       elif source_key in FLOAT_SPECS:
         self.params.put(source_key, int(encoded) if source_key == "ForceStopDistanceOffset" else float(encoded), block=True)
-      elif source_key == SLC_FALLBACK:
-        self.params.put(source_key, int(encoded), block=True)
       elif source_key == PERSONALITY_PROFILES_PARAM:
         return self._save_profile_document(request, str(encoded).encode(), request.expected, profile_master_source,
                                            require_capability=key.startswith("profile:traffic:"),

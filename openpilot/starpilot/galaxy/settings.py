@@ -15,6 +15,7 @@ from typing import Protocol, cast
 
 from openpilot.starpilot.ui.feature_settings_owner import FeatureSettingsOwner
 from openpilot.starpilot.galaxy.setting_descriptions import description
+from openpilot.starpilot.galaxy.localization_settings import LocalizationSettingsOwner
 from openpilot.starpilot.ui.controller_feature import SETUP_ACTION, SETUP_QUESTION
 from openpilot.starpilot.ui.vehicle_bool import VEHICLE_BOOL_KEYS, confirmation_question as vehicle_question
 from openpilot.starpilot.ui.conditional_feature import confirmation_question as conditional_question
@@ -28,7 +29,7 @@ from openpilot.starpilot.ui.feature_settings_state import (
   FeatureRow, FeatureSettingsRequest, FEATURE_CONFIRM_ACTIONS, is_long_confirm_action, row_change, row_default,
 )
 from openpilot.starpilot.saved_source import read_saved
-from openpilot.starpilot.galaxy.developer_settings import DeveloperSettingsOwner
+from openpilot.starpilot.galaxy.developer_settings import DRIVER_MONITORING_RESET, DeveloperSettingsOwner
 from openpilot.starpilot.speed_limits.vision_gate import diagnostic_choice_enabled
 from openpilot.starpilot.parked_evidence import ParkedEvidence, RESUME_SKEW_NS, fresh_offroad, host_parked
 from openpilot.starpilot.ui.pip_owner import EDITOR as PIP_EDITOR, FORMAT_PREFIX as PIP_FORMAT_PREFIX, RESET as PIP_RESET, PiPOwner, validated_editor_draft
@@ -37,15 +38,29 @@ from openpilot.starpilot.ui.sentry_owner import RESET as SENTRY_RESET, SentryOwn
 from openpilot.starpilot.ui.vasm_owner import ANNOTATION as VASM_ANNOTATION, RESET as VASM_RESET, VASMOwner, validated_annotation
 
 
-PAGES = frozenset(("hub", "developer", "vehicle", "slc", "lane", "lane_change", "profiles", "traffic", "aggressive", "standard", "relaxed",
+PAGES = frozenset(("hub", "localization", "developer", "vehicle", "slc", "lane", "lane_change", "profiles", "personalities",
+                   "traffic", "aggressive", "standard", "relaxed",
                    "curve", "torque", "aol", "wheel", "appearance", "display", "data", "sounds", "pip", "sentry", "vasm",
                    "conditional", "conditional/cem", "conditional/ccm",
                    *(f"{name}/{category}" for name in ("traffic", "aggressive", "standard", "relaxed")
                      for category in ("acceleration", "braking", "following"))))
-CONFIRM_ACTIONS = FEATURE_CONFIRM_ACTIONS
+CONFIRM_ACTIONS = FEATURE_CONFIRM_ACTIONS | {DRIVER_MONITORING_RESET}
 MAX_VIEWS = 64
 MAX_INTENTS = 64
 TTL = 60.0
+
+# Android Auto lists binary controls only.
+CAR_CONTROL_SECTIONS = (
+  ("lateral", "Lateral (Steering)", ("aol", "lane_change", "torque", "lane")),
+  ("longitudinal", "Longitudinal (Speed & Following)",
+   ("profiles", "conditional", "curve", "slc", "aggressive", "standard", "relaxed", "traffic")),
+  ("wheel", "Wheel Controls", ("wheel",)),
+  ("visual", "Visual (Display & UI)", ("appearance", "pip")),
+  ("sounds", "Sounds & Alerts", ("sounds",)),
+  ("device", "Device & Data", ("display", "data")),
+  ("localization", "Localization", ("localization",)),
+  ("developer", "Developer", ("developer",)),
+)
 
 
 class SettingsUnavailable(Exception):
@@ -124,7 +139,7 @@ def _onroad_preference(page: str, key: str) -> bool:
   # multi-key reset/repair operations need the offroad transaction boundary;
   # their owners independently recheck that requirement at commit time.
   return bool(page != "developer" and key and key != SETUP_ACTION and key not in (
-    "AlphaLongitudinalEnabled", "reset_profiles", "curve_reset", "slc_adopt", "slc_reset",
+    "IsRhdDetected", "AlphaLongitudinalEnabled", "reset_profiles", "curve_reset", "slc_adopt", "slc_reset",
     "conditional:reset", "conditional:manual_reset",
   ) and not is_long_confirm_action(key) and not key.startswith("torque_repair:"))
 
@@ -360,7 +375,7 @@ def _session_key(token: str) -> bytes:
   return hashlib.sha256(token.encode("ascii")).digest()
 
 
-def _projection(row: FeatureRow, page: str) -> dict:
+def _projection(row: FeatureRow) -> dict:
   return {"label": row.label, "value": row.value, "choices": list(row.choices), "step": row.step,
           "minimum": row.minimum, "maximum": row.maximum, "unit": row.unit,
           "available": row.available, "reason": description(row),
@@ -405,6 +420,8 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
     return f"Save {row.label.lower()} as {value}?"
   if key == SENTRY_RESET:
     return "Replace invalid saved motion settings with Off and the default sensitivity and warning time?"
+  if key == DRIVER_MONITORING_RESET:
+    return "Clear saved driver monitoring wheel-side detection? Automatic detection will run again on the next drive."
   if key.startswith("sentry:"):
     value = f"{request.value} {row.unit}".rstrip()
     return (f"Save {row.label.lower()} as {value}? This is a saved choice; " +
@@ -452,11 +469,11 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
 
 
 class SettingsGateway:
-  def __init__(self, params, context: ContextSource | None = None, *, clock=time.monotonic, android_auto=None):
+  def __init__(self, params, context: ContextSource | None = None, *, clock=time.monotonic, starport=None):
     self.params = params
     self.context = context if context is not None else LiveContextSource(params)
     self.clock = clock
-    self.android_auto = android_auto
+    self.starport = starport
     self.lock = threading.Lock()
     self.views: dict[str, _View] = {}
     self.intents: dict[str, _Intent] = {}
@@ -571,9 +588,19 @@ class SettingsGateway:
       return bool(fresh.parked and not fresh.editing_saved_vehicle and fresh.cp_raw == ctx.cp_raw)
     return DeveloperSettingsOwner(self.params, authorized,
                                   panda_wake=self._owner(ctx, live=live, session_valid=session_valid).panda_wake,
-                                  android_auto=self.android_auto)
+                                  starport=self.starport)
+
+  def _localization_owner(self, ctx: AuthorityContext, *, live: bool = False,
+                          session_valid: Callable[[], bool] = lambda: True) -> LocalizationSettingsOwner:
+    def authorized() -> bool:
+      return session_valid()
+    def parked() -> bool:
+      return session_valid() and (self.context.sample() if live else ctx).parked
+    return LocalizationSettingsOwner(self.params, authorized, parked)
 
   def _state(self, page: str, ctx: AuthorityContext):
+    if page == "localization":
+      return self._localization_owner(ctx).snapshot()
     if page == "developer":
       return self._developer_owner(ctx).snapshot()
     if page == "appearance":
@@ -629,8 +656,41 @@ class SettingsGateway:
     scope = hashlib.sha256(_session_key(token) + generation + (ctx.cp_raw or b"")).digest()
     result = {"page": page, "title": state.title, "subtitle": state.subtitle, "parked": state.parked,
               "vehicleIdentified": bool(ctx.cp is not None and getattr(ctx.cp, "carFingerprint", None)),
-              "rows": [{**_projection(row, page), "revision": hashlib.sha256(scope + repr(row).encode()).hexdigest()}
+              "rows": [{**_projection(row), "revision": hashlib.sha256(scope + repr(row).encode()).hexdigest()}
                        for row in state.rows], "view": view_id}
+    if page == "hub" or any(row.page for row in state.rows):
+      rows_by_page = {page: state}
+      visible: dict[str, bool] = {}
+
+      def page_state(name: str):
+        if name not in rows_by_page:
+          rows_by_page[name] = self._state(name, ctx)
+        return rows_by_page[name]
+
+      def has_car_control(name: str, visited: frozenset[str] = frozenset()) -> bool:
+        if name in visited or name not in PAGES:
+          return False
+        if name in visible:
+          return visible[name]
+        try:
+          rows = page_state(name).rows
+        except SettingsUnavailable:
+          visible[name] = False
+          return False
+        found = any((len(row.choices) == 2 and set(row.choices) == {"On", "Off"}) or
+                    has_car_control(row.page, visited | {name}) for row in rows)
+        visible[name] = found
+        return found
+      if page == "hub":
+        result["sections"] = []
+        for section_id, title, names in CAR_CONTROL_SECTIONS:
+          pages = [{"id": name, "title": page_state(name).title} for name in names if has_car_control(name)]
+          if pages:
+            result["sections"].append({"id": section_id, "title": title, "pages": pages})
+      else:
+        for source, projected in zip(state.rows, result["rows"], strict=False):
+          if source.page:
+            projected["carVisible"] = has_car_control(source.page)
     if page == "vasm":
       result["editor"] = editor
       result["editorRow"] = next((index for index, row in enumerate(state.rows) if row.key == VASM_ANNOTATION), -1)
@@ -766,6 +826,8 @@ class SettingsGateway:
       return self._sentry_owner(ctx, live=True, session_valid=session_valid).apply(intent.request)
     if intent.page == "vasm":
       return self._vasm_owner(ctx, live=True, session_valid=session_valid).apply(intent.request)
+    if intent.page == "localization":
+      return self._localization_owner(ctx, live=True, session_valid=session_valid).apply(intent.request)
     if intent.page == "developer":
       return self._developer_owner(ctx, live=True, session_valid=session_valid).apply(intent.request)
     owner = self._owner(ctx, live=True, session_valid=session_valid)

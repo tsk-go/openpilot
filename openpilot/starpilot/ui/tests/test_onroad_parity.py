@@ -212,12 +212,16 @@ def test_pending_confirmation_omits_redundant_speed_heading():
   view.fonts = Mock(profile=Profile.COMPACT)
   view.fonts.measure.return_value = NS(width=50, height=20)
   view.fonts.vertical_ink.return_value = (0, 20)
-  with patch.object(rl, 'draw_line_ex'):
+  view.fonts.horizontal_ink.return_value = (0, 50)
+  from openpilot.starpilot.ui.onroad_compact_widgets import CompactHudRenderer
+  view.compact_hud = CompactHudRenderer(view.fonts, Mock())
+  with patch.object(rl, 'draw_line_ex'), patch.object(rl, 'draw_rectangle_rounded'), patch.object(SpeedLimitShapes, 'confirmation'):
     view._slc_actions(state)
-  assert [call.args[0] for call in foreground_calls(view.fonts.draw)] == ['Accept', 'Decline']
+  assert [call.args[0] for call in foreground_calls(view.fonts.draw)] == ['35', 'mph', 'VISION', 'Accept', 'Reject']
 
 
 def test_compact_pending_label_and_button_follow_saved_action_placement():
+  from openpilot.starpilot.ui.onroad_state import slc_controls
   document = default_document()
   document['layouts']['compact']['speed_limit_actions']['x'] = 120
   observation = SpeedLimitObservation(kind=ObservationKind.VALID, speed_limit_mps=20,
@@ -229,10 +233,14 @@ def test_compact_pending_label_and_button_follow_saved_action_placement():
   view.fonts = Mock(profile=Profile.COMPACT)
   view.fonts.measure.return_value = NS(width=50, height=20)
   view.fonts.vertical_ink.return_value = (0, 20)
-  with patch.object(rl, 'draw_rectangle_rounded') as button, patch.object(rl, 'draw_line_ex'):
+  view.fonts.horizontal_ink.return_value = (0, 50)
+  from openpilot.starpilot.ui.onroad_compact_widgets import CompactHudRenderer
+  view.compact_hud = CompactHudRenderer(view.fonts, Mock())
+  with patch.object(rl, 'draw_rectangle_rounded') as button, patch.object(rl, 'draw_line_ex'), patch.object(SpeedLimitShapes, 'confirmation'):
     view._slc_actions(state)
-  assert foreground_calls(view.fonts.draw)[0].args[3:5] == (179, 203)
-  button.assert_not_called()
+  assert [call.args[0] for call in foreground_calls(view.fonts.draw)][-2:] == ['Accept', 'Reject']
+  assert button.call_count == 4
+  assert slc_controls(Profile.COMPACT, state)[0].bounds == (156., 48., 300., 160.)
 
 
 def test_fresh_physical_blinker_uses_upstream_art_without_optional_border():

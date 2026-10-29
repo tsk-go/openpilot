@@ -26,6 +26,7 @@ from tools.ci import lifecycle_shards, vehicle_pytest
 AOL_LIFECYCLE_TARGETS = (
   "opendbc_repo/opendbc/car/hyundai/tests/test_torque_ev_deferred_takeover.py",
   'openpilot/starpilot/tests/test_ford_bluepilot_aol.py',
+  'opendbc_repo/opendbc/bluepilot_lateral/tests/test_angle_core.py',
   'opendbc_repo/opendbc/safety/tests/test_ford_bluepilot_aol.py',
   'openpilot/starpilot/aol/tests/test_hkg_early_long_withdrawal.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock.py',
@@ -240,6 +241,7 @@ DEBUG_SAFETY_CLASS_TARGETS = {
 
 RELEASE_TARGETS = (
   'openpilot/starpilot/tests/test_ford_bluepilot_aol.py',
+  'opendbc_repo/opendbc/bluepilot_lateral/tests/test_angle_core.py',
   'opendbc_repo/opendbc/safety/tests/test_ford_bluepilot_aol.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock_callers.py',

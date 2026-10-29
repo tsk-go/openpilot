@@ -8,7 +8,7 @@ import pytest
 from openpilot.starpilot.ui.onroad_customization import (
   CLOCK_WIDGET, DEFAULT_WIDGET_ORDER, MODE_WIDGET, PROFILES, customization_metadata, decode_document, default_document, validate_document,
 )
-from openpilot.starpilot.system.android_auto.projection_layout import (
+from openpilot.starpilot.system.starport.projection_layout import (
   CAR_EXIT, default_layout_for_viewport, decode_layout_for_viewport, layout_metadata_for_viewport, projection_customization,
   validate_layout_for_viewport,
 )
@@ -111,7 +111,7 @@ def test_renderer_dispatches_each_widget_in_saved_order(profile, viewport):
   method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == '_ordered_widgets')
   namespace: dict[str, Any] = {'CLOCK_WIDGET': CLOCK_WIDGET, 'MODE_WIDGET': MODE_WIDGET, 'placement': placement, 'widget_order': widget_order,
                              'RAIL_WIDGETS': RAIL_WIDGETS, 'STOPPED_TIMER_WIDGET': STOPPED_TIMER_WIDGET,
-               'AlertSize': NS(NONE='none', FULL='full'), 'CameraViewChoice': NS(NONE='none'),
+               'manual_slc_confirmation': lambda profile, state: False, 'AlertSize': NS(NONE='none', FULL='full'), 'CameraViewChoice': NS(NONE='none'),
                'rl': NS(Rectangle=lambda x, y, width, height: NS(x=x, y=y, width=width, height=height))}
   exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
   seen = []

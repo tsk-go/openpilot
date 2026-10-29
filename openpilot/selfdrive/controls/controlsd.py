@@ -12,6 +12,7 @@ from openpilot.common.constants import CV
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper, set_core_affinity
+from openpilot.selfdrive.controls.lib.cycle_timing import ControlCycleTiming
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
@@ -37,7 +38,7 @@ from openpilot.starpilot.lateral.lane_centering import (
   LaneCenteringController, LaneCenteringInput, LaneCenteringRequest, LaneCenteringResult,
 )
 from openpilot.starpilot.lateral.lane_feedback import feedback_message
-from openpilot.starpilot.lateral.lane_clearance import body_dimensions_required, current_delay, interface_dimensions
+from openpilot.starpilot.lateral.lane_clearance import current_delay, interface_dimensions
 from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
 from openpilot.starpilot.lateral.lane_change_smoothing import LaneChangeSmoother, limit_rate
 from openpilot.starpilot.lateral.lane_runtime import LaneCenteringHost, runtime_supported as lane_runtime_supported
@@ -58,7 +59,9 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 
 class Controls:
-  def __init__(self) -> None:
+  def __init__(self, *, predict_lane_clearance: bool = False) -> None:
+    if type(predict_lane_clearance) is not bool:
+      raise TypeError("Invalid lane-clearance selection")
     self.params = Params()
     cloudlog.info("controlsd is waiting for CarParams")
     self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
@@ -96,8 +99,8 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.model_turn_assist = ModelTurnAssist()
-    self.lane_centering_controller = LaneCenteringController(body=interface_dimensions(self.CI, self.CP),
-                                                          body_required=body_dimensions_required(self.CI, self.CP))
+    self.lane_centering_controller = (LaneCenteringController(body=interface_dimensions(self.CI, self.CP), body_required=True)
+                                      if predict_lane_clearance else LaneCenteringController())
     self.lateral_pause = LateralPause(read_lateral_pause(self.params), self.params)
     self.lane_change_preferences = LiveLaneChangePolicy(self.params,
       now_ns=0 if os.getenv('REPLAY') == '1' else time.monotonic_ns())
@@ -147,8 +150,8 @@ class Controls:
     assist_enabled = self.vehicle_startup_preferences.turn_assist and model_turn_assist_supported(self.CP)
     self.turn_assist_enabled = lambda: assist_enabled
 
-  def update(self):
-    self.sm.update(15)
+  def update(self, timeout: int = 15):
+    self.sm.update(timeout)
     if self.sm.updated["extrinsicsCalibration"]:
       self.pose_calibrator.feed_extrinsics_calibration(self.sm['extrinsicsCalibration'])
     if self.sm.updated["deviceMotion"]:
@@ -178,12 +181,16 @@ class Controls:
       self.LaC.__dict__.pop(name, None)
 
   def state_control(self, *, lane_centering: LaneCenteringRequest | None = None):
+    cycle_timing = getattr(self, 'control_cycle_timing', None)
+    if cycle_timing is not None:
+      cycle_timing.start()
     diagnostic_observer = getattr(self, 'aol_transition_diagnostic', None)
     diagnostic_entry = diagnostic_gate = diagnostic_native = None
     diagnostic_reason = ''
     diagnostic_initial_lateral = diagnostic_onset = True
     lateral_inputs_refreshed = False
     late_gm_refresh = False
+    refresh_combined_long = False
     if (self.aol_replay and os.getenv('REPLAY') != '1' and
         getattr(self, 'aol_previous_lateral_active', False)):
       refresh_now_ns = time.monotonic_ns()
@@ -192,6 +199,9 @@ class Controls:
       late_gm_refresh = self.CP.brand == 'gm'
       if not late_gm_refresh:
         lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=refresh_now_ns)
+    if (self.lane_centering_host is not None and os.getenv('REPLAY') != '1' and
+        self.lane_centering_host.inputs_need_refresh(self.sm, now_ns=time.monotonic_ns())):
+      self.update(0)
     CS = self.sm['carState']
     self.flm_native_witness = None
     if self.lateral_gain_owner is not None:
@@ -219,16 +229,6 @@ class Controls:
           apply=lambda: self.LaC.update_torque_parameters(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                                         torque_params.frictionCoefficientFiltered))
 
-    if late_gm_refresh:
-      # Consume queued evidence after optional preparation, immediately before
-      # authority selection. Preparation may outlive the previously fresh proof.
-      # The helper never extends a deadline or receives for active LONG.
-      lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=time.monotonic_ns())
-      if lateral_inputs_refreshed:
-        CS = self.sm['carState']
-        steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
-        self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
-
     long_plan = self.sm['longitudinalPlan']
     model_v2 = self.sm['modelV2']
 
@@ -243,6 +243,19 @@ class Controls:
     CC.longActive = self.longitudinal_inputs.qualify_active(CC.longActive)
     if self.aol_replay:
       now_ns = int(self.sm.logMonoTime['carState']) if os.getenv('REPLAY') == '1' else time.monotonic_ns()
+      if late_gm_refresh:
+        # Use the authority check's clock sample: a proof can expire after the
+        # earlier preparation/qualification work, even when it was fresh on entry.
+        previous_axis = self.sm['aolAxisState']
+        refresh_combined_long = bool(CC.longActive and previous_axis.longitudinalActive and previous_axis.desiredLongitudinal)
+        lateral_inputs_refreshed = refresh_expired_lateral_snapshot(self.sm, now_ns=now_ns, allow_combined=True)
+        if lateral_inputs_refreshed:
+          CS = self.sm['carState']
+          CC.enabled = self.sm['selfdriveState'].enabled
+          standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
+          steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
+          self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
+          now_ns = time.monotonic_ns()
       axis = current_axis(self.sm, now_ns=now_ns)
       native = current_native(self.sm, self.CP, now_ns=now_ns,
                               axis_session_id=str(axis.sessionId) if axis is not None else None)
@@ -273,10 +286,10 @@ class Controls:
                             on_validated_native=lambda native: setattr(self, 'flm_native_witness', native)))
 
     if lateral_inputs_refreshed:
-      # A newly received physical veto wins over an older admitted axis. This
-      # LAT-only refresh cannot enable ordinary LONG; its next normal cycle owns that transition.
+      # Fresh receipts can continue a requested GM LONG axis. A LAT-only refresh
+      # cannot start LONG, and a newly received physical veto still wins.
       CC.latActive = bool(CC.latActive and CS.canValid and not CS.canTimeout)
-      CC.longActive = False
+      CC.longActive = bool(refresh_combined_long and CC.enabled and CC.longActive and CS.canValid and not CS.canTimeout)
 
     fault_latch = getattr(self, 'hyundai_lateral_fault', None)
     if fault_latch is not None:
@@ -322,6 +335,8 @@ class Controls:
       if not CC.latActive:
         self.LaC.pid.reset()
 
+    if cycle_timing is not None:
+      cycle_timing.mark()
     actuators = CC.actuators
     actuators.longControlState = self.LoC.long_control_state
 
@@ -348,6 +363,8 @@ class Controls:
       # Publish the selected launch state to the vehicle controller in this same frame.
       actuators.longControlState = self.LoC.long_control_state
 
+    if cycle_timing is not None:
+      cycle_timing.mark()
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
     if self.sm.valid['lateralManeuverPlan']:
@@ -420,6 +437,8 @@ class Controls:
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS + subaru_smooth_seconds(CS.vEgo, control_maximum(self))
 
     actuators.curvature = self.desired_curvature
+    if cycle_timing is not None:
+      cycle_timing.mark()
     automatic = getattr(self, 'global_learning', None)
     if automatic is not None:
       try:
@@ -439,6 +458,8 @@ class Controls:
       except Exception:
         self._discard_global_learning()
         automatic = None
+    if cycle_timing is not None:
+      cycle_timing.mark()
     steer, lateral_output, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                      self.steer_limited_by_safety, self.desired_curvature,
                                                      curvature_limited, lat_delay)
@@ -485,6 +506,8 @@ class Controls:
         diagnostic_observer.disabled = True
         diagnostic_observer.pending = None
     self.aol_previous_lateral_active = bool(CC.latActive)
+    if cycle_timing is not None:
+      cycle_timing.mark()
     return CC, lac_log
 
   def publish(self, CC, lac_log):
@@ -573,7 +596,7 @@ class Controls:
     feedback = feedback_message(
       self.last_lane_centering_result, self.lane_centering_applied, CC.latActive,
       model_mono_time=self.sm.logMonoTime['modelV2'], car_control_mono_time=cc_send.logMonoTime,
-      valid=bool(CS.canValid and self.sm.all_checks(['modelV2'])), inactive_reason=self.lane_centering_inactive_reason)
+      valid=bool(CS.canValid and self.sm.all_checks(['modelV2'])), inactive_reason=getattr(self, 'lane_centering_inactive_reason', 'inactive'))
     automatic = getattr(self, 'global_learning', None)
     if automatic is not None:
       try:
@@ -610,6 +633,7 @@ class Controls:
   def run(self):
     rk = Ratekeeper(100, print_delay_threshold=None)
     next_overrun_log_ns = 0
+    self.control_cycle_timing = ControlCycleTiming()
     while True:
       started, cpu_started = time.monotonic_ns(), time.thread_time_ns()
       self.update()
@@ -624,7 +648,8 @@ class Controls:
         cloudlog.event('controls_cycle_overrun', update_ms=(updated - started) / 1e6,
                        control_ms=(controlled - updated) / 1e6, publish_ms=(published - controlled) / 1e6,
                        wall_ms=(published - started) / 1e6, cpu_ms=(time.thread_time_ns() - cpu_started) / 1e6,
-                       error=True)
+                       control_phases=self.control_cycle_timing.snapshot(),
+                       control_phases_complete=self.control_cycle_timing.complete, error=True)
       rk.monitor_time()
 
 

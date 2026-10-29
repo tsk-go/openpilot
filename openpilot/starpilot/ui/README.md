@@ -4,6 +4,33 @@ StarPilot uses separate large (C3) and compact (C4) layouts over the native
 camera, model renderer and application lifecycle. The same presentation
 components serve the device and Galaxy's sample layout preview.
 
+## Hardware and physical sizing
+
+Use these native-device baselines when designing and reviewing text, controls
+and touch targets:
+
+| Profile | OLED display | Native resolution | Density | Native pixels per mm |
+| --- | --- | --- | --- | --- |
+| Large (C3/3X) | 6-inch | 2160 × 1080 | Approximately 402.5 PPI, derived from the diagonal | 15.85 |
+| Compact (C4) | Nominally 1.9-inch touchscreen | 536 × 240 | Published 300 PPI | 11.81 |
+
+For compact sizing, use the published 300 PPI directly; do not derive a different
+density from the rounded 1.9-inch diagonal. Convert with
+`mm = native_pixels × 25.4 / PPI`. For example, a 10 mm target needs at least
+159 native pixels on large or 119 on compact. These are size conversions, not
+validated usability minimums.
+
+Reviews must distinguish visible lettering, the painted control and its full
+touch area. Measure lettering after profile font scaling and layout transforms;
+the nominal font size is not its visible height. `BitmapFonts.vertical_ink` and
+`horizontal_ink` provide the renderer's glyph bounds. Keep opposing touch actions
+separated and their hit areas nonoverlapping. Check clearance against the torque
+bar's maximum footprint, rather than only the output shown in one capture.
+
+Desktop previews, Galaxy zoom and projected displays do not establish physical
+size on these devices. Confirm legibility and reach at the normal windshield
+mounting position on actual hardware before treating a design as validated.
+
 ## Runtime ownership
 
 - `runtime_app.py` connects the native navigation, touch handling, camera layers
