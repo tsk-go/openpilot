@@ -292,6 +292,36 @@ Paths are under `openpilot/` unless noted.
     of StarView's MainActivity at every ignition on. MainActivity is singleTask, so that closed every StarView screen
     above it (Settings, Doors & belts...) even with the tablet on and showing StarView. `_tablet_wake` now asks
     `dumpsys window` which app is in front (mFocusedApp, then mCurrentFocus) and starts StarView only when it isn't.
+38. The key fob while the car runs (patch 61): an RTL-SDR dongle (Nooelec NESDR, 0bda:2838) on the comma's hub hears
+    the Sienna's fob. `fob_radio.py` (rtl_sdr 313.22 MHz at 2.56 MS/s | python, both nice 10 - it only runs parked, ~1.5 % of the comma):
+    the fob alternates press by press between 312.099 and 314.349 MHz, 2-FSK +-14.3 kHz, 2860 chips/s Manchester,
+    256-bit frames x4 per press; bits 200-235 are the fob's fixed ID (normal or inverted), the rest is encrypted, so
+    Lock and Unlock look the same. One FFT per 10 ms: each channel against the bands beside it (the van is full of
+    wideband hash near 312.3-312.6 MHz that a noise-floor detector took for presses and queued decodes behind -
+    3-5 s delays); bursts under 0.5 s and the tuner's first second are ignored, each channel tracked on its own, a
+    decode that waited > 3 s is dropped; a worker decodes the first 0.8 s (~0.5 s on the comma: two-tone energy,
+    chip clock from the flips, repeats added). Bursts that aren't a learned fob are only counted ("others"), not
+    logged; fob.json is re-read when it changes. `fob.py` FobWatch in starviewd (`start_fob`): car on in Park (card's
+    DRIVER_DOOR) - a press flips the locks as soon as it's decoded (tries 0.25 s and 0.4 s in - the ID template finds
+    even one frame - the full one at 0.6 s if neither matched; ~0.9 s press -> car confirmed, was 3-5 s) through
+    `_door` with
+    StarLock's sound settings: the opposite of the comma's own last command within 10 s, else by the driver's door
+    (lock_state lags up to 2 s; "any door unlocked" locked twice in a row); a refusal (7F right after starting) is
+    tried once more. A press within 5 s of the last one does nothing (logged "already ..."): from farther away the
+    owner pressed Unlock again while the first was on its way, and the toggle locked it back. Car off within StarLock's 30 min (and card's last word Park, so openpilot stopping while driving
+    never counts) - a button held 2.5 s holds relay 3 (`window_close`, which locks too) for 15 s from a thread of its
+    own, also after letting go: the fob stops sending after ~5 s whatever, and holding the relay only while it sent
+    gave the van ~1 s - it closed the windows once in 9. A short press of a learned fob (new code), the car starting
+    or leaving Park stops it; holding again keeps it closing (a hold stopping it read as "try a few times") - not just any burst: a hold that fades for a moment comes back as a "new" burst with the
+    same code (ignored quietly within 10 s), and stopping on any burst ended the windows before they began. Any held button counts (they all look alike); the 2.5 s keeps slide-door / panic holds out. Driving - radio
+    off. Each logged press carries heard_ms (press start -> decided), decode_ms, lag_ms (reader behind the radio, from
+    the best second of the last 10 - samples dropped as the car turns off read as a steady 1.5 s otherwise), door_ms,
+    db (how far the channel stood above its sides: ~18 near the van, decoding still works a good way below 6) and the
+    learned fob's frame (to look for a plain button code). Learned IDs only (/data/starview/fob.json); a code already heard is ignored (/data/starview/fob/seen.json,
+    last 500, also codes heard switched off or learning) - that stops verbatim replays, not forged frames (the ID is
+    in the clear). Presses logged to /data/starview/fob/events.jsonl. rtl_sdr comes from
+    /data/tools/rtl_build.sh (not in the repo); without it or the dongle it stays off. Action `fob` {op: status | set
+    | learn | forget | history}; StarView 2.79.0 Device > Driving > Key fob. Off for good: /data/starview/no_fob.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

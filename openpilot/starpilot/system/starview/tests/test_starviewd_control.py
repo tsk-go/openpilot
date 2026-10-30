@@ -684,3 +684,20 @@ def test_car_on_never_restarts_starview_when_it_is_already_in_front(monkeypatch,
   assert starviewd._tablet_wake(awake) == expect
   assert (("shell", "am", "start", "-n", "com.starpilot.starview/.MainActivity") in calls) == started
   assert (("shell", "input", "keyevent", "KEYCODE_WAKEUP") in calls) == (not awake)
+
+
+def test_fob_screen_requests(tmp_path):
+  from openpilot.starpilot.system.starview import fob
+  hub = make_hub(started=True)
+  assert hub.control({"action": "fob"}) == {"ok": False, "error": "the key fob listener isn't running"}
+  hub.fob = fob.FobWatch(started=lambda: True, after_off=lambda: False, door=lambda cmd: {"ok": True},
+                         lock_state=lambda: {"doors": {}}, window=lambda hold: {"ok": True}, parked=lambda: True,
+                         dongle=lambda: False, config_path=str(tmp_path / "fob.json"),
+                         events_path=str(tmp_path / "events.jsonl"), seen_path=str(tmp_path / "seen.json"))
+  st = hub.control({"action": "fob"})
+  assert st["ok"] and st["on"] is True and st["ids"] == [] and st["mode"] == "car"
+  assert hub.control({"action": "fob", "op": "set", "on": False})["on"] is False
+  assert hub.control({"action": "fob", "op": "learn"})["learning"] == 60
+  assert hub.control({"action": "fob", "op": "forget", "id": "c8a4ab584"})["ids"] == []
+  assert hub.control({"action": "fob", "op": "history"}) == {"ok": True, "events": []}
+  assert hub.control({"action": "fob", "op": "nope"})["ok"] is False

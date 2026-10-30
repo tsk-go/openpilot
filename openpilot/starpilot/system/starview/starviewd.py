@@ -887,6 +887,7 @@ class Hub:
     self.phone_signal = PhoneSignal()
     self.autolock = AutoLock(lambda cmd, sound, beeps: self._door({"cmd": cmd, "sound": sound, "beeps": beeps}),
                              self.phone_signal.read, log=cloudlog.warning)
+    self.fob = None           # the key fob listener (fob.py), started by start_fob
     # StarView runs as its own service (service.py) and outlives openpilot: deviceState (2 Hz) tells whether it's up
     self.openpilot_down = False
     self._ds_sock = None
@@ -1641,7 +1642,7 @@ class Hub:
       return {"ok": False, "error": "Windows close with the car off (like holding the key in the door)."}
     try:
       return self.blinker.window(hold)
-    except (RuntimeError, OSError) as e:
+    except Exception as e:      # RuntimeError / OSError / termios.error: the relay box isn't there or went away
       return {"ok": False, "error": str(e)}
 
   OFFLINE_CHECK_S = 30.0
@@ -1749,6 +1750,28 @@ class Hub:
     except OSError as e:
       return {"ok": False, "error": str(e)[:200]}
     return {"ok": False, "error": "unknown doors & belts request"}
+
+  def fob_action(self, req: dict) -> dict:
+    """The tablet's Key fob screen (fob.py). op "status" (default): switch, learned fobs, what the radio is doing, the
+    last presses; "set" {"on"}; "learn": the next fob pressed twice in 60 s is added; "forget" {"id"}; "history"."""
+    w = getattr(self, "fob", None)
+    if w is None:
+      return {"ok": False, "error": "the key fob listener isn't running"}
+    op = str(req.get("op") or "status")
+    try:
+      if op == "status":
+        return w.status()
+      if op == "set":
+        return w.set_on(bool(req.get("on")))
+      if op == "learn":
+        return w.learn()
+      if op == "forget":
+        return w.forget(str(req.get("id") or ""))
+      if op == "history":
+        return {"ok": True, "events": w.history()}
+    except OSError as e:
+      return {"ok": False, "error": str(e)[:200]}
+    return {"ok": False, "error": "unknown key fob request"}
 
   def lock_state(self) -> dict:
     """The doors' real lock state (card writes LOCKS on a change, door_locks.py): {"doors": {driver, passenger, slide_1,
@@ -1941,6 +1964,8 @@ class Hub:
         return self.offline_door(req)
       if act == "doorbelt":  # {"op": ...}: the doors & belts screen - history, live (in Park) and Learn (doorbelt.py)
         return self.doorbelt(req)
+      if act == "fob":  # {"op": ...}: the key fob screen - switch, learn / forget fobs, presses heard (fob.py)
+        return self.fob_action(req)
       if act == "locks":  # the doors' real lock state (door_locks.py via card)
         return {"ok": True, **self.lock_state()}
       if act == "window":  # {"hold": bool} every 250 ms while held: StarLock's hold-to-close (relay 3, car off)
@@ -3190,6 +3215,30 @@ def locks_watch(hub, ble_door, period=1.0, rounds=None):
     time.sleep(period)
 
 
+FOB_OFF = "/data/starview/no_fob"
+
+
+def start_fob(hub):
+  """The key fob through an RTL-SDR dongle (fob.py): car on in Park - a press locks / unlocks; car just turned off -
+  holding Lock closes the windows. The radio only runs then (and with the dongle plugged in). Off for good with
+  /data/starview/no_fob; the tablet's switch turns it off too."""
+  if os.path.exists(FOB_OFF):
+    return
+  try:
+    from openpilot.starpilot.system.starview import autolock, fob
+
+    def door(cmd):
+      cfg = autolock.load_config()    # StarLock's horn / beep settings
+      return hub._door({"cmd": cmd, "sound": cfg["sound"], "beeps": cfg["lock_beeps" if cmd == "lock" else "unlock_beeps"]})
+
+    hub.fob = fob.FobWatch(started=lambda: hub.started, after_off=lambda: not hub.started and not hub.openpilot_down and hub.ble_wanted(),
+                           door=door,
+                           lock_state=hub.lock_state, window=hub.window_close, log=cloudlog.warning)
+    threading.Thread(target=fob.run, args=(hub.fob,), name="starview-fob", daemon=True).start()
+  except Exception as e:
+    cloudlog.warning(f"starview: key fob: {e}")
+
+
 def start_autolock(hub):
   """StarLock auto-lock / auto-unlock (autolock.py): idle (two stat() calls every 0.5 s) unless switched on in StarLock
   and armed by the driver's door closing in Park."""
@@ -3212,6 +3261,7 @@ def main():
   threading.Thread(target=tablet_flag_thread, args=(app["hub"],), name="starview-tabletflag", daemon=True).start()
   start_ble_door(app["hub"])
   start_autolock(app["hub"])
+  start_fob(app["hub"])
   app.add_routes([
     web.get("/", http_index),
     web.get("/status", http_status),
