@@ -29,6 +29,8 @@ FETCH_HEAD`), then a normal push. firestar's repo moved from firestar5683/StarPi
 address still redirects). Oct 29: firestar folded `SecretGoodStarPilot` into `Dom` and deleted it, so this repo's
 `Dom` branch was started from `SecretGoodStarPilot_v2` (all our patches through 57) and syncs from `Dom` now;
 `SecretGoodStarPilot_v2` and `SecretGoodStarPilot_v2-pre-oct26` are kept as they were and no longer synced.
+Nov 1: synced `Dom` up to upstream `195b7000` (230 commits; one conflict, updated.py - see fork fix 3 below; panda
+images rebuilt from source).
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
@@ -84,6 +86,9 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    normal_update's last stage is "rebooting" and the reboot installs it, but recover_fast_state turns every unfinished
    stage into "Update process restarted before completion". Upstream fixed = normal_update ends with stage "complete"
    (like fast_update does) or recover_fast_state accepts a full update's reboot.
+   Nov 1 (Dom sync, conflict): upstream rewrote `recover_fast_state` (it keeps the saved state's fields and also ends an
+   interrupted metadata check) but still marks the full update's own "rebooting" stage as failed, so the merge took
+   upstream's function with our one check at its top (the install reboot -> stage complete). Still needed.
 4. **The comma four restarts all night once it shut down while parked** (patch 50): in
    `openpilot/system/hardware/power_monitoring.py` `PARKED_OFF_MARKER`, `PARKED_RESTART_SHUTDOWN_S`, `mark_parked_off`,
    `clear_parked_off` and the `quick` lines of `should_shutdown`; in `hardwared.py` the two calls; the

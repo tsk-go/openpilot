@@ -148,6 +148,23 @@ def feed(controls, timestamp, tick, *, active=True, enabled=True, fault=False, o
 
 
 class LaneRuntimeTests(unittest.TestCase):
+  def test_two_lines_do_not_add_curvature_that_opposes_current_spacing_goal(self):
+    with OpenpilotPrefix(), mock.patch.dict(os.environ, {'AOL_REPLAY_RUNTIME': '0', 'REPLAY': '1'}), \
+         mock.patch('openpilot.selfdrive.controls.controlsd.messaging.PubMaster'):
+      params = Params()
+      publish_corolla_params(params)
+      params.put_bool('LaneCentering', True, block=True)
+      params.put('LaneCenteringE2EAuthority', 0., block=True)
+      controls = Controls()
+      m = model(left=-1.8, right=1.8, path=-.5)
+      with mock.patch(f'{__name__}.model', return_value=m):
+        for tick in range(100):
+          feed(controls, 1_000_000_000 + tick * 10_000_000, tick)
+          controls.state_control()
+      self.assertIsNotNone(controls.last_lane_centering_result)
+      self.assertEqual(controls.lane_centering_applied, 0.)
+      self.assertAlmostEqual(controls.desired_curvature, .0002)
+
   def test_receive_queued_state_before_control_without_extending_old_input(self):
     from openpilot.starpilot.lateral.tests.test_lane_centering import single
     for queued in ('fresh', 'empty', 'override', 'fault', 'disabled'):
@@ -971,6 +988,28 @@ class LaneRuntimeTests(unittest.TestCase):
       self.assertEqual(predicted.lane_centering_applied, 0.)
       self.assertEqual(predicted.CP.to_dict(), ordinary.CP.to_dict())
 
+  def test_half_breakaway_defaults_reset_and_preserve_saved_preferences(self):
+    from openpilot.starpilot.lateral.lane_centering import LaneCenteringSettings
+    from openpilot.starpilot.ui.controller_feature import SETUP_DEFAULTS
+    with OpenpilotPrefix():
+      params = Params()
+      key = 'LaneCenteringE2EAuthority'
+      self.assertIsNone(params.get(key))
+      self.assertEqual(params.get_default_value(key), .5)
+      self.assertEqual(LaneCenteringSettings().e2e_authority, .5)
+      self.assertEqual(read_settings(params).e2e_authority, .5)
+      self.assertEqual(SETUP_DEFAULTS[key], b'0.5')
+      self.assertIsNone(params.get(key))
+      for value in (0., .3, 1.):
+        params.put(key, value, block=True)
+        before = Path(params.get_param_path(key)).read_bytes()
+        self.assertEqual(read_settings(params).e2e_authority, value)
+        self.assertEqual(Path(params.get_param_path(key)).read_bytes(), before)
+        self.assertEqual(params.get_default_value(key), .5)
+      params.remove(key)
+      self.assertEqual(read_settings(params).e2e_authority, .5)
+      self.assertIsNone(params.get(key))
+
   def test_saved_settings_bounds_and_corruption(self):
     with OpenpilotPrefix():
       params = Params()
@@ -1090,8 +1129,10 @@ class LaneRuntimeTests(unittest.TestCase):
               self.assertIsNone(result)
             elif phase == 'signal':
               self.assertLess(result.correction, previous)
-            elif tick >= 20:
-              self.assertGreater(result.correction, previous)
+            elif tick >= 30:
+              # Wait for two delay packets; guarded correction may then settle.
+              self.assertGreater(result.correction, 0.)
+              self.assertGreater(command.actuators.curvature, reference.actuators.curvature)
             previous = result.correction if result is not None else 0.0
 
   def test_actual_aol_lateral_only_controls_without_longitudinal(self):

@@ -54,7 +54,7 @@ class ControlMode(StrEnum):
 class LaneCenteringSettings:
   enabled: bool = False
   offset_m: float = 0.0
-  e2e_authority: float = 1.0
+  e2e_authority: float = 0.5
   pause_on_signal: bool = True
   strength: float = STRENGTH_BASELINE
 
@@ -310,6 +310,9 @@ class LaneCenteringController:
         x, y = self._tracker.path
         source = self._clearance_observation
         offset = source.settings.offset_m if source is not None else 0.
+        if self._tracker.side is None and self._tracker.width is not None:
+          bound = min(MAX_OFFSET, max(0., self._tracker.width * .5 - MIN_CENTER_TO_LINE))
+          offset = clip_scalar(offset, -bound, bound)
         allowed = limit_tracking((x, y + offset), base, allowed, measured, speed, checked_delay)
       if self._body is not None:
         allowed = limit_correction(model, base, allowed, measured, speed, checked_delay, self._body)

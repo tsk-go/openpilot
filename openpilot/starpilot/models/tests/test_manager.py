@@ -200,6 +200,68 @@ class ModelManagerTest(unittest.TestCase):
     self.assertFalse(self.model_status()['installed'])
     self.assertFalse(self.wait_for_check()['installed'])
 
+  def test_verification_survives_manager_restart_but_selection_still_hashes(self):
+    self.download()
+    self.assertTrue(self.wait_for_check()['installed'])
+    self.manager.close()
+    self.manager = ModelManager(root=self.root, parked=lambda: True, gpu_present=lambda: True)
+    self.addCleanup(self.manager.close)
+    with patch('openpilot.starpilot.models.manager.verified_artifact', return_value=None) as verify:
+      row = self.model_status()
+      self.assertTrue(row['selectable'])
+      self.assertFalse(row['checking'])
+      verify.assert_not_called()
+      with self.assertRaises(ModelError):
+        self.manager.action('active', {'profile': 'small', 'model': 'gwm8223'})
+      verify.assert_called()
+
+  def test_persisted_verification_invalidates_file_and_catalog_changes(self):
+    self.download()
+    self.assertTrue(self.wait_for_check()['installed'])
+    self.manager.close()
+    path = self.root / 'gwm8223/gwm8223_driving_tinygrad.pkl'
+    original_stat = path.stat()
+    path.write_bytes(b'x' * len(self.data))
+    import os
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    self.manager = ModelManager(root=self.root, parked=lambda: True, gpu_present=lambda: True)
+    self.addCleanup(self.manager.close)
+    self.assertFalse(self.wait_for_check()['selectable'])
+    self.assertEqual(resolve_runtime(True, root=self.root).small_id, DEFAULT_SMALL)
+    row = catalog(self.root)['gwm8223']
+    row = {**row, 'artifact_sha256': '0' * 64}
+    installed, _ = self.manager._snapshot_installed('gwm8223', row)
+    self.assertFalse(installed)
+
+  def test_persisted_verification_rejects_changed_catalog_for_unchanged_file(self):
+    self.download()
+    self.assertTrue(self.wait_for_check()['installed'])
+    self.manager.close()
+    self.manager = ModelManager(root=self.root, parked=lambda: True, gpu_present=lambda: True)
+    self.addCleanup(self.manager.close)
+    row = {**catalog(self.root)['gwm8223'], 'artifact_sha256': '0' * 64}
+    with patch('openpilot.starpilot.models.manager.verified_artifact', return_value=None) as verify:
+      installed, _ = self.manager._snapshot_installed('gwm8223', row)
+      self.assertFalse(installed)
+      worker = self.manager.verify_worker
+      if worker is not None:
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+      self.manager.close()
+      verify.assert_called()
+
+  def test_invalid_verification_receipt_rehashes(self):
+    self.download()
+    self.assertTrue(self.wait_for_check()['installed'])
+    self.manager.close()
+    (self.root / '.verified/gwm8223-standard.json').write_text('{broken')
+    self.manager = ModelManager(root=self.root, parked=lambda: True, gpu_present=lambda: True)
+    self.addCleanup(self.manager.close)
+    from openpilot.starpilot.models.manager import verified_artifact
+    with patch('openpilot.starpilot.models.manager.verified_artifact', wraps=verified_artifact) as verify:
+      self.assertTrue(self.wait_for_check()['installed'])
+      verify.assert_called()
+
   def test_snapshot_does_not_wait_for_artifact_hash(self):
     self.download()
     self.manager.checked.clear()
@@ -805,6 +867,59 @@ class ModelManagerTest(unittest.TestCase):
     finally:
       release.set()
       self.manager.worker.join(3)
+
+
+  def test_dead_verifier_recovers_without_bypassing_the_checksum(self):
+    self.download()
+    self.assertTrue(self.wait_for_check()['installed'])
+    if self.manager.verify_worker is not None:
+      self.manager.verify_worker.join(3)
+    self.manager.checked.pop('gwm8223:standard')
+    signature = self.manager._signature('gwm8223', catalog(self.root)['gwm8223'])
+    assert signature is not None
+    worker = threading.Thread(target=lambda: None)
+    worker.start()
+    worker.join(1)
+    self.manager.verify_worker = worker
+    self.manager.verifying['gwm8223:standard'] = signature
+    from openpilot.starpilot.models import manager as module
+    with patch.object(module, 'verified_artifact', wraps=module.verified_artifact) as verify:
+      self.assertTrue(self.wait_for_check()['selectable'])
+      self.assertTrue(any(call.args[0] == 'gwm8223' for call in verify.call_args_list))
+    path = self.root / 'gwm8223/gwm8223_driving_tinygrad.pkl'
+    path.write_bytes(b'x' * len(self.data))
+    self.assertFalse(self.wait_for_check()['selectable'])
+
+  def test_one_verification_error_does_not_strand_other_models(self):
+    self.download()
+    other = next(row for row in self.manifest['models'] if row['id'] == 'pop223')
+    other.update({key: self.row[key] for key in ('artifact_format', 'artifact_sha256', 'artifact_size', 'artifact_chunk_count')})
+    atomic_json(self.root / 'catalog.json', self.manifest)
+    path = self.root / 'pop223/pop223_driving_tinygrad.pkl'
+    path.parent.mkdir(parents=True)
+    path.write_bytes(self.data)
+    self.manager.checked.clear()
+    from openpilot.starpilot.models import manager as module
+    original = module.verified_artifact
+
+    def interrupted(mid, *args):
+      if mid == 'gwm8223':
+        raise RuntimeError('fixture verifier interrupted')
+      return original(mid, *args)
+
+    # Suppress the expected baseline thread exception; assertions check results.
+    with patch.object(module, 'verified_artifact', side_effect=interrupted), patch('threading.excepthook'), \
+         patch('logging.exception') as logged:
+      with self.manager.lock:
+        for mid in ('gwm8223', 'pop223'):
+          self.manager._snapshot_installed(mid, catalog(self.root)[mid])
+        worker = self.manager.verify_worker
+      self.assertIsNotNone(worker)
+      worker.join(3)
+      self.assertFalse(worker.is_alive())
+      self.assertEqual(self.manager._snapshot_installed('gwm8223', catalog(self.root)['gwm8223']), (False, False))
+      self.assertEqual(self.manager._snapshot_installed('pop223', catalog(self.root)['pop223']), (True, False))
+      logged.assert_called_once_with('Model verification failed for %s', 'gwm8223')
 
 
 if __name__ == '__main__':
