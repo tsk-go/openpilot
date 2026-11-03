@@ -331,6 +331,13 @@ Paths are under `openpilot/` unless noted.
     in the clear). Presses logged to /data/starview/fob/events.jsonl. rtl_sdr comes from
     /data/tools/rtl_build.sh (not in the repo); without it or the dongle it stays off. Action `fob` {op: status | set
     | learn | forget | history}; StarView 2.79.0 Device > Driving > Key fob. Off for good: /data/starview/no_fob.
+39. Offline mode lets AGNOS updates through (patch 62): the Nov 3 update stopped with "Maximum retries exceeded" -
+    `Network is unreachable` on commadist.azureedge.net, the AGNOS image host, blocked by offline mode's 9200 rule
+    (only GitHub and Mapbox were let through). `offline.py` `update_hosts()`: UPDATE_HOSTS (commadist.azureedge.net,
+    files.firestar.link, files-east.firestar.link) plus every host the AGNOS manifest
+    (`system/hardware/tici/agnos.json`) names; resolved with GitHub's and Mapbox's when offline turns on, and
+    `update_allow()` adds new CDN addresses (PRIO_ALLOW, /32) with the time-server refresh in starviewd's
+    `_offline_time` (every 30 min; its own try, so a failed lookup never moves the clock check).
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

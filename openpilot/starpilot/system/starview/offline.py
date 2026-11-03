@@ -81,6 +81,12 @@ DOOR_KEEPALIVE_S = 20
 GITHUB4 = ["140.82.112.0/20", "143.55.64.0/20", "192.30.252.0/22", "185.199.108.0/22"]
 GITHUB_HOSTS = ["github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com",
                 "media.githubusercontent.com", "github-cloud.githubusercontent.com", "lfs.github.com"]
+# AGNOS (the comma's own system, flashed by an update that needs a new one): its images come from comma's CDN and
+# firestar's file hosts - whatever the manifest of the code on the comma names, plus these (Nov 3: an update stopped
+# with "Network is unreachable" on commadist.azureedge.net). Behind CDNs too, so their addresses are looked up again
+# with the time servers' (update_allow).
+UPDATE_HOSTS = ["commadist.azureedge.net", "files.firestar.link", "files-east.firestar.link"]
+AGNOS_MANIFEST = "/data/openpilot/openpilot/system/hardware/tici/agnos.json"
 # Mapbox (maps, routes with live traffic, search, road tiles - all api.mapbox.com) sits behind Amazon CloudFront: its
 # address changes every minute and by location, so CloudFront's published ranges are allowed.
 MAPBOX_HOSTS = ["api.mapbox.com"]
@@ -202,15 +208,46 @@ def resolve(hosts, wait=LOOKUP_S):
   return dict(out)
 
 
+def update_hosts(manifest=None) -> list:
+  """UPDATE_HOSTS plus every host the AGNOS manifest's image URLs (and their alternates) name."""
+  hosts = list(UPDATE_HOSTS)
+  try:
+    with open(manifest or AGNOS_MANIFEST) as f:
+      text = f.read(1 << 20)
+    from urllib.parse import urlparse
+    import re
+    for url in re.findall(r'https://[^"\s]+', text):
+      h = urlparse(url).hostname
+      if h and h not in hosts:
+        hosts.append(h)
+  except OSError:
+    pass
+  return hosts
+
+
+def update_allow(resolve_hosts=True) -> int:
+  """Offline on: the AGNOS hosts' addresses now, added to the allowed ones (PRIO_ALLOW) if they aren't yet - CDN
+  addresses move, so this runs again with the time servers' refresh. How many were added."""
+  if not enabled() or not resolve_hosts:
+    return 0
+  found = resolve(update_hosts())
+  have = rules()
+  nets = [ipaddress.ip_network(line.split(" to ")[1].split()[0], strict=False) for line in have
+          if line.startswith(f"{PRIO_ALLOW}:") and " to " in line]
+  new = sorted({ip for addrs in found.values() for ip in addrs if not any(ipaddress.ip_address(ip) in n for n in nets)})
+  batch("-4", [f"rule add priority {PRIO_ALLOW} to {ip}/32 lookup main" for ip in new], force=True)
+  return len(new)
+
+
 def allowed_now():
-  """GitHub + Mapbox: the published ranges plus whatever the hosts resolve to right now (if not already in them).
+  """GitHub + Mapbox + the AGNOS hosts: the published ranges plus whatever the hosts resolve to right now (if not already in them).
   With no internet route at all, the saved lists straight away."""
   if not sh("ip", "-4", "route", "show", "default", check=False).stdout.strip():
     return GITHUB4 + cloudfront_saved()
   out = {}
   t = threading.Thread(target=lambda: out.setdefault("cf", cloudfront()), daemon=True)
   t.start()
-  found = resolve(GITHUB_HOSTS + MAPBOX_HOSTS)
+  found = resolve(GITHUB_HOSTS + MAPBOX_HOSTS + update_hosts())
   t.join(LOOKUP_S)
   base = GITHUB4 + out.get("cf", cloudfront_saved())
   nets = [ipaddress.ip_network(c) for c in base]

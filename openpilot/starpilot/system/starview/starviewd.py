@@ -1704,6 +1704,12 @@ class Hub:
     try:
       if offline_mode.time_allow() > 0:
         wait = self.OFFLINE_TIME_S
+      try:
+        added = offline_mode.update_allow()    # AGNOS download hosts (CDN addresses move); never upsets the clock
+        if added:
+          cloudlog.info(f"starview: offline: {added} new update-server addresses let through")
+      except Exception as e:
+        cloudlog.warning(f"starview: offline update servers: {e}")
       if started:
         wait = min(wait, 5 * self.OFFLINE_TIME_RETRY_S)
       else:

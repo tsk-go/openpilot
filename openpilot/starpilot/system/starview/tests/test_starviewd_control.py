@@ -646,6 +646,7 @@ def test_offline_clock_runs_beside_the_heartbeat_and_only_sets_the_clock_with_th
   monkeypatch.setattr(offline, "boot_installed", lambda: True)
   monkeypatch.setattr(offline, "time_allow", lambda: calls.append("allow") or 3)
   monkeypatch.setattr(offline, "clock_fix", lambda: calls.append("clock") or 0.0)
+  monkeypatch.setattr(offline, "update_allow", lambda: calls.append("agnos") or 0)
   threads = []
   monkeypatch.setattr(starviewd.threading, "Thread", lambda target, args, **kw: threads.append((target, args)) or SimpleNamespace(start=lambda: None))
   hub = make_hub(started=True)
@@ -654,13 +655,14 @@ def test_offline_clock_runs_beside_the_heartbeat_and_only_sets_the_clock_with_th
   assert len(threads) == 1
   target, args = threads.pop()
   target(*args)
-  assert calls == ["allow"] and hub._offline_time_next == 100.0 + 300   # car on: no clock, looked at again in 5 min
+  assert calls == ["allow", "agnos"] and hub._offline_time_next == 100.0 + 300   # car on: no clock, again in 5 min
   hub.started = False
   hub.offline_tick(400.0)
   target, args = threads.pop()
   target(*args)
-  assert calls[1:] == ["allow", "clock"] and hub._offline_time_next == 400.0 + hub.OFFLINE_TIME_S
+  assert calls[2:] == ["allow", "agnos", "clock"] and hub._offline_time_next == 400.0 + hub.OFFLINE_TIME_S
   monkeypatch.setattr(offline, "time_allow", lambda: 0)     # no network yet
+  monkeypatch.setattr(offline, "update_allow", lambda: 1 / 0)      # a failing lookup never moves the clock check
   hub.offline_tick(400.0 + hub.OFFLINE_TIME_S)
   target, args = threads.pop()
   target(*args)

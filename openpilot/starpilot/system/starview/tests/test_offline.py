@@ -70,10 +70,12 @@ def ip(tmp_path, monkeypatch):
   monkeypatch.setattr(offline, "DOOR_STATE", str(tmp_path / "door_state.json"))
   monkeypatch.setattr(offline, "DOOR_LOCK", str(tmp_path / "door.lock"))
   monkeypatch.setattr(offline, "UNIT", str(tmp_path / "sv-offline.service"))
+  monkeypatch.setattr(offline, "AGNOS_MANIFEST", str(tmp_path / "agnos.json"))
   monkeypatch.setattr(offline, "cloudfront", lambda: ["13.32.0.0/15"])
   addrs = {"github.com": ["140.82.112.3"], "api.mapbox.com": ["13.32.1.1"], "huggingface.co": ["3.167.112.38"],
            "time.example.org": ["203.0.113.5"], "time.google.com": ["216.239.35.4"],
-           "us.aws.cdn.hf.co": ["98.90.123.60", "32.193.91.216"]}
+           "us.aws.cdn.hf.co": ["98.90.123.60", "32.193.91.216"], "commadist.azureedge.net": ["13.107.246.40"],
+           "files.firestar.link": ["104.21.5.6"]}
   monkeypatch.setattr(offline, "resolve", lambda hosts, wait=10: {h: addrs[h] for h in hosts if h in addrs})
   fake.addrs = addrs
   return fake
@@ -266,3 +268,21 @@ def test_github_time_reads_the_date_header_without_the_certificate(monkeypatch):
   monkeypatch.setattr(offline.urllib.request, "urlopen", fake)
   assert offline.github_time() == 1793293387.0
   assert seen == {"method": "HEAD", "verify": offline.ssl.CERT_NONE}
+
+
+def test_agnos_update_servers_get_through(ip, tmp_path):
+  (tmp_path / "agnos.json").write_text(json.dumps([{"url": "https://files.firestar.link/x/a/boot.img.xz",
+                                                    "alt": {"url": "https://files-east.firestar.link/x/b/boot.img.xz"}},
+                                                   {"url": "https://other.cdn.example/x.img.xz"}]))
+  assert offline.update_hosts() == ["commadist.azureedge.net", "files.firestar.link", "files-east.firestar.link",
+                                    "other.cdn.example"]
+  offline.on()
+  assert "to 13.107.246.40/32 lookup main" in ip.prio(9000)
+  assert "to 104.21.5.6/32 lookup main" in ip.prio(9000)
+  n = len(ip.prio(9000))
+  ip.addrs["commadist.azureedge.net"] = ["13.107.246.40", "13.107.213.41"]   # the CDN moved
+  assert offline.update_allow() == 1
+  assert "to 13.107.213.41/32 lookup main" in ip.prio(9000) and len(ip.prio(9000)) == n + 1
+  assert offline.update_allow() == 0                     # nothing new: nothing added
+  offline.off()
+  assert offline.update_allow() == 0 and ip.rules == {"-4": [], "-6": []}
