@@ -56,10 +56,16 @@ class TestUploadPreferences(unittest.TestCase):
                  'set_core_affinity': lambda _: None, 'messaging': NS(SubMaster=lambda _: Master()),
                  'NetworkType': Network, 'force_wifi': force_wifi, 'allow_sleep': False,
                  'cloudlog': NS(info=lambda *_: None, exception=lambda *_: None),
-                 'active_provider': lambda: NS(name='comma'), 'phone_uplink_active': phone_uplink_active}
+                 'active_provider': lambda: NS(name='comma'), 'phone_uplink_active': phone_uplink_active,
+                 'offline_mode_on': lambda: observations[state.index].get('offline', False)}
     exec(compile(ast.Module(body=[main], type_ignores=[]), 'uploader.py', 'exec'), namespace)
     namespace['main'](NS(is_set=lambda: state.index + 1 >= len(observations)))
     return state
+
+  def test_offline_mode_sleeps_instead_of_scanning(self):
+    state = self.run_loop([{'network': Network.wifi, 'metered': False}, {'network': Network.wifi, 'offline': True},
+                           {'network': Network.wifi, 'offline': True}, {'network': Network.wifi, 'metered': False}])
+    self.assertEqual(state.calls, [(1, False), (1, False)])          # nothing scanned while offline
 
   def test_metered_default_off_and_live_on_off_refresh(self):
     state = self.run_loop([{}, {'allow': True}, {'allow': False}, {'allow': True, 'metered': False},

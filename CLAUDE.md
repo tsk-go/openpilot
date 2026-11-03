@@ -102,6 +102,13 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    up an hour (the panda stops bootkicking without ignition, or the minimum on time doesn't apply after a parked
    shutdown). Oct 29 (Dom sync): upstream `2567a32f` re-applies the panda's power-save CAN interrupt state after a CAN
    re-init (a CAN wake may have come from that); kept ours until a parked night shows no restarts without it.
+5. **The uploader spins while offline mode blocks every upload** (patch 64): in `openpilot/system/loggerd/uploader.py`
+   `OFFLINE_FLAG`, `offline_mode_on()` and its check beside `network_type == NetworkType.none` in `main`, plus
+   `test_offline_mode_sleeps_instead_of_scanning` (and `offline_mode_on` in that test's namespace) in
+   `system/loggerd/tests/test_uploader_preferences.py`. With StarView's offline mode on nothing can upload, so no route
+   ever settles and every step rescans every drive folder (~960 routes, `owns_recording` per file): 63 % of a core over
+   a 15-min drive (Nov 3). Upstream fixed = the uploader stops rescanning settled-but-failing routes, or has its own
+   "uploads off" switch we can set from offline mode.
 
 # Fork history
 
