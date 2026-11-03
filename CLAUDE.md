@@ -338,6 +338,9 @@ Paths are under `openpilot/` unless noted.
     (`system/hardware/tici/agnos.json`) names; resolved with GitHub's and Mapbox's when offline turns on, and
     `update_allow()` adds new CDN addresses (PRIO_ALLOW, /32) with the time-server refresh in starviewd's
     `_offline_time` (every 30 min; its own try, so a failed lookup never moves the clock check).
+    Patch 63: commadist.azureedge.net is Azure Front Door and changed address within a minute (150.171.109.118, then
+    .72), so per-address rules never kept up; its anycast blocks UPDATE4 (150.171.0.0/16, 13.107.0.0/16) are let
+    through whole, like CloudFront's for Mapbox.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

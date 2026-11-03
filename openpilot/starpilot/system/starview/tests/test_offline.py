@@ -277,12 +277,13 @@ def test_agnos_update_servers_get_through(ip, tmp_path):
   assert offline.update_hosts() == ["commadist.azureedge.net", "files.firestar.link", "files-east.firestar.link",
                                     "other.cdn.example"]
   offline.on()
-  assert "to 13.107.246.40/32 lookup main" in ip.prio(9000)
+  assert "to 150.171.0.0/16 lookup main" in ip.prio(9000) and "to 13.107.0.0/16 lookup main" in ip.prio(9000)
+  assert "to 13.107.246.40/32 lookup main" not in ip.prio(9000)     # inside Front Door's block already
   assert "to 104.21.5.6/32 lookup main" in ip.prio(9000)
   n = len(ip.prio(9000))
-  ip.addrs["commadist.azureedge.net"] = ["13.107.246.40", "13.107.213.41"]   # the CDN moved
+  ip.addrs["files.firestar.link"] = ["104.21.5.6", "172.67.1.2"]   # a host outside the blocks moved
   assert offline.update_allow() == 1
-  assert "to 13.107.213.41/32 lookup main" in ip.prio(9000) and len(ip.prio(9000)) == n + 1
+  assert "to 172.67.1.2/32 lookup main" in ip.prio(9000) and len(ip.prio(9000)) == n + 1
   assert offline.update_allow() == 0                     # nothing new: nothing added
   offline.off()
   assert offline.update_allow() == 0 and ip.rules == {"-4": [], "-6": []}

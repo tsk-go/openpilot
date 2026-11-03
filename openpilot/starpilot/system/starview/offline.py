@@ -86,6 +86,9 @@ GITHUB_HOSTS = ["github.com", "codeload.github.com", "objects.githubusercontent.
 # with "Network is unreachable" on commadist.azureedge.net). Behind CDNs too, so their addresses are looked up again
 # with the time servers' (update_allow).
 UPDATE_HOSTS = ["commadist.azureedge.net", "files.firestar.link", "files-east.firestar.link"]
+# commadist.azureedge.net is Microsoft's Azure Front Door: a different address within a minute (150.171.109.118, then
+# .72), so lookups never keep up - its anycast blocks are let through whole, like CloudFront's for Mapbox.
+UPDATE4 = ["150.171.0.0/16", "13.107.0.0/16"]
 AGNOS_MANIFEST = "/data/openpilot/openpilot/system/hardware/tici/agnos.json"
 # Mapbox (maps, routes with live traffic, search, road tiles - all api.mapbox.com) sits behind Amazon CloudFront: its
 # address changes every minute and by location, so CloudFront's published ranges are allowed.
@@ -243,13 +246,13 @@ def allowed_now():
   """GitHub + Mapbox + the AGNOS hosts: the published ranges plus whatever the hosts resolve to right now (if not already in them).
   With no internet route at all, the saved lists straight away."""
   if not sh("ip", "-4", "route", "show", "default", check=False).stdout.strip():
-    return GITHUB4 + cloudfront_saved()
+    return GITHUB4 + UPDATE4 + cloudfront_saved()
   out = {}
   t = threading.Thread(target=lambda: out.setdefault("cf", cloudfront()), daemon=True)
   t.start()
   found = resolve(GITHUB_HOSTS + MAPBOX_HOSTS + update_hosts())
   t.join(LOOKUP_S)
-  base = GITHUB4 + out.get("cf", cloudfront_saved())
+  base = GITHUB4 + UPDATE4 + out.get("cf", cloudfront_saved())
   nets = [ipaddress.ip_network(c) for c in base]
   extra = {f"{ip}/32" for addrs in found.values() for ip in addrs
            if not any(ipaddress.ip_address(ip) in n for n in nets)}
@@ -268,7 +271,7 @@ def clear():
 
 def on(resolve_hosts=True):
   # look up before the door closes (not at boot: no network yet - the saved lists then)
-  allowed = allowed_now() if resolve_hosts else GITHUB4 + cloudfront_saved()
+  allowed = allowed_now() if resolve_hosts else GITHUB4 + UPDATE4 + cloudfront_saved()
   clear()
   if resolve_hosts:   # not at boot (root): /dev/shm is empty then, and a root-owned file there would lock the comma user out
     _door_write({"open": False, "jobs": []})
