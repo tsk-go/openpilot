@@ -173,15 +173,14 @@ for (const mutate of [value => value.version = 'unknown', value => value.binding
   const invalid = report(); invalid.current.trackingPlot = plot(); mutate(invalid.current.trackingPlot)
   assert(!validTrackingPlot(invalid.current.trackingPlot)); assert(!validTrainingResults(invalid)); assert.equal(trackingPlotView(invalid), null)
 }
-assert.match(FlmPage.template, /Latest completed delay-paired steering episode/)
-assert.match(FlmPage.template, /not actuator-delay aligned/)
-assert.match(FlmPage.template, /Pending trial target/)
-assert.match(FlmPage.template, /Accepted baseline/)
-assert.match(FlmPage.template, /No delay-paired steering episode plot/)
+assert.match(FlmPage.template, /measured delay/)
+assert.match(FlmPage.template, /Completed window/)
+assert.match(FlmPage.template, /Applied now/)
+assert.match(FlmPage.template, /saving is separate/)
+assert.match(FlmPage.template, /No interpolation/)
 compile(FlmPage.template, { onError: error => { throw error }, decodeEntities: value => value.replaceAll('&amp;', '&') })
-assert.match(FlmPage.template, /tracking\?\.label \|\| summary/)
-assert.match(FlmPage.template, /Future trial episodes/)
-assert.match(FlmPage.template, /Passing future checks does not itself confirm/)
+assert.match(FlmPage.template, /Comparable trial windows/)
+assert.match(FlmPage.template, /not a confirmed improvement/)
 assert.doesNotMatch(FlmPage.template, /v-html/)
 console.log('Optional versioned FLM tracking report, paired observed metrics, honest trial acknowledgments and old report compatibility passed')
 
@@ -195,6 +194,15 @@ assert(!liveText.toLowerCase().includes('invalid applied output'), 'Live learner
 assert(!liveText.includes('Collection & fitting'), 'Legacy fitter cards must not describe the live empirical learner')
 delete ctx.report.current.tracking
 const legacyText = text(render.call(ctx,ctx,[]))
-assert(legacyText.toLowerCase().includes('invalid applied output'))
-assert(legacyText.includes('Collection & fitting'))
+assert(legacyText.includes('The reported steering output could not be verified'))
+assert(legacyText.includes('Collecting driving samples'))
 console.log('Actual Vue render keeps live learner progress separate and preserves legacy report fallback')
+
+const countsReport=report();countsReport.current.details['GLOBAL original source capture']={poses:1731,readyPairs:128}
+const progressContext={...FlmPage.data(),report:countsReport}
+for(const [name,get] of Object.entries(FlmPage.computed))Object.defineProperty(progressContext,name,{get:()=>get.call(progressContext)})
+assert.equal(progressContext.measurements,1731,'Live source observations are independent of legacy fitter counts')
+countsReport.current.details['GLOBAL original source capture'].poses=-1
+assert.equal(progressContext.trackingProgress,null,'Invalid original counts stay unknown')
+assert.equal(progressContext.measurements,null,'Missing live counts cannot be replaced with legacy zero')
+console.log('Live pose count uses existing producer data, without extra telemetry or an eligibility claim')

@@ -31,6 +31,10 @@ address still redirects). Oct 29: firestar folded `SecretGoodStarPilot` into `Do
 `SecretGoodStarPilot_v2` and `SecretGoodStarPilot_v2-pre-oct26` are kept as they were and no longer synced.
 Nov 1: synced `Dom` up to upstream `195b7000` (230 commits; one conflict, updated.py - see fork fix 3 below; panda
 images rebuilt from source).
+Nov 3: synced `Dom` up to upstream `ef974ecc6` (168 commits, no conflicts but the panda images, rebuilt from source;
+it brings comma's low-speed curvature floor 1.0 -> 2.5 m/s, #39182, and the switch to nanobind raylib - `raylib_nb`
+plus the aarch64 `starpilot/ui/native/_raylib_extra.so` - so on an x86 box the tests that import the onroad UI or the
+QR code (the slc_action and pairing-QR StarView tests) can't load it; they need the device).
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
