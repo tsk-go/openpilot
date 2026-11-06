@@ -14,11 +14,12 @@ from pathlib import Path
 GALAXY = Path(__file__).resolve().parents[3] / "galaxy"
 ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 
-# What StarView mirrors (as of StarView 2.73.2)
+# What StarView mirrors (as of StarView 2.81.2: Galaxy's Nov 4 "heading" rows are section titles; "coordinate" only
+# labels the manual steering coordinates on Galaxy's FLM page, which StarView doesn't draw)
 MIRRORED_SCALES = {"lane-strength"}
-ROW_FIELDS = {"action", "available", "choices", "confirm", "defaultValue", "displayScale", "label", "maximum", "minimum", "page",
-              "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
-PRESENTATION_SHA256 = "cfadb55e311513d364d35269b42dc545388d507b18e1f7b49cbf463bdffd9643"
+ROW_FIELDS = {"action", "available", "choices", "confirm", "coordinate", "defaultValue", "displayScale", "heading", "label", "maximum",
+              "minimum", "page", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
+PRESENTATION_SHA256 = "4417ae8870b99c16bad3e7ca2e058ac439d0a26d0748f5f6320c47a29fd85b8f"
 
 
 def presentation_source() -> str:
