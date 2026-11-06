@@ -369,6 +369,14 @@ Paths are under `openpilot/` unless noted.
     tablet's default USB mode. Nov 5: right after the port came back the tablet said rndis but no link came, until a
     replug; now a tablet saying rndis with no link for 30 s gets its USB reset like a replug (functions none, 2 s,
     rndis, in one detached shell), then again after 60 s, then every 5 min. Idle while the hub is off.
+    Patch 66: starviewd runs as the comma user (service.py `--uid`), and debugfs is root-only, so patch 65 could never
+    switch the port ("can't switch" on the tablet): reads and writes now fall back to `sudo -n cat` / `sudo -n tee`
+    (as offline mode does for ip rules). Battery low: car off and the panda's voltage (pandaStates, smoothed 10 s)
+    below the comma's own cutoff + 0.2 V for 60 s -> hub off at once, delay or not (the hub is the big load; the
+    comma's cutoff is Parked Power's when On, else stock 11.8 V). The tablet page became Device > System > Power
+    management (StarView 2.81.1): the hub and the comma's own Parked Power (Galaxy's OffroadPowerPreferences
+    through its PowerOwner - parked only, compare-and-set; action `hub_power` op `comma_set` {enabled, hours, volts})
+    on one page. With Parked Power on Stock the comma stays up to 30 h parked and stops only at 11.8 V.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

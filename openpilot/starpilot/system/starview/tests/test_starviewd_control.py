@@ -1,3 +1,4 @@
+import json
 import threading
 from types import SimpleNamespace
 
@@ -720,3 +721,40 @@ def test_hub_power_screen_requests(tmp_path):
   assert st["on"] is False and st["delay_min"] == 1
   hub.hubpower.cut = True
   assert hub.hub_powered() is False
+
+
+class _PowerParams:
+  """Just enough Params for Parked Power: one JSON file per key."""
+  def __init__(self, d):
+    self.d = d
+
+  def get_param_path(self, key):
+    return str(self.d / key)
+
+  def put(self, key, value, block=False):
+    (self.d / key).write_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def test_power_management_carries_parked_power(tmp_path):
+  from openpilot.starpilot.system.starview.hub_power import HubPower
+  hub = make_hub(started=False)
+  hub.params = _PowerParams(tmp_path)
+  (tmp_path / "enable").write_text("1\n")
+  hub.hubpower = HubPower(vbus=str(tmp_path / "enable"), cfg=str(tmp_path / "hub_power.json"), log=lambda m: None,
+                          cutoff_tenths=hub.comma_cutoff_tenths)
+  st = hub.control({"action": "hub_power"})
+  c = st["comma"]
+  assert c["enabled"] is False and c["applied_hours"] == 30 and c["applied_volts"] == 11.8 and c["editable"] is True
+  assert hub.comma_cutoff_tenths() == 118 and st["hub_cutoff_v"] == 12.0
+  st = hub.control({"action": "hub_power", "op": "comma_set", "enabled": True, "hours": 2, "volts": 12.1})
+  assert st["ok"] is True
+  c = st["comma"]
+  assert c["enabled"] is True and c["hours"] == 2 and c["volts"] == 12.1 and c["applied_hours"] == 2
+  assert json.loads((tmp_path / "OffroadPowerPreferences").read_text()) == {
+    "cutoffTenths": 121, "delayHours": 2, "enabled": True, "version": 1}
+  assert hub.comma_cutoff_tenths() == 121
+  st = hub.control({"action": "hub_power", "op": "comma_set", "enabled": False})
+  assert st["comma"]["enabled"] is False and st["comma"]["hours"] == 2 and st["comma"]["applied_volts"] == 11.8
+  hub.started = True                        # driving: Galaxy's rule, parked only
+  st = hub.control({"action": "hub_power", "op": "comma_set", "enabled": True})
+  assert st["ok"] is False and "parked" in st["error"] and st["comma"]["editable"] is False

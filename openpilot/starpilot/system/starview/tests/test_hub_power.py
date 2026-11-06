@@ -207,3 +207,84 @@ def test_tether_link_up_clears_the_count():
 def test_reset_command_survives_the_adb_drop():
   assert RESET_CMD.startswith("nohup sh -c '") and RESET_CMD.endswith("&")
   assert "svc usb setFunctions; sleep 2; svc usb setFunctions rndis" in RESET_CMD
+
+
+# ------------------------------------------------------------------ as the comma user: debugfs through sudo
+def test_switches_through_sudo_when_debugfs_is_root_only(tmp_path, monkeypatch):
+  calls = []
+  state = {"v": "1"}
+
+  def sudo(args, data=None):
+    calls.append((tuple(args), data))
+    if args[0] == "cat":
+      return 0, state["v"] + "\n"
+    if args[0] == "tee":
+      state["v"] = data.strip()
+      return 0, data
+    if args[0] == "test":
+      return 0, ""
+    return 1, ""
+
+  def no_access(*a, **k):
+    raise PermissionError(13, "Permission denied")
+  monkeypatch.setattr(hpm, "_open", no_access)
+  hp = HubPower(vbus="/sys/kernel/debug/regulator/smb2-vbus/enable", cfg=str(tmp_path / "c.json"), log=lambda m: None,
+                sudo=sudo)
+  assert hp.port() is True and hp.can_switch(0) is True
+  drive_then_park(hp)
+  hp.tick(301, False, False)
+  assert hp.cut and state["v"] == "0"
+  assert (("tee", "/sys/kernel/debug/regulator/smb2-vbus/enable"), "0\n") in calls
+  assert hp.status(302)["port"] == "off"
+  hp.tick(303, True, False)
+  assert not hp.cut and state["v"] == "1"
+
+
+def test_sudo_refused_is_an_error_not_a_cut(tmp_path, monkeypatch):
+  def no_access(*a, **k):
+    raise PermissionError(13, "Permission denied")
+  monkeypatch.setattr(hpm, "_open", no_access)
+  hp = HubPower(vbus="/x", cfg=str(tmp_path / "c.json"), log=lambda m: None, sudo=lambda args, data=None: (1, ""))
+  drive_then_park(hp)
+  hp.tick(301, False, False)
+  assert not hp.cut and "sudo" in hp.error
+  assert hp.status(302)["can_switch"] is False and hp.status(302)["port"] is None
+
+
+# ------------------------------------------------------------------ battery low: the hub first
+def test_battery_low_turns_the_hub_off_before_the_delay(tmp_path):
+  hp, vbus, _ = make(tmp_path, cfg={"on": True, "delay_min": 300})
+  hp.cutoff_tenths = lambda: 118            # stock: the comma itself at 11.8 V, the hub at 12.0 V
+  hp.tick(0, True, True, volts_mv=14200)
+  hp.tick(1, False, False, volts_mv=12600)
+  for t in range(2, 120):
+    hp.tick(t, False, False, volts_mv=12600)
+  assert port(vbus) == "1"
+  t = 120
+  while port(vbus) == "1" and t < 400:
+    hp.tick(t, False, False, volts_mv=11900)
+    t += 1
+  assert port(vbus) == "0" and "battery low" in hp.events[-1]["why"]
+  assert 120 + 60 <= t <= 120 + 60 + 40     # ~60 s below once the smoothed reading crosses 12.0 V
+  st = hp.status(t)
+  assert st["hub_cutoff_v"] == 12.0 and 11.8 < st["battery_v"] < 12.0
+
+
+def test_battery_low_follows_parked_power_and_never_with_the_car_on(tmp_path):
+  hp, vbus, _ = make(tmp_path)
+  hp.cutoff_tenths = lambda: 122             # Parked Power On at 12.2 V: the hub at 12.4 V
+  for t in range(600):
+    hp.tick(t, True, False, volts_mv=12000)  # car on (e.g. accessory) with a low reading: never
+  assert port(vbus) == "1"
+  hp.tick(600, False, False, volts_mv=12300)
+  for t in range(601, 700):
+    hp.tick(t, False, False, volts_mv=12300)
+  assert port(vbus) == "0" and hp.status(700)["hub_cutoff_v"] == 12.4
+
+
+def test_a_brief_dip_does_nothing(tmp_path):
+  hp, vbus, _ = make(tmp_path, cfg={"on": True, "delay_min": 300})
+  drive_then_park(hp)
+  for t in range(2, 200):
+    hp.tick(t, False, False, volts_mv=11000 if 50 <= t < 55 else 12600)
+  assert port(vbus) == "1"

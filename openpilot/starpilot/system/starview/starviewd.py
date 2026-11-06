@@ -1783,16 +1783,67 @@ class Hub:
     return {"ok": False, "error": "unknown key fob request"}
 
   def hub_power_action(self, req: dict) -> dict:
-    """The tablet's USB hub power screen (hub_power.py). op "status" (default) or "set" {"on"?, "delay_min"?}."""
+    """The tablet's Power management screen. The hub (hub_power.py): op "status" (default) or "set" {"on"?,
+    "delay_min"?}. The comma's own Parked Power (Galaxy's, OffroadPowerPreferences through its PowerOwner - same
+    rules: only parked, compare-and-set): op "comma_set" {"enabled"? bool, "hours"? 1-30, "volts"? 11.8-12.5}.
+    Every answer carries both: the hub's status plus "comma"."""
     hp = getattr(self, "hubpower", None)
     if hp is None:
       return {"ok": False, "error": "USB hub power isn't running"}
+    op = str(req.get("op") or "status")
     try:
-      if str(req.get("op") or "status") == "set":
-        return hp.set_config(on=req.get("on"), delay_min=req.get("delay_min"))
-      return hp.status(time.monotonic())
+      if op == "set":
+        st = hp.set_config(on=req.get("on"), delay_min=req.get("delay_min"))
+      elif op == "comma_set":
+        err = self._comma_power_set(req)
+        st = hp.status(time.monotonic())
+        if err:
+          st = {**st, "ok": False, "error": err}
+      else:
+        st = hp.status(time.monotonic())
     except OSError as e:
       return {"ok": False, "error": str(e)[:200]}
+    return {**st, "comma": self._comma_power()}
+
+  def _power_owner(self):
+    from openpilot.starpilot.ui.power_owner import PowerOwner
+    return PowerOwner(self.params, lambda: not self.started)
+
+  def _comma_power(self) -> dict:
+    """Parked Power as Galaxy shows it: saved values, whether they apply (On) or stock does (30 h, 11.8 V)."""
+    from openpilot.starpilot.power.offroad_preferences import PowerPolicy, read_saved
+    saved = read_saved(self.params)
+    p, stock = saved.policy, PowerPolicy()
+    return {"enabled": bool(saved.valid and p.enabled), "valid": saved.valid and saved.readable,
+            "hours": p.delay_hours, "volts": p.cutoff_tenths / 10.0,
+            "applied_hours": p.delay_hours if saved.valid and p.enabled else stock.delay_hours,
+            "applied_volts": (p.cutoff_tenths if saved.valid and p.enabled else stock.cutoff_tenths) / 10.0,
+            "editable": not self.started, "min_hours": 1, "max_hours": 30, "min_volts": 11.8, "max_volts": 12.5}
+
+  def _comma_power_set(self, req: dict) -> str | None:
+    from openpilot.starpilot.power.offroad_preferences import read_saved
+    from openpilot.starpilot.ui.feature_settings_state import FeatureSettingsRequest
+    from openpilot.starpilot.ui.power_owner import ENABLED, HOURS, VOLTS
+    if self.started:
+      return "Parked Power changes with the car parked (openpilot offroad)."
+    owner = self._power_owner()
+    asks = []
+    if req.get("enabled") is not None:
+      asks.append((ENABLED, "On" if req.get("enabled") else "Stock"))
+    if req.get("hours") is not None:
+      asks.append((HOURS, f"{max(1, min(30, int(round(float(req['hours'])))))} h"))
+    if req.get("volts") is not None:
+      asks.append((VOLTS, f"{max(11.8, min(12.5, round(float(req['volts']), 1))):.1f} V"))
+    for key, value in asks:
+      saved = read_saved(self.params)
+      if not owner.apply(FeatureSettingsRequest(key=key, expected=saved.raw, value=value, confirmation=True)):
+        return "The comma didn't take that Parked Power change."
+    return None
+
+  def comma_cutoff_tenths(self) -> int:
+    """The low-voltage cutoff the comma is using right now (Parked Power On, else stock 11.8 V)."""
+    from openpilot.starpilot.power.offroad_preferences import effective, read_saved
+    return effective(read_saved(self.params)).cutoff_tenths
 
   def hub_powered(self) -> bool:
     """False while hub_power.py has the USB port off (the fob's radio dongle and the Pico are on the hub)."""
@@ -2928,7 +2979,7 @@ def hub_power_thread(hub):
   """hub_power.py: the comma's USB-C port off a while after the car turns off, on again when it starts (or the CAN
   bus wakes). pandaStates (conflated) every 0.5 s with the car off, 1 s with it on; CAN only read with the car off."""
   from openpilot.common.hardware.usb import usb_host_connected
-  hp = HubPower(device_mode=usb_host_connected, log=cloudlog.warning)
+  hp = HubPower(device_mode=usb_host_connected, log=cloudlog.warning, cutoff_tenths=hub.comma_cutoff_tenths)
   hub.hubpower = hp
   try:
     hp.ensure_on("StarView started")
@@ -2937,6 +2988,7 @@ def hub_power_thread(hub):
   ps_sock = messaging.sub_sock("pandaStates", conflate=True)
   can_sock = None
   ignition = None
+  volts = None
   last_rx = 0.0
   while True:
     time.sleep(1.0 if hp.car else 0.5)
@@ -2947,6 +2999,8 @@ def hub_power_thread(hub):
         last_rx = now
         ps = b.pandaStates
         ignition = any(p.ignitionLine or p.ignitionCan for p in ps) if len(ps) else False
+        known = [p for p in ps if str(p.pandaType) != "unknown"]
+        volts = known[0].voltage if len(known) == 1 else None
       ign = ignition if now - last_rx <= HUB_STALE_S else None
       can_active = False
       if ign is False and not hub.started:
@@ -2955,7 +3009,7 @@ def hub_power_thread(hub):
         can_active = messaging.recv_one_or_none(can_sock) is not None
       elif can_sock is not None:
         can_sock = None
-      hp.tick(now, ign, bool(hub.started), can_active)
+      hp.tick(now, ign, bool(hub.started), can_active, volts)
     except Exception as e:
       cloudlog.warning(f"starview: hub power: {e}")
 
