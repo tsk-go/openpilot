@@ -157,6 +157,19 @@ export const SURFACE_GROUPS = Object.freeze([
 ])
 
 const REASONS = {
+  analyzing_last_completed_drive: "Analyzing the last completed drive while parked.",
+  checking_recorded_steering_recommendations: "Checking the recorded-drive recommendations against the original controller and steering outputs.",
+  recorded_tracking_suggestion_not_yet_qualified_for_automatic_application: "Recommendations were found, but none has passed the controller and steering-output checks required for automatic saving.",
+  original_controller_or_registered_encoder_check_refused: "A tune was suggested, but at least one original controller or encoder check refused it. Your saved tune was kept.",
+  original_scored_frame_not_eligible: "An original frame was inactive, limited or otherwise ineligible.",
+  "candidate changed an actual limiter/support": "The candidate triggered an encoder limiter that the recorded request did not.",
+  original_controller_or_registered_encoder_check_refused: "The recommendation failed an original controller or steering-output check. The saved tune was kept.",
+  independent_drive_tracking_does_not_support_change: "The separate drive did not support the same adjustment. Your saved tune was kept.",
+  no_new_native_feasible_training_step: "No bounded training step passed the original steering-output checks. The saved tune was kept.",
+  no_consistent_adjustment_in_completed_drive: "The independent parts of this drive did not support the same adjustment. The saved tune was kept.",
+  more_independent_eligible_tracking_required: "The drive was analyzed. More complete independent steering windows are needed before saving a tune.",
+  bounded_trial_configured_for_next_drive: "A bounded, reversible tune was saved automatically for the next drive. Its road improvement is not yet confirmed.",
+  recorded_steering_window_inputs_unavailable: "The recording is missing inputs needed to verify its recommendations. The saved tune was kept.",
   controller_collection_required: "Waiting for active steering before collecting samples.",
   fresh_physical_residual_window_required: "Checking the car's current steering response.",
   qualified_tracking_episodes_required: "Collecting complete, comparable steering windows.",
@@ -175,6 +188,7 @@ const REASONS = {
   trial_oscillation_batch_worse: "Comparable trial windows showed more oscillation, so the correction was rolled back.",
   predeclared_independent_future_look_required: "Collecting the next planned set of comparison windows.",
   prior_accepted_baseline_restored: "The controller returned to its prior baseline.",
+  original_input_regime_after_baseline_ack_required: "The baseline is restored. Completed comparison samples are kept while waiting for the same driving conditions.",
   scoring_later_matched_whole_episodes: "Comparing new steering windows with the baseline.",
   accepted_target_currently_acknowledged: "The controller acknowledged the accepted correction.",
 }
@@ -190,12 +204,59 @@ const HISTORY_LABELS = { collecting: 'Collecting samples', calibrating: 'Measuri
   trial_active: 'Evaluating a trial', confirmed: 'Correction confirmed', rollback: 'Returning to baseline', paused: 'Learning paused' }
 export const historyTitle = status => Object.hasOwn(HISTORY_LABELS, status) ? HISTORY_LABELS[status] : readable(status)
 
-export function tunerStatus(report, live = false, choiceLive = false, error = "") {
+export function offroadView(report) {
+  const details = report?.current?.details
+  if (!record(details) || !text(details['Completed drive analyzed'], 180) || !details['Completed drive analyzed'] ||
+      !stamp(details['Recorded steering observations']) || !text(details['Analysis decision'])) return null
+  const rows = details['Recorded route suggestions'] ?? []
+  if (!Array.isArray(rows) || rows.length > 16 || rows.some(row => !Array.isArray(row) || row.length !== 4 ||
+      !text(row[0], 500) || typeof row[1] !== 'number' || !Number.isFinite(row[1]) || Math.abs(row[1]) > .25 ||
+      !stamp(row[2]) || row[3] !== 'controller_native_checks_not_passed')) return null
+  const observed = recordedSteeringView(details['Recorded steering response'])
+  const savedCount = details['Saved route adjustment count']
+  const checked = details['Controller and encoder check windows'], refused = details['Automatic tune refusal reasons']
+  const checks = Array.isArray(checked) && checked.length === 2 && checked.every(stamp) && checked[0] <= checked[1] && checked[1] <= 36 &&
+    Array.isArray(refused) && refused.length <= 36 && refused.every(r => Array.isArray(r) && r.length === 2 && text(r[0]) && stamp(r[1])) ?
+    { passed: checked[0], required: checked[1], refusals: refused.map(([reason, count]) => ({ reason, count })) } : null
+  return { route: details['Completed drive analyzed'], samples: details['Recorded steering observations'],
+    reason: details['Analysis decision'], saved: details['Automatic configuration changed'] === true,
+    configurationState: details['Saved route configuration state'] ?? null,
+    observed, checks, savedCount: stamp(savedCount) && savedCount <= 35 ? savedCount : null,
+    suggestions: rows.map(([parameter, delta, windows, qualification]) => ({ parameter, delta, windows, qualification })),
+    moreSuggestions: details['More recorded suggestions omitted'] === true }
+}
+
+export function recordedSteeringView(value) {
+  if (!record(value) || value.version !== 1 || !['lateral_acceleration', 'steering_angle'].includes(value.domain) ||
+      !stamp(value.samples) || value.samples < 20 || !stamp(value.windows) || value.windows < 1 ||
+      !Number.isFinite(value.error_rms) || value.error_rms < 0 || !text(value.route, 180) ||
+      !stamp(value.segment) || !stamp(value.source_start_ns) || !stamp(value.source_end_ns) ||
+      value.source_start_ns <= 0 || value.source_end_ns <= value.source_start_ns ||
+      value.sampling !== 'input_ordered_original_endpoints_no_interpolation' ||
+      !Array.isArray(value.points) || value.points.length < 20 || value.points.length > 64 ||
+      value.points.some((r, i) => !Array.isArray(r) || r.length !== 3 || !stamp(r[0]) ||
+        r[0] < value.source_start_ns || r[0] > value.source_end_ns || i > 0 && r[0] <= value.points[i - 1][0] ||
+        !r.slice(1).every(v => Number.isFinite(v) && Math.abs(v) <= 10000)) ||
+      value.points[0][0] !== value.source_start_ns || value.points.at(-1)[0] !== value.source_end_ns) return null
+  return { errorRms: value.error_rms, samples: value.samples, windows: value.windows, route: value.route,
+    segment: value.segment, units: value.domain === 'lateral_acceleration' ? 'm/s²' : 'degrees',
+    points: value.points.map(([ns, desired, actual]) => ({ at: (ns - value.source_start_ns) / 1e6, desired, actual })) }
+}
+
+export function tunerStatus(report, live = false, choiceLive = false, error = "", reportFresh = live) {
   const preference = choiceLive && validLearningPreference(report?.preference) ? report.preference : null
   const current = report?.current
   if (error) return { key: "offline", tone: "muted", title: "Connection interrupted", description: "Earlier results are available below. Current steering activity is unknown." }
   if (preference?.valid && preference.enabled === false || !preference && live && current?.enabled === false)
     return { key: "off", tone: "muted", title: "Auto Learn is off", description: "No driving samples are being collected by the learner. Turn it on in steering settings to begin." }
+  if (reportFresh && current?.status === 'fitting' && ['analyzing_last_completed_drive', 'checking_recorded_steering_recommendations'].includes(current.reason))
+    return { key: 'fitting', tone: 'active', title: 'Analyzing your completed drive', description: learningReason(current.reason) }
+  const route = reportFresh && (!preference || preference.parked) ? offroadView(report) : null
+  if (route) {
+    if (route.configurationState === 'ready_for_next_drive')
+      return { key: 'next-drive', tone: 'ready', title: 'Tune saved for the next drive', description: learningReason('bounded_trial_configured_for_next_drive') }
+    return { key: 'analyzed', tone: route.suggestions.length ? 'warning' : 'ready', title: 'Completed drive analyzed', description: learningReason(route.reason) }
+  }
   if (preference?.valid && preference.enabled && preference.parked)
     return { key: "parked", tone: "ready", title: "Auto Learn is on", description: "Collection starts while driving. No new correction is being applied while parked." }
   if (!current) return { key: "waiting", tone: "muted", title: "Waiting for the learner", description: preference?.enabled ? "Auto Learn is on, but no learner report has arrived yet." : preference ? "The device has not identified a current vehicle and Auto Learn setting." : "Connect to your device to see its learning activity and steering tune." }
@@ -204,10 +265,12 @@ export function tunerStatus(report, live = false, choiceLive = false, error = ""
   if ((tracking?.reason || current.reason) === "controller_collection_required")
     return { key: "waiting", tone: "muted", title: "Waiting for active steering", description: learningReason("controller_collection_required") }
   if (tracking && !tracking.bindingCurrent)
-    return { key: "paused", tone: "warning", title: "Learning paused", description: "The steering context changed. A fresh qualified window is required." }
+    return { key: "paused", tone: "warning", title: "Learning paused", description: "Current steering evidence is unavailable. A fresh qualified window is required." }
   if (tracking?.acknowledged && tracking.status === "confirmed") return { key: "confirmed", tone: "success", title: "Correction applied", description: "The comparison passed and the controller acknowledged this correction. Disk saving is a separate result." }
   if (tracking?.acknowledged && tracking.status === "trial_active") return { key: "testing", tone: "active", title: "Testing a small correction", description: "The controller acknowledged the trial. Comparable new driving windows decide whether to keep it." }
   if (tracking?.status === "trial_pending") return { key: "pending", tone: "active", title: "Waiting for the controller", description: "A trial was offered. It has not yet been acknowledged as applied." }
+  if (tracking?.status === "rollback" && tracking.acknowledged && tracking.reason === "original_input_regime_after_baseline_ack_required")
+    return { key: "waiting", tone: "ready", title: "Waiting for matching road", description: learningReason(tracking.reason) }
   if (tracking?.status === "rollback") return { key: "rollback", tone: "warning", title: "Returning to the baseline", description: tracking.acknowledged ? "The controller acknowledged the rollback." : "A rollback was requested. Current application is not yet acknowledged." }
   if (tracking?.status === "paused" || current.status === "unavailable") return { key: "paused", tone: "warning", title: "Learning paused", description: learningReason(tracking?.reason || current.reason) }
   return { key: "collecting", tone: "active", title: tracking?.status === "calibrating" ? "Measuring steering response" : "Collecting driving samples", description: learningReason(tracking?.reason || current.reason) }
@@ -256,8 +319,9 @@ export function trackingView(report, live = false) {
   if (value.status === 'trial_active' && acknowledged) label = 'Evaluating correction'
   if (value.status === 'confirmed' && acknowledged) label = 'Confirmed correction acknowledged'
   if (value.status === 'rollback' && acknowledged) label = 'Correction rollback acknowledged'
+  if (value.status === 'rollback' && acknowledged && value.reason === 'original_input_regime_after_baseline_ack_required') label = 'Baseline restored; waiting for matching road'
   if (value.status !== 'paused' && (value.phase !== null && !matchingPhase || expectedPhase !== undefined && !matchingPhase)) label = 'Learning state reported; trial application unknown'
-  if (live && !value.bindingCurrent) label = 'Learning paused; steering context changed'
+  if (live && !value.bindingCurrent) label = 'Learning paused; current steering evidence unavailable'
   if (!live) label = 'Earlier learning report; current application unknown'
   return { ...value, label, acknowledged, changedParameters: value.names.map(readable).join(', '),
     measurements: [

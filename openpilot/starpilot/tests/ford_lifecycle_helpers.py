@@ -204,6 +204,7 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
   now = [10_000_000_000]
   queued, published, previous_sd = [], {}, {}
   delayed_native = {}
+  pending_native_wire = {}
   source_gap_messages = {}
   source_gap_active = [False]
   steps = start_tick = native.tick
@@ -281,6 +282,9 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
           return control_update(timestamp, snapshots)
 
         local.setattr(controls.sm, 'update_msgs', curved_model_update)
+      probe_setup = getattr(monkeypatch, 'ford_probe_setup', None)
+      if probe_setup is not None:
+        probe_setup(host, sd, controls, local)
       native.safety = ClockMappedSafety()
 
       location_unavailable = [False]
@@ -371,7 +375,7 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
             advance,
             main=0 if main_off else 5 if engaged else 3,
             gear=0 if park else 1 if reverse else 3,
-            mask=request,
+            mask=0 if getattr(monkeypatch, 'ford_drop_native_requests', False) and not warmup else request,
             heartbeat=heartbeat and fault != 'heartbeat',
             speed=(3.1 + .12 * ((steps // 2) % 12) / 11 if getattr(monkeypatch, "ford_speed_window", False) else getattr(joined, 'speed', 15.0)),
             eps=1 if fault in ('temporary-eps', 'temporary-eps-gas') else 0,
@@ -448,7 +452,23 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
         # Match pandad's 10Hz native publication, including a pedal-first USB read.
         # Values are actual native results; retained messages keep their stamps.
         if getattr(monkeypatch, 'ford_native_10hz', False):
-          if not delayed_native or steps % 10 == 0 or (brake or cancel) and not permission & 2 and delayed_native.get('permission', 3) & 2:
+          if getattr(monkeypatch, 'ford_native_wire_first', False):
+            if not delayed_native:
+              delayed_native.update(wire=wire.as_reader(), panda=panda.as_reader(), permission=permission)
+            elif steps % 10 == 0:
+              pending_native_wire.update(panda=panda.as_reader())
+              delayed_native.update(wire=wire.as_reader(), permission=permission)
+            elif steps % 10 == 1 and pending_native_wire:
+              delayed_native.update(panda=pending_native_wire.pop('panda'))
+          elif getattr(monkeypatch, 'ford_native_health_first', False):
+            if not delayed_native:
+              delayed_native.update(wire=wire.as_reader(), panda=panda.as_reader(), permission=permission)
+            elif steps % 10 == 0:
+              pending_native_wire.update(wire=wire.as_reader())
+              delayed_native.update(panda=panda.as_reader(), permission=permission)
+            elif steps % 10 == 1 and pending_native_wire:
+              delayed_native.update(wire=pending_native_wire.pop('wire'))
+          elif not delayed_native or steps % 10 == 0 or (brake or cancel) and not permission & 2 and delayed_native.get('permission', 3) & 2:
             delayed_native.update(wire=wire.as_reader(), panda=panda.as_reader(), permission=permission)
           wire_message, panda_message = delayed_native['wire'], delayed_native['panda']
         else:
@@ -469,6 +489,9 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
             events = [e for e in events if e.which() != service]
             events.append(route45_old[service])
             route45_mixed[0] = True
+        probe_events = getattr(monkeypatch, 'ford_probe_events', None)
+        if probe_events is not None:
+          events = probe_events(events, now[0])
         host.sm.update_msgs(now[0] / 1e9, events)
         state, _ = host.state_update()
         host.state_publish(state, None)
@@ -667,6 +690,10 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
       assert 0 <= warmup_waits < 120 and qualified_samples >= 100
       assert host.ci_initialized  # Read-only witness: real controls_update completed init.
       assert not host.aol_card_intent.allowed_latch
+      probe_run = getattr(monkeypatch, 'ford_probe_run', None)
+      if probe_run is not None:
+        probe_run(step, host, sd, joined)
+        return
       if scenario == 'startup-warning':
         if getattr(monkeypatch, 'ford_startup_armed', False):
           for _ in range(40):
@@ -1078,6 +1105,9 @@ def run_actual_producer(ford_joined, monkeypatch, *, scenario='reverse', reengag
       if scenario == 'brake-native-cadence':
         for _ in range(41):
           state, axis, sd_state, command = step(engaged=True)
+        if hasattr(monkeypatch, 'ford_brake_phase'):
+          while steps % 10 != monkeypatch.ford_brake_phase:
+            state, axis, sd_state, command = step(engaged=True)
         assert command.latActive and command.longActive and host.aol_card_intent.allowed_latch
         if getattr(monkeypatch, 'ford_standstill_brake', False):
           for slowing_tick in range(300):

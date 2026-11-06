@@ -1160,7 +1160,9 @@ class SelfdriveD:
     from openpilot.starpilot.audio.blindspot_alert import ALERT_TYPE as BSM_ALERT, blindspot_alert
     loud, without_lateral = getattr(self, 'blindspot_alert_settings', (False, False))
     blindspot = blindspot_alert(CS, self.sm, loud=loud, without_lateral=without_lateral,
-                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns)
+                                lane_change_blocked=EventName.laneChangeBlocked in self.events.names, now_ns=now_ns,
+                                car_ns=getattr(self, 'aol_car_state_log_ns', 0),
+                                car_valid=getattr(self, 'conditional_car_state_valid', False))
     if blindspot is not None:
       alerts = [alert for alert in alerts if alert.alert_type != 'laneChangeBlocked/warning']
       self.AM.alerts.pop('laneChangeBlocked/warning', None)
@@ -1352,6 +1354,27 @@ class SelfdriveD:
       self.aol_fault_reason = 'availabilityPause'
       self.aol_publication_retained_intent = intent
       return
+    from openpilot.starpilot.car.toyota.aol import qualified as toyota_aol_qualified
+    companion = getattr(self, 'aol_intent_companion', None)
+    if (healthy_expiry and toyota_aol_qualified(self.CP, marked_only=True) and
+        not was_enabled and not self.active and not getattr(self, 'aol_ever_active', False) and
+        not any((previous.desired_lateral, previous.desired_longitudinal, previous.lateral_active,
+                 previous.longitudinal_active, previous.native_acknowledged)) and
+        not self.aol_authority_lost and getattr(self, 'aol_fault_reason', 'none') == 'availabilityPause' and
+        availability_only(self.events.to_msg()) and not any(
+          event.userDisable and event.name != EventName.pcmDisable for event in self.events.to_msg()) and
+        intent is not None and intent is self.aol_last_intent and
+        intent.settingsQualified and intent.allowedLatch and intent.lateralArmed and
+        intent.carStateLogMonoTime == source_ns and
+        0 < intent.observedMonoTime <= now_ns <= intent.validUntilMonoTime and
+        companion is not None and companion.last_drain_ok and companion.session == intent.producerSessionId):
+      from openpilot.starpilot.aol.transport_pause import _healthy_transport_native
+      native = _healthy_transport_native(self.sm, self.CP, CS, self.aol_session_id, now_ns)
+      if native is not None and native.pandaInventory and not any((native.requestedLateral,
+          native.lateralAllowed, native.requestedLongitudinal, native.longitudinalAllowed)):
+        # Cold readiness has no granted command to lose; the expired source still withdraws all output.
+        self.aol_publication_retained_intent = intent
+        return
     pause = getattr(self, 'aol_availability_pause', None)
     if (healthy_expiry and pause is not None and intent is not None and
         getattr(self, 'aol_fault_reason', 'none') in ('none', 'availabilityPause') and
@@ -1440,17 +1463,20 @@ class SelfdriveD:
       if (toyota_qualified(self.CP, marked_only=True) and CS.standstill or
           angle_qualified(self.CP, marked_only=True) or
           self.CP.brand == 'hyundai' and len(self.CP.safetyConfigs) == 1 and
-          stock_canfd_qualified(self.CP, marked_only=True)):
+          stock_canfd_qualified(self.CP, marked_only=True) or
+          self.CP.brand == 'gm' and qualified_gm(self.CP) and self.CP.pcmCruise and not self.CP.openpilotLongitudinalControl):
         native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
         if stock_lateral_role(self, CS, native, intent, allow_independent_cancel=True,
                               allow_independent_brake=True, allow_independent_gas=True, now_ns=now_ns):
           user_disable = False
     from opendbc.car.hyundai.blended_stock_aol import qualified as blended_stock_qualified
+    from opendbc.car.subaru.stock_aol import qualified as subaru_stock_qualified
     if (user_disable and fresh_successor and proof[6] and not proof[7] and proof[8] and not proof[9] and
         decision.desired_lateral and not decision.desired_longitudinal and not decision.longitudinal_active and
         not self.enabled and not self.active and (
           self.CP.brand == 'toyota' and toyota_qualified(self.CP, marked_only=True) or
-          self.CP.brand == 'hyundai' and blended_stock_qualified(self.CP, marked_only=True) and
+          (self.CP.brand == 'hyundai' and blended_stock_qualified(self.CP, marked_only=True) or
+           self.CP.brand == 'subaru' and subaru_stock_qualified(self.CP, marked_only=True)) and
           not physical_cancel(CS, self.CP) and not any(physical_cancel(sample, self.CP)
             for sample, _ in getattr(self, 'car_state_samples', ()))) and
         CS.cruiseState.available and not CS.cruiseState.enabled and
@@ -1759,6 +1785,7 @@ class SelfdriveD:
     from openpilot.starpilot.car.mazda.aol import physical_cancel_lateral_allowed as mazda_cancel_lateral_allowed
     from openpilot.starpilot.car.ford.aol import physical_cancel_lateral_allowed as ford_cancel_lateral_allowed
     from openpilot.starpilot.car.subaru.aol import sng_standstill_lateral_inhibit
+    from openpilot.starpilot.car.volkswagen.aol import lateral_output_inhibited as volkswagen_lateral_output_inhibited
     from openpilot.starpilot.aol.dm import lateral_event_context
     from openpilot.starpilot.car.toyota.legacy_lateral import below_engage_lateral_allowed as toyota_below_engage_lateral_allowed
     retained_dm_lateral, lateral_events = lateral_event_context(self, CS, intent, native, now_ns, ordinary_lag)
@@ -1805,7 +1832,8 @@ class SelfdriveD:
                         self.sm['driverMonitoringState'].alertLevel == AlertLevel.three)),
       pause_brake_mps=self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0,
       gear_pause=reverse_pause,
-      lateral_inhibit=self.aol_dm_lateral_inhibit or sng_standstill_lateral_inhibit(self.CP, CS) or any(
+      lateral_inhibit=self.aol_dm_lateral_inhibit or sng_standstill_lateral_inhibit(self.CP, CS) or
+        volkswagen_lateral_output_inhibited(self.CP, CS) or any(
         sample.steerFaultTemporary or sample.brakePressed and not sample.standstill and
         sample.vEgo < (self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0)
         for sample, _ in getattr(self, 'car_state_samples', ())))
