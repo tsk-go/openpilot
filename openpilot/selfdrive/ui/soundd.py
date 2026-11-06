@@ -71,7 +71,9 @@ ALERT_VOLUME_KEYS = {
   AudibleAlert.warningImmediate: "WarningImmediateVolume",
 }
 
-# StarView fork: the alert each volume setting previews (volume_preview.py)
+# StarView fork: the alert each volume setting previews (volume_preview.py); the repeating ones (both warnings,
+# distracted driver: 0.54-0.75 s each) play this many times, like the real alert, the one-time chimes once
+PREVIEW_PASSES = 3
 PREVIEW_SOUNDS = {
   "WarningImmediateVolume": AudibleAlert.warningImmediate,
   "WarningSoftVolume": AudibleAlert.warningSoft,
@@ -137,8 +139,14 @@ class Soundd:
     """StarView fork: a volume was changed - play its alert once, through the normal alert path (so the native mixer
     plays it too) at the saved level, stopping at the end of the first pass. Only when no real alert is on; a real
     alert takes over as usual. Checked every 0.25 s from the service loop."""
+    if self.previewing and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is not None and \
+       self.current_sound_frame >= len(self.loaded_sounds[self.current_sound]) * sound_list[self.current_alert][1]:
+      self.current_alert = AudibleAlert.none   # a one-shot sound already played to its end
     if self.previewing and self.current_alert == AudibleAlert.none:
       self.previewing = False
+    elif self.previewing and not self.pending_stop and \
+         self.current_sound_frame >= (PREVIEW_PASSES - 1) * len(self.loaded_sounds[self.current_sound]):
+      self.pending_stop = True                 # a repeating sound in its last pass: stop at the end of it
     if now - self.preview_read_at < 0.25:
       return
     self.preview_read_at = now
@@ -153,7 +161,7 @@ class Soundd:
     self.current_alert = alert
     self.current_sound = alert
     self.current_sound_frame = 0
-    self.pending_stop = True               # one pass, then silence
+    self.pending_stop = sound_list[alert][1] is not None   # one-time chimes: one pass; repeating: PREVIEW_PASSES
     self.previewing = True
     if getattr(self, "native_audio", None) is not None:
       self.native_audio.previous_alert = None  # the native mixer restarts the sound even if it was already playing
@@ -230,6 +238,11 @@ class Soundd:
     self.reported_output_underflows = underflows
 
   def update_alert(self, new_alert):
+    if new_alert == AudibleAlert.none and getattr(self, "previewing", False):
+      # StarView fork: selfdriveState's "no alert" (every 10 ms with the car on) must not touch a volume preview. For the
+      # looping sounds (both warnings, distracted driver) it hit the "dismiss at the next loop end" branch at frame 0,
+      # which counts as a loop end, so those previews were cut before they played (Nov 6). It ends on its own.
+      return
     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_sound])
     # let looping sounds finish the current loop instead of cutting off mid tone
     if new_alert == AudibleAlert.none and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is None:

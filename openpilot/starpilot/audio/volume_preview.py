@@ -1,10 +1,11 @@
 """Hear an alert volume on the comma when it's changed (Galaxy, StarView's tablet, the comma's own settings).
 
 SoundsOwner.apply saves a volume and calls request(); soundd polls the file with its other slow reads (every 0.25 s)
-and plays that alert's sound once (one pass of its track) at the saved level, through its normal alert path so the
-native mixer plays it too - onroad or offroad, parked or driving, as long as no real alert is sounding (a real alert
-also takes over). The "Sound Preview" switch on the Sounds & Alerts page turns it off (SWITCH_OFF exists = off; on
-by default). Nothing in Params: /dev/shm for the request, /data/starview for the switch.
+and plays that alert at the saved level - the one-time chimes once, the repeating warnings 3 times like the real
+alert - through its normal alert path, so the native mixer plays it too. Onroad or offroad, parked or driving, as
+long as no real alert is sounding (a real alert also takes over). The "Sound Preview" switch on the Sounds & Alerts
+page turns it off (SWITCH_OFF exists = off; on by default). Nothing in Params: /dev/shm for the request,
+/data/starview for the switch.
 """
 import json
 import os

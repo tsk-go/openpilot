@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from openpilot.selfdrive.ui.soundd import PREVIEW_SOUNDS, AudibleAlert, Soundd
+from openpilot.selfdrive.ui.soundd import PREVIEW_PASSES, PREVIEW_SOUNDS, AudibleAlert, Soundd
 from openpilot.starpilot.audio import volume_preview as vp
 from openpilot.starpilot.audio.alert_volume import AUTO, SPECS
 
@@ -85,7 +85,12 @@ def make_soundd(tmp_path, reqs, saved=None):
 
 
 def play(s, blocks=10, frames=512):
-  return np.concatenate([s.get_sound_data(frames) for _ in range(blocks)])
+  """The audio callback, with soundd's service loop (update_preview) running between blocks as on the device."""
+  out = []
+  for _ in range(blocks):
+    out.append(s.get_sound_data(frames))
+    s.update_preview(0.0)
+  return np.concatenate(out)
 
 
 def test_one_pass_of_the_chime_at_the_saved_level(tmp_path):
@@ -100,12 +105,14 @@ def test_one_pass_of_the_chime_at_the_saved_level(tmp_path):
   assert not s.previewing
 
 
-def test_a_looping_warning_plays_one_pass_only(tmp_path):
+def test_a_repeating_warning_plays_three_times(tmp_path):
+  assert PREVIEW_PASSES == 3
   s = make_soundd(tmp_path, [("WarningSoftVolume", 60)], saved={"WarningSoftVolume": 60})
   s.update_preview(0.0)
-  out = play(s, blocks=20)
+  assert not s.pending_stop
+  out = play(s, blocks=30)
   played = out[out != 0]
-  assert len(played) == 3000 and np.allclose(played, 0.5 * 0.60)
+  assert len(played) == 3 * 3000 and np.allclose(played, 0.5 * 0.60)
   assert s.current_alert == AudibleAlert.none
 
 
@@ -116,21 +123,39 @@ def test_auto_uses_the_ambient_level_and_no_ramp(tmp_path):
   assert s.current_volume == 0.3
   out = play(s, blocks=2)
   assert np.isclose(out.max(), 0.5 * 0.3)
+  assert s.current_volume == 0.3                                  # still no ramp after it played
 
 
 def test_onroad_none_updates_dont_cut_it_short(tmp_path):
-  s = make_soundd(tmp_path, [("EngageVolume", 40)], saved={"EngageVolume": 40})
+  for key, alert, n in (("EngageVolume", AudibleAlert.engage, 1000), ("WarningSoftVolume", AudibleAlert.warningSoft, 3 * 3000),
+                        ("WarningImmediateVolume", AudibleAlert.warningImmediate, 3 * 2000)):
+    s = make_soundd(tmp_path, [(key, 60)], saved={key: 60})
+    s.update_preview(0.0)
+    s.update_alert(AudibleAlert.none)                             # selfdriveState says no alert, as it does onroad -
+    assert s.current_alert == alert                               # even at frame 0, where it used to end the warnings
+    out = []
+    for _ in range(40):
+      out.append(s.get_sound_data(512))
+      s.update_alert(AudibleAlert.none)
+      s.update_preview(0.0)
+    assert np.count_nonzero(np.concatenate(out)) == n, key
+    assert s.current_alert == AudibleAlert.none and not s.previewing
+
+
+def test_distracted_driver_plays_with_the_car_on(tmp_path):
+  # Nov 6: with the car on, selfdriveState's "no alert" at frame 0 ended the looping previews before they played.
+  s = make_soundd(tmp_path, [("PromptDistractedVolume", 60)], saved={"PromptDistractedVolume": 60})
+  s.loaded_sounds[AudibleAlert.promptDistracted] = np.full(1500, 0.5, dtype=np.float32)
   s.update_preview(0.0)
-  first = s.get_sound_data(512)
-  s.update_alert(AudibleAlert.none)                               # selfdriveState says no alert, as it does onroad
-  rest = play(s)
-  assert np.count_nonzero(np.concatenate([first, rest])) == 1000
-  s = make_soundd(tmp_path, [("WarningSoftVolume", 60)], saved={"WarningSoftVolume": 60})
-  s.update_preview(0.0)
-  first = s.get_sound_data(512)
   s.update_alert(AudibleAlert.none)
-  assert s.pending_stop
-  assert np.count_nonzero(np.concatenate([first, play(s, blocks=20)])) == 3000
+  assert s.current_alert == AudibleAlert.promptDistracted
+  out = []
+  for _ in range(20):
+    out.append(s.get_sound_data(512))
+    s.update_alert(AudibleAlert.none)
+    s.update_preview(0.0)
+  played = np.concatenate(out)
+  assert np.count_nonzero(played) == 3 * 1500 and np.allclose(played[played != 0], 0.5 * 0.60)
 
 
 def test_a_real_alert_wins(tmp_path):
