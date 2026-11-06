@@ -348,6 +348,27 @@ Paths are under `openpilot/` unless noted.
     Patch 63: commadist.azureedge.net is Azure Front Door and changed address within a minute (150.171.109.118, then
     .72), so per-address rules never kept up; its anycast blocks UPDATE4 (150.171.0.0/16, 13.107.0.0/16) are let
     through whole, like CloudFront's for Mapbox.
+40. USB hub power follows the car (patch 65): with the car off the hub's own supply is off, so the hub ran on the
+    comma's USB-C 5 V - tablet charging, radio dongle, RTK, Pico - from the car battery until the comma's low-voltage
+    shutdown, and again after every wake. The comma switches its port's 5 V itself: the PMIC OTG regulator
+    `/sys/kernel/debug/regulator/smb2-vbus/enable` (root; comma's `system/hardware/chestnut/flash.py` uses it to
+    power-cycle the eGPU). Tested Nov 5: "0" -> 43 USB entries down to 15 (only the comma's own modem `1-1` and root
+    hubs), the hub went dark; "1" -> all back. `hub_power.py` HubPower from starviewd's `hub_power_thread`
+    (pandaStates conflated, 0.5 s car off / 1 s on; `can` only read with the car off): car on (ignition or started) ->
+    on at once, never off while on; car off after a drive -> off after the delay (tablet 1 min - 5 h, default 5 min,
+    /data/starview/hub_power.json); the comma woke with the car already off -> off after min(delay, 60 s); port off
+    and CAN traffic after >= 30 s of quiet (unlocked, door) -> on early, off again after the delay; pandaStates stale
+    10 s -> on; StarView start -> on; the port in USB device mode (StarPort, a PC) -> left alone. The fob's after-park
+    window and StarLock's window close need the hub (dongle, Pico), so they last as long as the delay
+    (`hub.hub_powered()` gates the fob). Action `hub_power` {op: status | set, on, delay_min}; StarView 2.81.0 Device >
+    System > USB hub power. Possible race to watch: a car start while the port is off means the hub enumerates
+    while modeld starts (wait_for_chestnut 10 s) - the eGPU powers up from the hub's supply at ignition anyway.
+    Auto-tethering (already in starviewd, now `tether.py` TetherWatch): the tablet drops to charging-only when its
+    cable comes back, so the comma turns USB tethering on over adb (`svc usb setFunctions rndis`; adb key in
+    /data/starview/adbhome, off: /data/starview/no_auto_tether) - REMEMBER THIS EXISTS, don't ask the owner to set the
+    tablet's default USB mode. Nov 5: right after the port came back the tablet said rndis but no link came, until a
+    replug; now a tablet saying rndis with no link for 30 s gets its USB reset like a replug (functions none, 2 s,
+    rndis, in one detached shell), then again after 60 s, then every 5 min. Idle while the hub is off.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

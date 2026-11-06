@@ -63,6 +63,8 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.system.starview import compat, doorbelt, offline as offline_mode, pairing, replay
+from openpilot.starpilot.system.starview.hub_power import HubPower, STALE_S as HUB_STALE_S
+from openpilot.starpilot.system.starview.tether import TetherWatch
 
 try:
   from openpilot.common.version import get_build_metadata
@@ -888,6 +890,7 @@ class Hub:
     self.autolock = AutoLock(lambda cmd, sound, beeps: self._door({"cmd": cmd, "sound": sound, "beeps": beeps}),
                              self.phone_signal.read, log=cloudlog.warning)
     self.fob = None           # the key fob listener (fob.py), started by start_fob
+    self.hubpower = None      # the comma's USB port power (hub_power.py), set by hub_power_thread
     # StarView runs as its own service (service.py) and outlives openpilot: deviceState (2 Hz) tells whether it's up
     self.openpilot_down = False
     self._ds_sock = None
@@ -1779,6 +1782,23 @@ class Hub:
       return {"ok": False, "error": str(e)[:200]}
     return {"ok": False, "error": "unknown key fob request"}
 
+  def hub_power_action(self, req: dict) -> dict:
+    """The tablet's USB hub power screen (hub_power.py). op "status" (default) or "set" {"on"?, "delay_min"?}."""
+    hp = getattr(self, "hubpower", None)
+    if hp is None:
+      return {"ok": False, "error": "USB hub power isn't running"}
+    try:
+      if str(req.get("op") or "status") == "set":
+        return hp.set_config(on=req.get("on"), delay_min=req.get("delay_min"))
+      return hp.status(time.monotonic())
+    except OSError as e:
+      return {"ok": False, "error": str(e)[:200]}
+
+  def hub_powered(self) -> bool:
+    """False while hub_power.py has the USB port off (the fob's radio dongle and the Pico are on the hub)."""
+    hp = getattr(self, "hubpower", None)
+    return hp is None or not hp.cut
+
   def lock_state(self) -> dict:
     """The doors' real lock state (card writes LOCKS on a change, door_locks.py): {"doors": {driver, passenger, slide_1,
     slide_2, back: "locked" / "unlocked" / None}, "live": openpilot started (car on: read every 2 s), "time"}. One stat()
@@ -1972,6 +1992,8 @@ class Hub:
         return self.doorbelt(req)
       if act == "fob":  # {"op": ...}: the key fob screen - switch, learn / forget fobs, presses heard (fob.py)
         return self.fob_action(req)
+      if act == "hub_power":  # {"op": "status" | "set", "on"?, "delay_min"?}: hub off after the car (hub_power.py)
+        return self.hub_power_action(req)
       if act == "locks":  # the doors' real lock state (door_locks.py via card)
         return {"ok": True, **self.lock_state()}
       if act == "window":  # {"hold": bool} every 250 ms while held: StarLock's hold-to-close (relay 3, car off)
@@ -2868,31 +2890,74 @@ def _usb_link_up() -> bool:
   return bool(_usb_subnets())
 
 
-def auto_tether_thread():
+def auto_tether_thread(hub=None):
+  """Every 5 s: link up -> nothing; down -> every 20 s TetherWatch (tether.py): tethering on, or a USB reset when the
+  tablet says rndis and no link comes. Idle while hub_power.py has the hub off (no tablet to reach)."""
   adb = shutil.which("adb")
   if adb is None or not os.path.isdir(ADB_HOME):
     cloudlog.info("starview: auto-tether off (no adb or no paired key in /data/starview/adbhome)")
     return
   env = dict(os.environ, HOME=ADB_HOME)
+
+  def run(sn, *args):
+    return subprocess.run([adb, "-s", sn, *args], capture_output=True, text=True, timeout=10, env=env).stdout
+
+  watch = TetherWatch(run, log=cloudlog.warning)
   last_try = 0.0
   while True:
     time.sleep(5)
     try:
-      if os.path.exists(AUTO_TETHER_OFF) or _usb_link_up() or time.monotonic() - last_try < 20:
+      if os.path.exists(AUTO_TETHER_OFF) or (hub is not None and not hub.hub_powered()):
+        continue
+      if _usb_link_up():
+        watch.link_up()
+        continue
+      if time.monotonic() - last_try < 20:
         continue
       r = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=10, env=env)
       serials = [ln.split()[0] for ln in r.stdout.splitlines()[1:] if ln.strip().endswith("device")]
       if not serials:
         continue
       last_try = time.monotonic()
-      for sn in serials:
-        cur = subprocess.run([adb, "-s", sn, "shell", "svc", "usb", "getFunctions"], capture_output=True, text=True, timeout=10, env=env)
-        if "rndis" in cur.stdout:
-          continue
-        subprocess.run([adb, "-s", sn, "shell", "svc", "usb", "setFunctions", "rndis"], capture_output=True, text=True, timeout=10, env=env)
-        cloudlog.warning(f"starview: tablet {sn} was not tethering ({cur.stdout.strip() or 'none'}); switched USB tethering on")
+      watch.step(last_try, serials)
     except Exception as e:
       cloudlog.warning(f"starview: auto-tether: {e}")
+
+
+def hub_power_thread(hub):
+  """hub_power.py: the comma's USB-C port off a while after the car turns off, on again when it starts (or the CAN
+  bus wakes). pandaStates (conflated) every 0.5 s with the car off, 1 s with it on; CAN only read with the car off."""
+  from openpilot.common.hardware.usb import usb_host_connected
+  hp = HubPower(device_mode=usb_host_connected, log=cloudlog.warning)
+  hub.hubpower = hp
+  try:
+    hp.ensure_on("StarView started")
+  except Exception as e:
+    cloudlog.warning(f"starview: hub power: {e}")
+  ps_sock = messaging.sub_sock("pandaStates", conflate=True)
+  can_sock = None
+  ignition = None
+  last_rx = 0.0
+  while True:
+    time.sleep(1.0 if hp.car else 0.5)
+    try:
+      now = time.monotonic()
+      b = messaging.recv_one_or_none(ps_sock)
+      if b is not None:
+        last_rx = now
+        ps = b.pandaStates
+        ignition = any(p.ignitionLine or p.ignitionCan for p in ps) if len(ps) else False
+      ign = ignition if now - last_rx <= HUB_STALE_S else None
+      can_active = False
+      if ign is False and not hub.started:
+        if can_sock is None:
+          can_sock = messaging.sub_sock("can", conflate=True)
+        can_active = messaging.recv_one_or_none(can_sock) is not None
+      elif can_sock is not None:
+        can_sock = None
+      hp.tick(now, ign, bool(hub.started), can_active)
+    except Exception as e:
+      cloudlog.warning(f"starview: hub power: {e}")
 
 
 # ------------------------------------------------------------------------------------------ tablet screen follows the car
@@ -3237,7 +3302,7 @@ def start_fob(hub):
       cfg = autolock.load_config()    # StarLock's horn / beep settings
       return hub._door({"cmd": cmd, "sound": cfg["sound"], "beeps": cfg["lock_beeps" if cmd == "lock" else "unlock_beeps"]})
 
-    hub.fob = fob.FobWatch(started=lambda: hub.started, after_off=lambda: not hub.started and not hub.openpilot_down and hub.ble_wanted(),
+    hub.fob = fob.FobWatch(started=lambda: hub.started, after_off=lambda: not hub.started and not hub.openpilot_down and hub.ble_wanted() and hub.hub_powered(),
                            door=door,
                            lock_state=hub.lock_state, window=hub.window_close, log=cloudlog.warning)
     threading.Thread(target=fob.run, args=(hub.fob,), name="starview-fob", daemon=True).start()
@@ -3260,7 +3325,8 @@ def main():
   app = web.Application(client_max_size=1024 * 1024)
   app["hub"] = Hub(loop)
   threading.Thread(target=discovery_thread, args=(app["hub"],), name="starview-discovery", daemon=True).start()
-  threading.Thread(target=auto_tether_thread, name="starview-tether", daemon=True).start()
+  threading.Thread(target=auto_tether_thread, args=(app["hub"],), name="starview-tether", daemon=True).start()
+  threading.Thread(target=hub_power_thread, args=(app["hub"],), name="starview-hubpower", daemon=True).start()
   threading.Thread(target=tablet_power_thread, name="starview-tabletpower", daemon=True).start()
   threading.Thread(target=log_archive_thread, name="starview-logarchive", daemon=True).start()
   threading.Thread(target=doorbelt_thread, name="starview-doorbelt-scan", daemon=True).start()

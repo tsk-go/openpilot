@@ -703,3 +703,20 @@ def test_fob_screen_requests(tmp_path):
   assert hub.control({"action": "fob", "op": "forget", "id": "c8a4ab584"})["ids"] == []
   assert hub.control({"action": "fob", "op": "history"}) == {"ok": True, "events": []}
   assert hub.control({"action": "fob", "op": "nope"})["ok"] is False
+
+
+def test_hub_power_screen_requests(tmp_path):
+  from openpilot.starpilot.system.starview.hub_power import HubPower
+  hub = make_hub(started=False)
+  assert hub.control({"action": "hub_power"}) == {"ok": False, "error": "USB hub power isn't running"}
+  assert hub.hub_powered() is True          # not running: never blocks the fob or auto-tether
+  (tmp_path / "enable").write_text("1\n")
+  hub.hubpower = HubPower(vbus=str(tmp_path / "enable"), cfg=str(tmp_path / "hub_power.json"), log=lambda m: None)
+  st = hub.control({"action": "hub_power"})
+  assert st["ok"] and st["on"] is True and st["delay_min"] == 5 and st["port"] == "on"
+  st = hub.control({"action": "hub_power", "op": "set", "delay_min": 600})
+  assert st["delay_min"] == 300
+  st = hub.control({"action": "hub_power", "op": "set", "on": False, "delay_min": 1})
+  assert st["on"] is False and st["delay_min"] == 1
+  hub.hubpower.cut = True
+  assert hub.hub_powered() is False
