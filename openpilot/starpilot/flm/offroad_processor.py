@@ -109,14 +109,14 @@ def _recorded_tracking(windows):
   }
 
 
-def _control_eligible(control, stamp):
+def _control_source_current(control, stamp):
   return bool(
     control is not None
     and abs(control.control_ns - stamp) <= 30_000_000
     and control.enabled
     and control.active
     and control.valid
-    and not (control.manual or control.override or control.fault or control.saturated or control.limited)
+    and not (control.manual or control.override or control.fault or control.saturated)
     and 0 < control.state_ns <= control.control_ns <= control.state_ns + 100_000_000
     and 0 < control.source_receipt_ns <= control.control_ns <= control.source_receipt_ns + 500_000_000
     and (
@@ -125,6 +125,22 @@ def _control_eligible(control, stamp):
       and 0 < control.native_observed_ns <= control.control_ns <= control.native_expires_ns <= control.native_observed_ns + 200_000_000
     )
   )
+
+
+def _control_eligible(control, stamp):
+  return _control_source_current(control, stamp) and not control.limited
+
+
+def _control_reconstructible(control, stamp):
+  if not _control_source_current(control, stamp):
+    return False
+  if not control.limited:
+    return True
+  inputs = dict(getattr(control, 'replay_inputs', ()))
+  from openpilot.starpilot.flm.route_recording import SCHEMAS
+
+  schema = getattr(control, 'stage_schema_revision', '')
+  return bool(SCHEMAS.get(schema, schema) == 'torque-selected-stage-snapshot-v1' and inputs.get('active') == 1.0 and inputs.get('safety_limited') in (0.0, 1.0))
 
 
 def continuous_control_window(window, timeline, metadata_for, expected):
@@ -136,8 +152,15 @@ def continuous_control_window(window, timeline, metadata_for, expected):
     and rows[0][0] <= start
     and rows[-1][0] >= end
     and all(b[0] - a[0] <= 50_000_000 for a, b in zip(rows, rows[1:], strict=False))
-    and all(_control_eligible(control, stamp) and metadata_for(control, window.domain) == expected for stamp, control in rows)
+    and all(_control_reconstructible(control, stamp) and metadata_for(control, window.domain) == expected for stamp, control in rows)
   )
+
+
+def baseline_control_windows(window, timeline, metadata_for, expected):
+  """Check the exact observed children; a second clock grid changes maneuvers."""
+  if any(value for _, value in expected['route_values']):
+    return ()
+  return tuple(child for child in whole_windows(window.points) if continuous_control_window(child, timeline, metadata_for, expected))
 
 
 @dataclass
@@ -161,10 +184,14 @@ def collect_route_inputs(root, route, *, permitted, walker=None):
   windows = {}
   stable_windows = {}
   baseline_tracking = {}
+  baseline_qualified = {}
   bookends = {}
   raw_windows = {}
   context_metadata = {}
   counts = {
+    'recorded_lateral_request_rows': 0,
+    'active_lateral_request_rows': 0,
+    'invalid_lateral_request_rows': 0,
     'recorded_tracking': 0,
     'joined_tracking': 0,
     'missing_join': 0,
@@ -202,6 +229,10 @@ def collect_route_inputs(root, route, *, permitted, walker=None):
       if index % 128 == 0 and not permitted():
         raise ValueError('Parked analysis cancelled')
       kind = event.which()
+      if kind == 'carControl':
+        counts['recorded_lateral_request_rows'] += 1
+        counts['active_lateral_request_rows'] += bool(event.carControl.latActive)
+        counts['invalid_lateral_request_rows'] += not event.valid
       if kind == 'carParams':
         # Own the actual CP reader independently of this segment's byte buffer.
         cp = event.carParams.as_builder().as_reader()
@@ -274,6 +305,7 @@ def collect_route_inputs(root, route, *, permitted, walker=None):
           context = hashlib.sha256(repr(metadata).encode()).hexdigest()
           context_metadata[context] = metadata
           baseline_tracking.setdefault(context, []).append(window)
+          baseline_qualified.setdefault(context, []).extend(baseline_control_windows(window, timeline, metadata_for, metadata))
           bookends[window.identity] = stamps
         # Apply override buffers to ALL original rows before metadata eligibility
         # can remove any override. Match closest original metadata, never closest
@@ -289,7 +321,7 @@ def collect_route_inputs(root, route, *, permitted, walker=None):
           candidates = tuple(i for i in (at - 1, at) if 0 <= i < len(timeline))
           nearest = min(candidates, key=lambda i: abs(times[i] - point.mono_ns)) if candidates else None
           control = None if nearest is None else timeline[nearest][1]
-          okay = _control_eligible(control, point.mono_ns)
+          okay = _control_reconstructible(control, point.mono_ns)
           if not okay:
             counts['controller_fit_refusals'] += 1
             run_context = None
@@ -316,6 +348,10 @@ def collect_route_inputs(root, route, *, permitted, walker=None):
                 else:
                   counts['whole_control_window_refusals'] += 1
 
+    # Known-zero proposals and their controller checks use the same original
+    # endpoints. Every intervening envelope still has to pass independently.
+    for context in baseline_tracking:
+      windows[context] = baseline_qualified[context]
     if sum(map(len, windows.values())) + sum(map(len, stable_windows.values())) + sum(map(len, baseline_tracking.values())) > MAX_WINDOWS:
       raise ValueError('Whole-drive tracking window bound exceeded')
 
@@ -323,9 +359,52 @@ def collect_route_inputs(root, route, *, permitted, walker=None):
   return RecordedInputs(receipt, state, windows, stable_windows, baseline_tracking, bookends, raw_windows, context_metadata, counts, quality_stops)
 
 
-def analyze_latest(params, root, previous, *, permitted):
+def collect_latest_steering_inputs(params, root, *, permitted):
   route = latest_route(params, root, permitted=permitted)
-  collected = collect_route_inputs(root, route, permitted=permitted)
+  import time
+  from openpilot.starpilot.flm.offroad_route import MAX_ANALYSIS_SECONDS, MAX_SEGMENTS, LOCAL_ID
+  from openpilot.starpilot.galaxy.drive_history import DriveHistory
+
+  started = time.monotonic()
+
+  def allowed():
+    return permitted() and time.monotonic() - started <= MAX_ANALYSIS_SECONDS
+
+  collected = collect_route_inputs(root, route, permitted=allowed)
+  current_cp = collected.receipt.cp_sha256
+  skipped = 0
+
+  def inactive(inputs):
+    c = inputs.counts
+    return (
+      c['recorded_lateral_request_rows'] >= 40 and c['active_lateral_request_rows'] == 0 and c['invalid_lateral_request_rows'] == 0 and not inputs.quality_stops
+    )
+
+  if inactive(collected) and LOCAL_ID.fullmatch(route['routeId']):
+    snapshot = DriveHistory(root, max_segments_per_route=MAX_SEGMENTS).snapshot()
+    if snapshot['scanIncomplete']:
+      raise ValueError('Latest steering drive inventory incomplete')
+    counter = int(route['routeId'].split('--')[0], 16)
+    candidates = []
+    for candidate in snapshot['routes']:
+      if LOCAL_ID.fullmatch(candidate['routeId']):
+        distance = (counter - int(candidate['routeId'].split('--')[0], 16)) % 2**32
+        if 1 <= distance <= 3 and candidate['segments'] and all(s['files']['rlog'] for s in candidate['segments']):
+          candidates.append((distance, candidate['routeId'], candidate))
+    for _, _, candidate in sorted(candidates):
+      earlier = collect_route_inputs(root, candidate, permitted=allowed)
+      if earlier.receipt.cp_sha256 != current_cp:
+        continue
+      skipped += 1
+      if not inactive(earlier):
+        route, collected = candidate, earlier
+        collected.counts['inactive_recordings_skipped'] = skipped
+        break
+  return route, collected
+
+
+def analyze_latest(params, root, previous, *, permitted):
+  route, collected = collect_latest_steering_inputs(params, root, permitted=permitted)
   receipt, state = collected.receipt, collected.state
   if type(receipt) is not RouteReceipt:
     raise ValueError('A whole completed-route assessment requires all original segments')
