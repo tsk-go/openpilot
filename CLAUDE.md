@@ -36,6 +36,7 @@ it brings comma's low-speed curvature floor 1.0 -> 2.5 m/s, #39182, and the swit
 plus the aarch64 `starpilot/ui/native/_raylib_extra.so` - so on an x86 box the tests that import the onroad UI or the
 QR code (the slc_action and pairing-QR StarView tests) can't load it; they need the device).
 Nov 6: synced `Dom` up to upstream `97a5e15cc` (164 commits; two conflicts, both kept: card.py - upstream's `can_parse` timing mark next to our door-lock reply scan, mark first - and process_config.py - upstream's two-blank-line spacing around our `pandad_run` and `starviewd` entries; panda images rebuilt from source). Brings AGNOS 20.2.2 and parked Auto Learn analysis (`steering_learning` now runs while parked).
+Nov 6 (2): synced `Dom` up to upstream `6e0baac46` (6 commits, no source conflicts; panda images rebuilt). Brings `d64fb74c3`: the comma build keeps the authenticated driver-monitoring files (dm_warp_*.pkl, dmonitoring_model_tinygrad.pkl) instead of regenerating them - after AGNOS 20.2.2 the rebuilt ones failed the fingerprint check and dmonitoringmodeld wouldn't start.
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
