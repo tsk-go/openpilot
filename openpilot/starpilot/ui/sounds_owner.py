@@ -75,7 +75,7 @@ class SoundsOwner:
     on = volume_preview.enabled()
     rows.append(FeatureRow(PREVIEW_KEY, "Sound Preview", "On" if on else "Off", b"1" if on else b"0", ("Off", "On"),
                            available=parked, default_value="On",
-                           reason="Plays an alert on the comma for 3 seconds at its new volume whenever you change it here"))
+                           reason="Plays an alert once on the comma at its new volume whenever you change it here"))
     defaults = dict.fromkeys(SPECS, 'Auto')
     defaults['SoundPack'] = PACK_LABELS.get(DEFAULT_PACK, DEFAULT_PACK)
     rows = tuple(replace(row, default_value=defaults[row.key]) if row.key in defaults else row for row in rows)

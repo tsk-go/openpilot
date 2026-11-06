@@ -1,18 +1,16 @@
 """Hear an alert volume on the comma when it's changed (Galaxy, StarView's tablet, the comma's own settings).
 
 SoundsOwner.apply saves a volume and calls request(); soundd polls the file with its other slow reads (every 0.25 s)
-and plays that alert's sound at the new level for PREVIEW_S, looped, with a short fade at the end - onroad or offroad,
-parked or driving, as long as no real alert is sounding (a real alert also stops it). The sound comes from the comma's
-speaker whichever screen made the change. The "Sound Preview" switch on the Sounds & Alerts page turns it off
-(SWITCH_OFF exists = off; on by default). Nothing in Params: /dev/shm for the request, /data/starview for the switch.
+and plays that alert's sound once (one pass of its track) at the saved level, through its normal alert path so the
+native mixer plays it too - onroad or offroad, parked or driving, as long as no real alert is sounding (a real alert
+also takes over). The "Sound Preview" switch on the Sounds & Alerts page turns it off (SWITCH_OFF exists = off; on
+by default). Nothing in Params: /dev/shm for the request, /data/starview for the switch.
 """
 import json
 import os
 import time
 
 PREVIEW = "/dev/shm/starpilot_volume_preview"
-PREVIEW_S = 3.0
-FADE_S = 0.05
 MAX_AGE_S = 2.0              # an old request (soundd restarted, a slow write) never plays
 SWITCH_OFF = "/data/starview/sound_preview_off"
 
@@ -47,10 +45,15 @@ def request(key: str, value: int, path: str | None = None, wall=time.time, off_p
       json.dump({"key": key, "value": int(value), "t": wall()}, f)
     os.replace(tmp, path)
     return True
-  except (OSError, TypeError, ValueError):
+  except (OSError, TypeError, ValueError) as e:
     try:
       os.unlink(tmp)
     except OSError:
+      pass
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.warning(f"volume preview: couldn't ask soundd ({e})")
+    except Exception:
       pass
     return False
 

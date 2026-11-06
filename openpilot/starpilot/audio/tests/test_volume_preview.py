@@ -1,11 +1,11 @@
-"""StarView fork: a changed alert volume plays on the comma for 3 s (volume_preview.py, soundd, sounds_owner)."""
+"""StarView fork: a changed alert volume plays its alert once on the comma (volume_preview.py, soundd, sounds_owner)."""
 import json
 import os
 from types import SimpleNamespace
 
 import numpy as np
 
-from openpilot.selfdrive.ui.soundd import PREVIEW_SOUNDS, SAMPLE_RATE, AudibleAlert, Soundd
+from openpilot.selfdrive.ui.soundd import PREVIEW_SOUNDS, AudibleAlert, Soundd
 from openpilot.starpilot.audio import volume_preview as vp
 from openpilot.starpilot.audio.alert_volume import AUTO, SPECS
 
@@ -51,63 +51,118 @@ class _Reader:
     return self.reqs.pop(0) if self.reqs else None
 
 
-def make_soundd(reqs):
+class _VolParams:
+  def __init__(self, d):
+    self.d = d
+
+  def get_param_path(self, key=None):
+    return str(self.d / key) if key else str(self.d)
+
+
+def make_soundd(tmp_path, reqs, saved=None):
+  for k, v in (saved or {}).items():
+    (tmp_path / k).write_text(str(v))
   s = Soundd.__new__(Soundd)
-  s.current_alert = AudibleAlert.none
-  s.current_volume = 0.3
+  s.volume_params = _VolParams(tmp_path)
+  s.volume_read_at = 0.0
   s.saved_volumes = {}
+  s.current_alert = AudibleAlert.none
+  s.current_sound = AudibleAlert.none
+  s.current_sound_frame = 0
+  s.pending_stop = False
+  s.current_volume = 0.3
+  s.ramp_start_volume = 0.3
+  s.ramp_start_time = 0.0
+  s.native_audio = None
   s.loaded_sounds = {AudibleAlert.engage: np.ones(1000, dtype=np.float32),
-                     AudibleAlert.warningImmediate: np.full(500, 0.5, dtype=np.float32)}
+                     AudibleAlert.warningSoft: np.full(3000, 0.5, dtype=np.float32),
+                     AudibleAlert.warningImmediate: np.full(2000, 0.5, dtype=np.float32)}
   s.pack_loader = SimpleNamespace(is_builtin=lambda data: False)
   s.preview_reader = _Reader(reqs)
   s.preview_read_at = -1.0
-  s.preview_sound = AudibleAlert.none
-  s.preview_gain = 0.0
-  s.preview_frame = 0
-  s.preview_left = 0
-  s.pending_stop = False
+  s.previewing = False
   return s
 
 
-def test_preview_plays_three_seconds_at_the_new_level_then_stops():
-  s = make_soundd([("EngageVolume", 40)])
+def play(s, blocks=10, frames=512):
+  return np.concatenate([s.get_sound_data(frames) for _ in range(blocks)])
+
+
+def test_one_pass_of_the_chime_at_the_saved_level(tmp_path):
+  s = make_soundd(tmp_path, [("EngageVolume", 40)], saved={"EngageVolume": 40})
   s.update_preview(0.0)
-  out = np.concatenate([s.get_sound_data(4096) for _ in range(40)])
-  played = out[np.abs(out) > 0]
-  assert len(played) == int(3.0 * SAMPLE_RATE)               # exactly 3 s
-  assert np.isclose(played[:1000].max(), 0.40)              # the engage chime, looped, at 40 %
-  assert played[-1] < 0.40 * 0.01                           # faded out, no click
-  assert not out[int(3.0 * SAMPLE_RATE):].any()
+  assert s.current_alert == AudibleAlert.engage and s.previewing and s.pending_stop
+  out = play(s)
+  played = out[out != 0]
+  assert len(played) == 1000 and np.allclose(played, 0.40)     # the whole track once, at 40 %
+  assert s.current_alert == AudibleAlert.none
+  s.update_preview(0.3)
+  assert not s.previewing
 
 
-def test_auto_plays_at_the_ambient_level():
-  s = make_soundd([("WarningImmediateVolume", AUTO)])
+def test_a_looping_warning_plays_one_pass_only(tmp_path):
+  s = make_soundd(tmp_path, [("WarningSoftVolume", 60)], saved={"WarningSoftVolume": 60})
   s.update_preview(0.0)
-  out = s.get_sound_data(400)
-  assert np.isclose(out.max(), 0.5 * 0.3)                    # Auto: today's ambient volume (0.3), no ramp
+  out = play(s, blocks=20)
+  played = out[out != 0]
+  assert len(played) == 3000 and np.allclose(played, 0.5 * 0.60)
+  assert s.current_alert == AudibleAlert.none
 
 
-def test_a_real_alert_wins():
-  s = make_soundd([("EngageVolume", 40)])
-  s.current_alert = AudibleAlert.engage                       # an alert already sounding: no preview
+def test_auto_uses_the_ambient_level_and_no_ramp(tmp_path):
+  s = make_soundd(tmp_path, [("WarningImmediateVolume", AUTO)])
   s.update_preview(0.0)
-  assert s.preview_left == 0
-  s = make_soundd([("EngageVolume", 40)])
+  s.update_critical_sound(10.0)                                   # no ramp toward full volume
+  assert s.current_volume == 0.3
+  out = play(s, blocks=2)
+  assert np.isclose(out.max(), 0.5 * 0.3)
+
+
+def test_onroad_none_updates_dont_cut_it_short(tmp_path):
+  s = make_soundd(tmp_path, [("EngageVolume", 40)], saved={"EngageVolume": 40})
   s.update_preview(0.0)
-  s.get_sound_data(1000)
-  s.current_sound = AudibleAlert.none
-  s.current_sound_frame = 0
-  s.update_alert(AudibleAlert.engage)                         # a real alert arrives mid-preview: it stops
-  assert s.preview_left == 0
+  first = s.get_sound_data(512)
+  s.update_alert(AudibleAlert.none)                               # selfdriveState says no alert, as it does onroad
+  rest = play(s)
+  assert np.count_nonzero(np.concatenate([first, rest])) == 1000
+  s = make_soundd(tmp_path, [("WarningSoftVolume", 60)], saved={"WarningSoftVolume": 60})
+  s.update_preview(0.0)
+  first = s.get_sound_data(512)
+  s.update_alert(AudibleAlert.none)
+  assert s.pending_stop
+  assert np.count_nonzero(np.concatenate([first, play(s, blocks=20)])) == 3000
 
 
-def test_requests_are_read_every_quarter_second():
-  s = make_soundd([("EngageVolume", 40), ("EngageVolume", 50)])
+def test_a_real_alert_wins(tmp_path):
+  s = make_soundd(tmp_path, [("EngageVolume", 40)])
+  s.current_alert = s.current_sound = AudibleAlert.warningSoft    # a real alert sounding: no preview
+  s.update_preview(0.0)
+  assert not s.previewing and s.current_alert == AudibleAlert.warningSoft
+  s = make_soundd(tmp_path, [("EngageVolume", 40)])
+  s.update_preview(0.0)
+  s.get_sound_data(256)
+  s.update_alert(AudibleAlert.warningImmediate)                   # a real alert arrives mid-preview: it takes over
+  assert s.current_alert == AudibleAlert.warningImmediate and not s.previewing and not s.pending_stop
+  assert s.current_sound_frame == 0
+
+
+def test_a_second_change_restarts_the_preview(tmp_path):
+  s = make_soundd(tmp_path, [("EngageVolume", 40), ("EngageVolume", 50)], saved={"EngageVolume": 50})
+  s.native_audio = SimpleNamespace(previous_alert=AudibleAlert.engage)
+  s.update_preview(0.0)
+  s.get_sound_data(256)
+  s.native_audio.previous_alert = AudibleAlert.engage
+  s.update_preview(0.3)
+  assert s.current_sound_frame == 0 and s.native_audio.previous_alert is None and s.previewing
+
+
+def test_requests_are_read_every_quarter_second(tmp_path):
+  s = make_soundd(tmp_path, [("EngageVolume", 40), ("DisengageVolume", 50)])
   s.update_preview(0.0)
   s.update_preview(0.1)
-  assert s.preview_gain == 0.40
+  assert s.current_alert == AudibleAlert.engage
   s.update_preview(0.3)
-  assert s.preview_gain == 0.50
+  assert s.current_alert == AudibleAlert.disengage
 
 
 class _Params:
