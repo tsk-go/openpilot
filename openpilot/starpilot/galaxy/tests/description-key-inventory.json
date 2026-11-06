@@ -368,6 +368,7 @@
   "sounds:auto:RefuseVolume",
   "sounds:auto:WarningImmediateVolume",
   "sounds:auto:WarningSoftVolume",
+  "sounds:preview",
   "torque:automatic_delay:value",
   "torque:factor:mode",
   "torque:factor:reset",

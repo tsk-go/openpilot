@@ -378,6 +378,17 @@ Paths are under `openpilot/` unless noted.
     management (StarView 2.81.1): the hub and the comma's own Parked Power (Galaxy's OffroadPowerPreferences
     through its PowerOwner - parked only, compare-and-set; action `hub_power` op `comma_set` {enabled, hours, volts})
     on one page. With Parked Power on Stock the comma stays up to 30 h parked and stops only at 11.8 V.
+41. Sound preview (patch 68): change an alert volume anywhere (Galaxy, StarView's tablet, the comma's own settings -
+    all go through `SoundsOwner.apply`) and the comma plays that alert at the new level for 3 s. `starpilot/audio/
+    volume_preview.py`: SoundsOwner writes /dev/shm/starpilot_volume_preview {key, value, t}; soundd
+    (`update_preview`, read with its other slow reads every 0.25 s; a request older than 2 s never plays) loops the
+    alert's sound (`PREVIEW_SOUNDS`, one per VOLUMES key) at `effective_volume` (Auto = today's ambient level, no
+    ramp) for 3 s with a 50 ms fade, from `get_sound_data` when no real alert is on; a real alert wins and ends it.
+    Onroad or offroad, parked or driving - the owner's choice; the "Sound Preview" switch on Sounds & Alerts
+    (`sounds:preview`, on by default, off = /data/starview/sound_preview_off) turns it off. Upstream files touched:
+    selfdrive/ui/soundd.py, starpilot/ui/sounds_owner.py, galaxy/setting_descriptions.py with
+    galaxy/tests/description-key-inventory.json (`sounds:preview`), and ui/tests/test_sounds_settings.py (the sounds
+    page now has 11 rows, was 10) - check them on every sync.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

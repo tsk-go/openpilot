@@ -17,6 +17,7 @@ from openpilot.starpilot.aol.wire import INTENT_SERVICE
 from openpilot.starpilot.audio.alert_volume import AUTO, VOLUMES, effective_volume, read_volume
 from openpilot.starpilot.audio.axis_alerts import AxisAlerts
 from openpilot.starpilot.audio.sound_pack import PACK_ROOT, SoundPackLoader, migrate_removed_selection
+from openpilot.starpilot.audio.volume_preview import FADE_S, PREVIEW_S, PreviewReader
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -70,6 +71,18 @@ ALERT_VOLUME_KEYS = {
   AudibleAlert.warningImmediate: "WarningImmediateVolume",
 }
 
+# StarView fork: the alert each volume setting previews (volume_preview.py)
+PREVIEW_SOUNDS = {
+  "WarningImmediateVolume": AudibleAlert.warningImmediate,
+  "WarningSoftVolume": AudibleAlert.warningSoft,
+  "RefuseVolume": AudibleAlert.refuse,
+  "PromptDistractedVolume": AudibleAlert.promptDistracted,
+  "EngageVolume": AudibleAlert.engage,
+  "DisengageVolume": AudibleAlert.disengage,
+  "PromptVolume": AudibleAlert.prompt,
+}
+
+
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
 
@@ -110,13 +123,67 @@ class Soundd:
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
+    # StarView fork: a changed volume plays on the comma for PREVIEW_S (volume_preview.py)
+    self.preview_reader = PreviewReader()
+    self.preview_read_at = 0.0
+    self.preview_sound = AudibleAlert.none
+    self.preview_gain = 0.0
+    self.preview_frame = 0
+    self.preview_left = 0
+
   def load_sounds(self):
     loaded = self.pack_loader.refresh(tuple(dict.fromkeys(spec[0] for spec in sound_list.values())), time.monotonic())
     if loaded is not None:
       self.loaded_sounds = {sound: loaded[spec[0]] for sound, spec in sound_list.items()}
 
+  def get_preview_data(self, frames):
+    """StarView fork: the volume preview - the alert's sound looped at the chosen gain, faded out over FADE_S."""
+    ret = np.zeros(frames, dtype=np.float32)
+    data = self.loaded_sounds.get(self.preview_sound)
+    if data is None or len(data) == 0:
+      self.preview_left = 0
+      return ret
+    n = min(frames, self.preview_left)
+    written = 0
+    while written < n:
+      i = self.preview_frame % len(data)
+      k = min(len(data) - i, n - written)
+      ret[written:written + k] = data[i:i + k]
+      written += k
+      self.preview_frame += k
+    fade = int(FADE_S * SAMPLE_RATE)
+    left_after = self.preview_left - np.arange(n)
+    env = np.minimum(1.0, left_after / fade).astype(np.float32)
+    ret[:n] *= env
+    self.preview_left -= n
+    return ret * self.preview_gain
+
+  def update_preview(self, now: float) -> None:
+    """StarView fork: pick up a volume change (every 0.25 s, from the service loop) and start its preview."""
+    if now - self.preview_read_at < 0.25:
+      return
+    self.preview_read_at = now
+    req = self.preview_reader.poll()
+    if req is None:
+      return
+    key, value = req
+    alert = PREVIEW_SOUNDS.get(key)
+    if alert is None or self.current_alert != AudibleAlert.none:   # a real alert wins
+      return
+    data = self.loaded_sounds.get(alert)
+    ambient = self.current_volume
+    if data is not None and self.pack_loader.is_builtin(data):
+      ambient = max(ambient, STARPILOT_AUTO_MIN)
+    self.preview_left = 0
+    self.preview_sound = alert
+    self.preview_gain = float(effective_volume(key, value, ambient))
+    self.preview_frame = 0
+    self.preview_left = int(PREVIEW_S * SAMPLE_RATE)
+
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
+    if self.current_alert == AudibleAlert.none and getattr(self, "preview_left", 0) > 0:
+      return self.get_preview_data(frames)
     ret = np.zeros(frames, dtype=np.float32)
     producing_alert = self.current_alert
     loaded_sounds = self.loaded_sounds
@@ -201,6 +268,8 @@ class Soundd:
         self.pending_stop = True
       return
     self.pending_stop = False
+    if new_alert != AudibleAlert.none:
+      self.preview_left = 0  # StarView fork: a real alert ends a volume preview
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
         self.ramp_start_volume = self.current_volume
@@ -285,6 +354,7 @@ class Soundd:
         self.log_pending_stream_status(stream)
         self.refresh_saved_volumes(time.monotonic())
         self.load_sounds()
+        self.update_preview(time.monotonic())
 
         # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:

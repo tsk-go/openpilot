@@ -10,10 +10,12 @@ from openpilot.starpilot.saved_document import commit_exact
 from openpilot.starpilot.saved_source import read_saved
 from openpilot.starpilot.audio.blindspot_alert import KEYS as BLINDSPOT_KEYS
 
+from openpilot.starpilot.audio import volume_preview
 from openpilot.starpilot.audio.alert_volume import AUTO, MAX_RAW_BYTES, SPECS, VOLUMES, read_volume
 from openpilot.starpilot.ui.feature_settings_state import FeatureRow, FeatureSettingsRequest, FeatureSettingsState
 
 AUTO_PREFIX = "sounds:auto:"
+PREVIEW_KEY = "sounds:preview"   # StarView fork: hear a changed volume on the comma (volume_preview.py)
 PACK_LABELS = {"starpilot": "StarPilot Sounds", "stock": "Stock Sounds"}
 
 
@@ -70,6 +72,10 @@ class SoundsOwner:
       rows.append(FeatureRow(key, label, ("On" if raw == b"1" else "Off") if valid else "Invalid saved value",
                              raw, ("Off", "On") if valid else (), available=parked and valid,
                              reason=reason, default_value="Off"))
+    on = volume_preview.enabled()
+    rows.append(FeatureRow(PREVIEW_KEY, "Sound Preview", "On" if on else "Off", b"1" if on else b"0", ("Off", "On"),
+                           available=parked, default_value="On",
+                           reason="Plays an alert on the comma for 3 seconds at its new volume whenever you change it here"))
     defaults = dict.fromkeys(SPECS, 'Auto')
     defaults['SoundPack'] = PACK_LABELS.get(DEFAULT_PACK, DEFAULT_PACK)
     rows = tuple(replace(row, default_value=defaults[row.key]) if row.key in defaults else row for row in rows)
@@ -78,6 +84,11 @@ class SoundsOwner:
                                 rows=tuple(rows), parked=parked)
 
   def apply(self, request: FeatureSettingsRequest) -> bool:
+    if request.key == PREVIEW_KEY:
+      current = b"1" if volume_preview.enabled() else b"0"
+      if request.value not in ("Off", "On") or request.expected != current or not self.parked():
+        return False
+      return volume_preview.set_enabled(request.value == "On")
     if request.key in BLINDSPOT_KEYS:
       if request.value not in ("Off", "On") or request.expected not in (None, b"0", b"1"):
         return False
@@ -115,4 +126,7 @@ class SoundsOwner:
     # while reading state or opening either native page.
     result = commit_exact(self.params, key=request.key, max_bytes=MAX_RAW_BYTES, raw=str(selected).encode(),
                           expected=request.expected, authorized=self.parked, temp_prefix=".sound-volume-")
-    return result.committed and result.verified
+    ok = result.committed and result.verified
+    if ok:
+      volume_preview.request(request.key, selected)  # StarView fork: hear it on the comma (soundd)
+    return ok

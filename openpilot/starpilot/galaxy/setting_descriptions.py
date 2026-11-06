@@ -123,6 +123,7 @@ DESCRIPTIONS = {
   'EngageVolume': 'Sets the engagement-chime volume.',
   'DisengageVolume': 'Sets the disengagement-alert volume.',
   'PromptVolume': 'Sets the volume of general prompts.',
+  'sounds:preview': 'Plays an alert on the comma for 3 seconds at its new volume whenever you change it here.',
   'PIPPreviewEnabled': 'Shows the configured blind-spot camera preview when fresh camera frames are available.',
   'PIPPreviewShowOnBlinker': 'Shows the blind-spot camera preview while a turn signal is on.',
   'PIPPreviewShowOnBSM': 'Shows the blind-spot camera preview during a blind-spot warning.',
