@@ -14,12 +14,14 @@ from pathlib import Path
 GALAXY = Path(__file__).resolve().parents[3] / "galaxy"
 ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 
-# What StarView mirrors (as of StarView 2.81.2: Galaxy's Nov 4 "heading" rows are section titles; "coordinate" only
-# labels the manual steering coordinates on Galaxy's FLM page, which StarView doesn't draw)
+# What StarView mirrors (as of StarView 2.81.3: Galaxy's Nov 4 "heading" rows are section titles; "coordinate" only
+# labels the manual steering coordinates on Galaxy's FLM page, which StarView doesn't draw; "previewSound" (upstream
+# 359cb9fda, Nov 6) - Galaxy's play button on a volume row - StarView calls the same /api/sounds/preview by itself when
+# a volume slider is let go)
 MIRRORED_SCALES = {"lane-strength"}
 ROW_FIELDS = {"action", "available", "choices", "confirm", "coordinate", "defaultValue", "displayScale", "heading", "label", "maximum",
-              "minimum", "page", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
-PRESENTATION_SHA256 = "4417ae8870b99c16bad3e7ca2e058ac439d0a26d0748f5f6320c47a29fd85b8f"
+              "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
+PRESENTATION_SHA256 = "1bf21707507137fe81bba21be8a5e39e75128b1c76037728e4dc5b2d36e09268"
 
 
 def presentation_source() -> str:

@@ -37,6 +37,9 @@ plus the aarch64 `starpilot/ui/native/_raylib_extra.so` - so on an x86 box the t
 QR code (the slc_action and pairing-QR StarView tests) can't load it; they need the device).
 Nov 6: synced `Dom` up to upstream `97a5e15cc` (164 commits; two conflicts, both kept: card.py - upstream's `can_parse` timing mark next to our door-lock reply scan, mark first - and process_config.py - upstream's two-blank-line spacing around our `pandad_run` and `starviewd` entries; panda images rebuilt from source). Brings AGNOS 20.2.2 and parked Auto Learn analysis (`steering_learning` now runs while parked).
 Nov 6 (2): synced `Dom` up to upstream `6e0baac46` (6 commits, no source conflicts; panda images rebuilt). Brings `d64fb74c3`: the comma build keeps the authenticated driver-monitoring files (dm_warp_*.pkl, dmonitoring_model_tinygrad.pkl) instead of regenerating them - after AGNOS 20.2.2 the rebuilt ones failed the fingerprint check and dmonitoringmodeld wouldn't start.
+Nov 8: synced `Dom` up to upstream `a9a80d34e` (18 commits, no source conflicts; panda images rebuilt - upstream
+changed Polestar, Outback and HKG safety). Brings upstream's offroad alert volume preview (`359cb9fda`), which
+replaced ours (patch 71, fork history 41), and Galaxy's `previewSound` row field (Galaxy check updated).
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
@@ -379,23 +382,14 @@ Paths are under `openpilot/` unless noted.
     management (StarView 2.81.1): the hub and the comma's own Parked Power (Galaxy's OffroadPowerPreferences
     through its PowerOwner - parked only, compare-and-set; action `hub_power` op `comma_set` {enabled, hours, volts})
     on one page. With Parked Power on Stock the comma stays up to 30 h parked and stops only at 11.8 V.
-41. Sound preview (patch 68, reworked in patches 69 and 70): change an alert volume anywhere (Galaxy, StarView's tablet, the
-    comma's own settings - all go through `SoundsOwner.apply`) and the comma plays that alert at the new level: the
-    one-time chimes once, the repeating ones (both warnings, distracted driver - 0.54-0.75 s each) `PREVIEW_PASSES` = 3
-    times, like the real alert (patch 70; their stop is asked for in the last pass). `starpilot/audio/
-    volume_preview.py`: SoundsOwner writes /dev/shm/starpilot_volume_preview
-    {key, value, t}; soundd `update_preview` (read with its other slow reads every 0.25 s; a request older than 2 s
-    never plays) re-reads the saved levels and starts the alert through its normal alert state - current_alert /
-    current_sound with `pending_stop` set, so it stops at the end of the first pass - because on the comma the sound
-    comes from the native mixer (starpilot/audio/native_playback.py, fed by that state), not from get_sound_data:
-    patch 68's 3 s loop lived in get_sound_data and so never played on the device. `previewing` skips the warning
-    ramp, and a real alert takes over (update_alert). Patch 70: `update_alert` ignores selfdriveState's "no alert"
-    while previewing - with the car on it cut the looping previews (both warnings, distracted driver) at frame 0,
-    which counts as a loop end, so only the one-shot chimes were heard. Onroad or offroad, parked or driving; the "Sound Preview"
-    switch on Sounds & Alerts (`sounds:preview`, on by default, off = /data/starview/sound_preview_off) turns it off.
-    Upstream files touched: selfdrive/ui/soundd.py, starpilot/ui/sounds_owner.py, galaxy/setting_descriptions.py with
-    galaxy/tests/description-key-inventory.json (`sounds:preview`), and ui/tests/test_sounds_settings.py (the sounds
-    page now has 11 rows, was 10) - check them on every sync.
+41. Sound preview (patches 68-70, Nov 6) - REMOVED in patch 71 (Nov 8) for upstream's own: `359cb9fda` "Add offroad
+    alert volume previews to Galaxy" (starpilot/audio/preview.py, POST /api/sounds/preview {key}, a play button on
+    each volume row, offroad only, not with Driver Camera open). Ours played automatically on any volume change,
+    onroad too, through soundd; the owner chose to stay on upstream. soundd.py, sounds_owner.py,
+    setting_descriptions.py, description-key-inventory.json and test_sounds_settings.py are upstream's again; the
+    Sound Preview switch (/data/starview/sound_preview_off) is gone. StarView 2.81.3 calls upstream's
+    /api/sounds/preview by itself when a volume slider is let go (quiet when onroad - forced offroad with the car on
+    works). Ours is in the history (patches 68-70) if onroad previews are ever wanted back.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

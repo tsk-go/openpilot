@@ -17,7 +17,6 @@ from openpilot.starpilot.aol.wire import INTENT_SERVICE
 from openpilot.starpilot.audio.alert_volume import AUTO, VOLUMES, effective_volume, read_volume
 from openpilot.starpilot.audio.axis_alerts import AxisAlerts
 from openpilot.starpilot.audio.sound_pack import PACK_ROOT, SoundPackLoader, migrate_removed_selection
-from openpilot.starpilot.audio.volume_preview import PreviewReader
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -71,20 +70,6 @@ ALERT_VOLUME_KEYS = {
   AudibleAlert.warningImmediate: "WarningImmediateVolume",
 }
 
-# StarView fork: the alert each volume setting previews (volume_preview.py); the repeating ones (both warnings,
-# distracted driver: 0.54-0.75 s each) play this many times, like the real alert, the one-time chimes once
-PREVIEW_PASSES = 3
-PREVIEW_SOUNDS = {
-  "WarningImmediateVolume": AudibleAlert.warningImmediate,
-  "WarningSoftVolume": AudibleAlert.warningSoft,
-  "RefuseVolume": AudibleAlert.refuse,
-  "PromptDistractedVolume": AudibleAlert.promptDistracted,
-  "EngageVolume": AudibleAlert.engage,
-  "DisengageVolume": AudibleAlert.disengage,
-  "PromptVolume": AudibleAlert.prompt,
-}
-
-
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
 
@@ -125,47 +110,10 @@ class Soundd:
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
-    # StarView fork: a changed volume plays its alert once on the comma (volume_preview.py)
-    self.preview_reader = PreviewReader()
-    self.preview_read_at = 0.0
-    self.previewing = False
-
   def load_sounds(self):
     loaded = self.pack_loader.refresh(tuple(dict.fromkeys(spec[0] for spec in sound_list.values())), time.monotonic())
     if loaded is not None:
       self.loaded_sounds = {sound: loaded[spec[0]] for sound, spec in sound_list.items()}
-
-  def update_preview(self, now: float) -> None:
-    """StarView fork: a volume was changed - play its alert once, through the normal alert path (so the native mixer
-    plays it too) at the saved level, stopping at the end of the first pass. Only when no real alert is on; a real
-    alert takes over as usual. Checked every 0.25 s from the service loop."""
-    if self.previewing and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is not None and \
-       self.current_sound_frame >= len(self.loaded_sounds[self.current_sound]) * sound_list[self.current_alert][1]:
-      self.current_alert = AudibleAlert.none   # a one-shot sound already played to its end
-    if self.previewing and self.current_alert == AudibleAlert.none:
-      self.previewing = False
-    elif self.previewing and not self.pending_stop and \
-         self.current_sound_frame >= (PREVIEW_PASSES - 1) * len(self.loaded_sounds[self.current_sound]):
-      self.pending_stop = True                 # a repeating sound in its last pass: stop at the end of it
-    if now - self.preview_read_at < 0.25:
-      return
-    self.preview_read_at = now
-    req = self.preview_reader.poll()
-    if req is None:
-      return
-    alert = PREVIEW_SOUNDS.get(req[0])
-    if alert is None or (self.current_alert != AudibleAlert.none and not self.previewing):
-      return
-    self.volume_read_at = float('-inf')
-    self.refresh_saved_volumes(now)        # the level just saved
-    self.current_alert = alert
-    self.current_sound = alert
-    self.current_sound_frame = 0
-    self.pending_stop = sound_list[alert][1] is not None   # one-time chimes: one pass; repeating: PREVIEW_PASSES
-    self.previewing = True
-    if getattr(self, "native_audio", None) is not None:
-      self.native_audio.previous_alert = None  # the native mixer restarts the sound even if it was already playing
-    cloudlog.info(f"soundd: volume preview {req[0]}")
 
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
@@ -238,11 +186,6 @@ class Soundd:
     self.reported_output_underflows = underflows
 
   def update_alert(self, new_alert):
-    if new_alert == AudibleAlert.none and getattr(self, "previewing", False):
-      # StarView fork: selfdriveState's "no alert" (every 10 ms with the car on) must not touch a volume preview. For the
-      # looping sounds (both warnings, distracted driver) it hit the "dismiss at the next loop end" branch at frame 0,
-      # which counts as a loop end, so those previews were cut before they played (Nov 6). It ends on its own.
-      return
     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_sound])
     # let looping sounds finish the current loop instead of cutting off mid tone
     if new_alert == AudibleAlert.none and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is None:
@@ -258,9 +201,6 @@ class Soundd:
         self.pending_stop = True
       return
     self.pending_stop = False
-    if new_alert != AudibleAlert.none and getattr(self, "previewing", False):
-      self.previewing = False  # StarView fork: a real alert takes over from a volume preview
-      self.current_alert = AudibleAlert.none
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
         self.ramp_start_volume = self.current_volume
@@ -283,8 +223,6 @@ class Soundd:
       self.selfdrive_timeout_alert = False
 
   def update_critical_sound(self, now: float) -> None:
-    if getattr(self, "previewing", False):
-      return  # StarView fork: a volume preview plays the starting level, no ramp
     if self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
       elapsed = now - self.ramp_start_time
       ramp_vol = float(np.interp(elapsed, [0, ALERT_RAMP_TIME], [self.ramp_start_volume, MAX_VOLUME]))
@@ -347,7 +285,6 @@ class Soundd:
         self.log_pending_stream_status(stream)
         self.refresh_saved_volumes(time.monotonic())
         self.load_sounds()
-        self.update_preview(time.monotonic())
 
         # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:
