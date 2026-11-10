@@ -40,6 +40,12 @@ Nov 6 (2): synced `Dom` up to upstream `6e0baac46` (6 commits, no source conflic
 Nov 8: synced `Dom` up to upstream `a9a80d34e` (18 commits, no source conflicts; panda images rebuilt - upstream
 changed Polestar, Outback and HKG safety). Brings upstream's offroad alert volume preview (`359cb9fda`), which
 replaced ours (patch 71, fork history 41), and Galaxy's `previewSound` row field (Galaxy check updated).
+Nov 10: synced `Dom` up to upstream `b8d223d6` (100 commits; one source conflict, modeld.py's lane-change call - kept
+upstream's `auto_trigger_engaged` (the new "require cruise for automatic lane changes", off by default; when on it
+gates the tablet's confirmed lane changes too, through the same `engaged`) with our StarView inputs `navigation_turn`
+(route turn or the tablet's "turn"), `starview_lane`, `starview_evidence`, `nudge_torque`; panda images rebuilt from
+source - upstream changed fdcan.h and HKG / VW / Tesla safety). Galaxy rows gained `collapsed` (a folded heading); no
+row sets it, and the Galaxy check now fails once one does (StarView would have to fold that card too).
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,

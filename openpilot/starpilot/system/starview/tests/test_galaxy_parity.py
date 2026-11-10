@@ -17,10 +17,11 @@ ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 # What StarView mirrors (as of StarView 2.81.3: Galaxy's Nov 4 "heading" rows are section titles; "coordinate" only
 # labels the manual steering coordinates on Galaxy's FLM page, which StarView doesn't draw; "previewSound" (upstream
 # 359cb9fda, Nov 6) - Galaxy's play button on a volume row - StarView calls the same /api/sounds/preview by itself when
-# a volume slider is let go)
+# a volume slider is let go; "collapsed" (upstream d4b781ab, Nov 8) - a heading whose card stays folded until opened -
+# no row sets it, see test_no_row_is_collapsed_yet)
 MIRRORED_SCALES = {"lane-strength"}
-ROW_FIELDS = {"action", "available", "choices", "confirm", "coordinate", "defaultValue", "displayScale", "heading", "label", "maximum",
-              "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
+ROW_FIELDS = {"action", "available", "choices", "collapsed", "confirm", "coordinate", "defaultValue", "displayScale", "heading", "label",
+              "maximum", "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
 PRESENTATION_SHA256 = "1bf21707507137fe81bba21be8a5e39e75128b1c76037728e4dc5b2d36e09268"
 
 
@@ -55,3 +56,13 @@ def test_row_fields_starview_reads():
   body = src[start:src.index("\ndef ", start + 10)]
   fields = set(re.findall(r'"([A-Za-z]+)":', body))
   assert fields == ROW_FIELDS, f"Galaxy's row fields changed: new {sorted(fields - ROW_FIELDS)}, gone {sorted(ROW_FIELDS - fields)}"
+
+
+def test_no_row_is_collapsed_yet():
+  """Galaxy's rows carry "collapsed" since Nov 8 (upstream d4b781ab): a heading whose rows stay folded until it's opened.
+  The only one, "Specific car experiments", went again the same day (cc51e9e4), so StarView folds nothing. Once a row
+  sets it, GalaxySettingsView.kt has to fold that card the same way (rowCards in galaxy/web/js/settings.js)."""
+  kwarg = re.compile(r"[(,]\s*collapsed\s*=\s*(?!False\b)")
+  users = [str(f.relative_to(GALAXY.parent)) for f in GALAXY.parent.rglob("*.py")
+           if "tests" not in f.parts and kwarg.search(f.read_text(errors="ignore"))]
+  assert not users, f"Galaxy rows that start folded, which StarView doesn't fold yet: {users}"
