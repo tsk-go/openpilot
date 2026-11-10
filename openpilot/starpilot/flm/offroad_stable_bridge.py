@@ -8,6 +8,7 @@ atomic source-bound save and next-drive comparison/rollback.
 import hashlib
 import math
 from pathlib import Path
+from statistics import fmean
 
 from openpilot.starpilot.flm.offroad_stable_policy import (
   FLMSample,
@@ -52,7 +53,7 @@ class StableRouteSelector:
 
     if type(assessment) is CompletedAssessment:
       groups = []
-      for group in assessment.stable_groups:
+      for group in (*assessment.stable_groups, *assessment.groups):
         ids = {
           wid for c in group['cohorts'] if all(role in c for role in ('training', 'heldout')) for role in ('training', 'heldout') for wid in c[role]['windows']
         }
@@ -217,12 +218,20 @@ class StableRouteSelector:
     current = {'FLMActiveOverrides': {}}
     selected = []
     unavailable = []
+    observations = []
+    from openpilot.starpilot.flm.offroad_coordinate_policy import coordinate_candidates, recorded_observation
+
     for key in windows:
       values = rows[key]
       assert values is not None
       for run in cadenced_runs(values):
         summaries, _ = classify_current_stable(list(run))
         for summary in summaries:
+          for event in summary['events']:
+            event_samples = run[event['startIdx']:event['endIdx'] + 1]
+            observations.append((key, recorded_observation(
+              summary['bucket'], event['direction'], event['peakScore'], fmean(sample.v_ego for sample in event_samples),
+            )))
           # Capability-based exclusions affect proposals only. No scored
           # window is discarded; ALL original spans go to the native checker.
           if summary['bucket'] == 'saturation_limited':
@@ -243,6 +252,7 @@ class StableRouteSelector:
     if recommended is not None:
       recommended['frictionCurveUnits'] = 'relative_actual_selected_threshold'
     report = {'original_windows': windows, 'supported_dimensions': len(selected), 'unavailable_dimensions': unavailable, 'profile': recommended}
+    report['coordinate_candidates'] = coordinate_candidates(observations, self.previous)
     if recommended is None:
       mapped = None
     else:
@@ -268,20 +278,46 @@ class StableRouteSelector:
     all_ids = ids['training'] + ids['heldout']
     if any(key not in rows or rows[key] is None for key in all_ids):
       return None, {'reason': 'original_stable_input_fields_missing', 'original_windows': all_ids}
-    mapped, reports = {}, {}
-    for role, windows in ids.items():
-      mapped[role], reports[role] = self.profile(windows, cohort['cohort'])
-    training, heldout = mapped['training'], mapped['heldout']
+    training, training_report = self.profile(ids['training'], cohort['cohort'])
+    selection = 'training_values_only_no_heldout_resizing'
+    if training is not None:
+      from openpilot.starpilot.flm.offroad_surface import CURVE_NAMES
+
+      if any(training['values'][name] != self.previous[name] for name in CURVE_NAMES):
+        # Quieting is one trial; unrelated turn changes need their own evidence.
+        values = dict(self.previous)
+        for name in CURVE_NAMES:
+          if training['values'][name] != self.previous[name]:
+            values[name] = round(self.previous[name] + 0.6 * (training['values'][name] - self.previous[name]), 12)
+        training = dict(
+          training,
+          values=values,
+          changed_parameters=tuple(name for name in CURVE_NAMES if values[name] != self.previous[name]),
+          maximum_coordinate_step=max(abs(values[name] - self.previous[name]) for name in CURVE_NAMES),
+          bounded_profile_scale=training['bounded_profile_scale'] * 0.6,
+        )
+        selection = 'training_only_conservative_friction_trial_before_heldout'
+    # These alternatives are frozen before held-out summaries are read.
+    coordinate_training = training_report.get('coordinate_candidates', [])
+    heldout, heldout_report = self.profile(ids['heldout'], cohort['cohort'])
+    independent = {p['parameter']: p for p in heldout_report.get('coordinate_candidates', [])}
+    coordinate_supported = [p for p in coordinate_training if independent_profile_support(p, independent.get(p['parameter']), self.previous)]
+    # A one-coordinate recipe plus the recorded prior is exact; avoid repeating
+    # thirty complete maps in both role reports and exhausting the cache bound.
+    for report in (training_report, heldout_report):
+      report['coordinate_candidates'] = [{k: v for k, v in p.items() if k != 'values'} for p in report.get('coordinate_candidates', [])]
     agrees = independent_profile_support(training, heldout, self.previous)
     proof = {
       'source_policy_commit': ORIGINAL_COMMIT,
       'source_classifier_commit': CURRENT_CLASSIFIER_SOURCE,
       'policy': 'original_stable_recommended_bounded_route_v1',
       'reason': 'independent_support_for_frozen_training_profile' if agrees else 'heldout_profile_does_not_support_training_step',
-      'selection': 'training_values_only_no_heldout_resizing',
-      'roles': reports,
+      'selection': selection,
+      'frozen_training_profile': training,
+      'roles': {'training': training_report, 'heldout': heldout_report},
       'all_original_windows_still_required': True,
       'physical_improvement_proven': False,
+      'coordinate_candidates': coordinate_supported,
     }
     if not agrees:
       return None, proof

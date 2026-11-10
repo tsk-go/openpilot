@@ -1296,6 +1296,132 @@ class TestOffroadRouteCoverage(unittest.TestCase):
 
 
 class TestOffroadTrackingPolicy(unittest.TestCase):
+  def test_current_disjoint_windows_do_not_trigger_an_older_drive_rescan(self):
+    from types import SimpleNamespace
+    from openpilot.starpilot.flm import offroad_worker as module
+    from openpilot.starpilot.flm.offroad_processor import CompletedAssessment
+    from openpilot.starpilot.flm.offroad_route import RouteReceipt
+
+    # Dispatch-only fixture: training refuses, so no accepted tune is fabricated.
+    roles = trial()['before']
+    proposal = {'parameter': 'center_taper_max', 'delta': 0.005, 'values': values(0.005)}
+    cohort = {'cohort': 'declared-current-drive', 'whole_windows': 6, 'qualification_roles': roles,
+              'training': dict(roles['training'], reference_rms=0.5), 'heldout': dict(roles['heldout'], reference_rms=0.5), 'proposal': proposal}
+    metadata = {'route_values': tuple(values().items()), 'route_revision': REVISION, 'controller_mode': 'starpilot', 'route_scope': scope().key()}
+    group = {'original_metadata': metadata, 'original_context_sha256': 'f' * 64, 'cohorts': [cohort]}
+    cp = SimpleNamespace(carFingerprint='declared-current-drive')
+    receipt = RouteReceipt('declared-current-drive', 'd' * 64, (), 'a' * 64, 1, 2, 3, ())
+    inventory = {'routeId': receipt.route_id}
+    assessment = CompletedAssessment(receipt, (group,), {}, cp, (), inventory)
+    calls = []
+
+    def assessed(params, root, previous, *, permitted):
+      previous(cp)
+      return assessment
+
+    def refuse_training(actual, original, selected, proposed, previous, root, *, permitted):
+      self.assertIs(actual, assessment)
+      self.assertEqual(selected['qualification_roles'], roles)
+      self.assertEqual(proposed, proposal)
+      self.assertTrue(permitted())
+      calls.append('current_drive_training')
+      return None, {'declared_training_refusal': True}
+
+    def refused_check(*args, **kwargs):
+      self.fail('A refused training step cannot enter validation')
+
+    with tempfile.TemporaryDirectory() as directory:
+      params = Params(directory)
+      with (
+        patch.object(module, 'latest_route', return_value=inventory),
+        patch.object(module, 'analyze_latest', new=assessed),
+        patch.object(module, 'qualify', new=refused_check),
+        patch('openpilot.starpilot.flm.offroad_checks.fit_training_step', new=refuse_training),
+        patch('openpilot.starpilot.flm.offroad_prior_inputs.prior_originals', side_effect=AssertionError('Unexpected older drive rescan')),
+        patch('openpilot.starpilot.flm.offroad_prior_inputs.prior_stable_originals', side_effect=AssertionError('Unexpected older drive rescan')),
+      ):
+        worker = module.OffroadWorker(params, directory, Path(directory) / 'cache', permitted=lambda: True,
+          assessor=assessed, checker=refused_check, scope_for=lambda cp, params: scope())
+        result = worker.run_once()
+      self.assertEqual(calls, ['current_drive_training'])
+      self.assertFalse(result['configuration_changed'])
+      self.assertEqual(result['reason'], 'no_new_native_feasible_training_step')
+      self.assertEqual(read_saved(params, KEY, MAX_BYTES), (None, True))
+
+  def test_quieting_trial_is_frozen_before_unrelated_heldout_turn_disagreement(self):
+    import copy
+    from openpilot.starpilot.flm.offroad_stable_bridge import StableRouteSelector
+
+    # Declared proposal-policy regression, using the retained profile's numeric shape.
+    # Actual controller/native qualification and automatic storage are not mocked.
+    roles = trial()['before']
+    cohort = {'cohort': '2:left:steady', **roles}
+    original = values()
+    original.update(friction_threshold_mid=0.004625, friction_threshold_fast=0.0061875, friction_threshold_highway=0.0061875, unwind_taper_left=0.01)
+    training = {
+      'values': original,
+      'changed_parameters': tuple(name for name, value in original.items() if value),
+      'maximum_coordinate_step': 0.01,
+      'bounded_profile_scale': 0.625,
+    }
+    independent = values()
+    independent.update(friction_threshold_mid=0.0071, friction_threshold_fast=0.0095, friction_threshold_highway=0.0095)
+    frozen = copy.deepcopy(training)
+    for unsupported in (None, 0.0, -0.0095, 0.0001):
+      with self.subTest(unsupported_primary=unsupported):
+        selector = object.__new__(StableRouteSelector)
+        selector.previous = values()
+        selector.rows = dict.fromkeys(roles['training']['windows'] + roles['heldout']['windows'], [])
+        events = []
+        heldout_values = dict(independent)
+        if unsupported is not None:
+          heldout_values['friction_threshold_fast'] = unsupported
+
+        def declared_profile(windows, selected_cohort, events=events, heldout_values=heldout_values):
+          self.assertEqual(selected_cohort, cohort['cohort'])
+          if windows == tuple(roles['training']['windows']):
+            events.append('training')
+            return copy.deepcopy(frozen), {'declared_role': 'training'}
+          self.assertEqual(windows, tuple(roles['heldout']['windows']))
+          events.append('heldout')
+          return {'values': heldout_values}, {'declared_role': 'heldout'}
+
+        with patch.object(selector, 'profile', side_effect=declared_profile):
+          proposed, proof = selector.propose({}, cohort)
+        self.assertEqual(events, ['training', 'heldout'])
+        self.assertEqual(proof['selection'], 'training_only_conservative_friction_trial_before_heldout')
+        expected = values()
+        expected.update(friction_threshold_mid=0.002775, friction_threshold_fast=0.0037125, friction_threshold_highway=0.0037125)
+        self.assertEqual(proof['frozen_training_profile']['values'], expected)
+        self.assertEqual(training, frozen)
+        if unsupported is None:
+          self.assertIsNotNone(proposed)
+          assert proposed is not None
+          self.assertEqual(proposed['values'], expected)
+          self.assertEqual(proposed['values']['unwind_taper_left'], 0.0)
+          self.assertEqual(set(proof['frozen_training_profile']['changed_parameters']), set(CURVE_NAMES[2:]))
+          self.assertTrue(proof['all_original_windows_still_required'])
+        else:
+          self.assertIsNone(proposed, 'Missing, reversed or weaker primary evidence must still refuse; no resizing or fallback')
+
+  def test_turn_only_training_profile_keeps_original_values(self):
+    from openpilot.starpilot.flm.offroad_stable_bridge import StableRouteSelector
+
+    roles = trial()['before']
+    mapped = values()
+    mapped['unwind_taper_left'] = 0.005
+    profile = {'values': mapped, 'changed_parameters': ('unwind_taper_left',), 'maximum_coordinate_step': 0.005, 'bounded_profile_scale': 1.0}
+    selector = object.__new__(StableRouteSelector)
+    selector.previous = values()
+    selector.rows = dict.fromkeys(roles['training']['windows'] + roles['heldout']['windows'], [])
+    with patch.object(selector, 'profile', return_value=(profile, {'declared_proposal_only': True})):
+      proposed, proof = selector.propose({}, {'cohort': '2:left:unwind', **roles})
+    self.assertIsNotNone(proposed)
+    assert proposed is not None
+    self.assertEqual(proposed['values'], mapped)
+    self.assertEqual(proposed['delta'], 0.005)
+    self.assertEqual(proof['selection'], 'training_values_only_no_heldout_resizing')
+
   def test_heldout_profile_supports_frozen_training_step_without_identical_floats(self):
     import copy
     from openpilot.starpilot.flm.offroad_stable_bridge import independent_profile_support
@@ -1779,17 +1905,19 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
       'declared', 'lateral_acceleration', '2:both:center', 1.0, 0, 0.0, (0.9, 1.1), (0, 0), (-0.1, 0.1), 1.0, 0.1, (), 'f' * 64, 1.0, 0.1, 0.1
     )
     calls = []
+    native_boundary = 0.004
+    emitted_changes = 1
 
     def recorded(actual, source, selected, trial_values, root, *, permitted):
       self.assertTrue(permitted())
       calls.append((actual is prior, tuple(selected), trial_values['center_taper_max']))
-      okay = actual is not prior and trial_values['center_taper_max'] <= 0.004
+      okay = actual is not prior and trial_values['center_taper_max'] <= native_boundary
       return [
         {
           'window': wid,
           'qualified': okay,
           'numerical': {'qualified': True, 'changed_frames': 1},
-          'registered_encoder': {'qualified': okay, 'candidate_changed_emissions': 1},
+          'registered_encoder': {'qualified': okay, 'candidate_changed_emissions': emitted_changes},
         }
         for wid in selected
       ]
@@ -1823,6 +1951,39 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
     from openpilot.starpilot.flm.offroad_worker import qualification_summary
 
     self.assertEqual(qualification_summary(result), {'passed': 6, 'required': 12, 'refusals': [('independent_native_validation_not_run', 6)]})
+    native_boundary = proposed['delta'] * 0.05
+    calls.clear()
+    with (
+      patch('openpilot.starpilot.flm.runtime_adapter_registry.car_params_digest', return_value='a' * 64),
+      patch.object(checks, '_original_results', new=recorded),
+      patch('openpilot.starpilot.flm.offroad_tracking.estimate', return_value=observed),
+      patch('openpilot.starpilot.flm.offroad_tracking.suggest', return_value=replication),
+    ):
+      fitted, proof, result = checks.fit_independent_route(current, group, cohort, prior, proposed, values(), '.', permitted=lambda: True)
+    assert fitted is not None and result is not None
+    self.assertEqual(proof['selected_fraction'], 0.05)
+    self.assertEqual(proof['validation_evaluations'], 1)
+    self.assertFalse(result['qualified'])
+    self.assertEqual([ids for _, ids, _ in calls], [ids] * 7 + [valid_ids])
+    self.assertEqual(calls[-1], (True, valid_ids, native_boundary))
+    self.assertEqual(fitted['values']['center_taper_max'], native_boundary)
+
+    emitted_changes = 0
+    calls.clear()
+    with (
+      patch('openpilot.starpilot.flm.runtime_adapter_registry.car_params_digest', return_value='a' * 64),
+      patch.object(checks, '_original_results', new=recorded),
+      patch('openpilot.starpilot.flm.offroad_tracking.estimate', return_value=observed) as independent_estimate,
+      patch('openpilot.starpilot.flm.offroad_tracking.suggest', return_value=replication),
+    ):
+      fitted, proof, result = checks.fit_independent_route(current, group, cohort, prior, proposed, values(), '.', permitted=lambda: True)
+    self.assertIsNone(fitted)
+    self.assertIsNone(result)
+    self.assertEqual(proof['validation_evaluations'], 0)
+    self.assertEqual([row[1] for row in calls], [ids] * 7)
+    self.assertTrue(all(not row[0] for row in calls))
+    independent_estimate.assert_not_called()
+
     with patch('openpilot.starpilot.flm.runtime_adapter_registry.car_params_digest', return_value='0' * 64), self.assertRaises(ValueError):
       checks.fit_independent_route(current, group, cohort, prior, proposed, values(), '.', permitted=lambda: True)
 
@@ -1939,7 +2100,12 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
       amount = trial_values['center_taper_max']
       calls.append((tuple(ids), amount))
       self.assertTrue(set(ids) in (set(train), set(train + heldout)))
-      return [{'window': wid, 'qualified': amount <= 0.004 and wid not in heldout} for wid in ids]
+      return [
+        {'window': wid, 'qualified': amount <= 0.004 and wid not in heldout,
+         'numerical': {'qualified': True, 'changed_frames': 1},
+         'registered_encoder': {'qualified': amount <= 0.004 and wid not in heldout, 'candidate_changed_emissions': 1}}
+        for wid in ids
+      ]
 
     with tempfile.TemporaryDirectory() as directory:
       params = Params(directory)
@@ -1968,8 +2134,117 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
     with patch('openpilot.starpilot.flm.offroad_checks._original_results', new=infeasible):
       fitted, proof = fit_training_step(assessment, group, cohort, proposal, values(), '.', permitted=lambda: True)
     self.assertIsNone(fitted)
-    self.assertEqual(calls, [train] * 5)
+    self.assertEqual(calls, [train] * 7)
     self.assertIsNone(proof['selected_fraction'])
+
+  def test_training_can_select_an_alternative_but_validation_never_can(self):
+    import hashlib
+    from types import SimpleNamespace
+    from openpilot.starpilot.flm.offroad_processor import CompletedAssessment
+    from openpilot.starpilot.flm.offroad_route import RouteReceipt
+    from openpilot.starpilot.flm.offroad_worker import OffroadWorker
+
+    # Declared dispatch responses only; the final validation always refuses.
+    for scenario in ('first_refuses', 'zero_native_change', 'heldout_refuses', 'overlap', 'all_refuse'):
+      with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+        names = ('center_taper_max', 'turn_in_boost_left', 'unwind_taper_right')
+        roles = [
+          {role: {'windows': tuple(hashlib.sha256(f'{index}:{role}:{n}'.encode()).hexdigest() for n in range(3))}
+           for role in ('training', 'heldout')}
+          for index in range(3)
+        ]
+        if scenario == 'overlap':
+          roles[1]['heldout']['windows'] = (roles[0]['training']['windows'][0], *roles[1]['heldout']['windows'][1:])
+        cohorts = [
+          {'cohort': f'declared-{index}', 'whole_windows': 6, 'qualification_roles': roles[index],
+           'training': {'reference_rms': 3 - index}, 'heldout': {'reference_rms': 3 - index},
+           'proposal': {'parameter': name, 'delta': 0.005, 'values': dict(values(), **{name: 0.005})}}
+          for index, name in enumerate(names)
+        ]
+        metadata = {'route_values': tuple(values().items()), 'route_revision': REVISION,
+                    'controller_mode': 'starpilot', 'route_scope': scope().key()}
+        group = {'original_metadata': metadata, 'original_context_sha256': 'f' * 64,
+                 'cohorts': cohorts, 'qualification_original_windows': []}
+        cp = SimpleNamespace(carFingerprint='declared-candidate-selection-only')
+        receipt = RouteReceipt('declared-candidates', 'd' * 64, (), 'a' * 64, 1, 2, 3, ())
+        inventory = {'routeId': receipt.route_id}
+        assessment = CompletedAssessment(receipt, (group,), {}, cp, (), inventory)
+        calls = []
+
+        def checked(actual, original, ids, trial_values, root, *, permitted, assessment=assessment, names=names, roles=roles, calls=calls, scenario=scenario):
+          self.assertIs(actual, assessment)
+          self.assertTrue(permitted())
+          index = next(i for i, name in enumerate(names) if trial_values[name])
+          train, heldout = (roles[index][role]['windows'] for role in ('training', 'heldout'))
+          validation = tuple(ids) == train + heldout
+          self.assertIn(tuple(ids), (train, train + heldout))
+          calls.append((index, validation, tuple(ids)))
+          feasible = scenario != 'all_refuse' and (index > 0 or scenario == 'heldout_refuses')
+          native_change = int(feasible)
+          if scenario == 'zero_native_change' and index == 0:
+            feasible = True
+          return [
+            {'window': wid, 'qualified': feasible and not validation,
+             'numerical': {'qualified': True, 'changed_frames': 50},
+             'registered_encoder': {'qualified': feasible and not validation, 'candidate_changed_emissions': native_change}}
+            for wid in ids
+          ]
+
+        def assessed(params, root, previous, *, permitted, cp=cp, assessment=assessment):
+          previous(cp)
+          return assessment
+
+        params = Params(directory)
+        with (
+          patch('openpilot.starpilot.flm.offroad_worker.latest_route', return_value=inventory),
+          patch('openpilot.starpilot.flm.offroad_checks._original_results', new=checked),
+        ):
+          worker = OffroadWorker(params, directory, Path(directory) / 'cache', permitted=lambda: True,
+                                 assessor=assessed, scope_for=lambda cp, params: scope())
+          result = worker.run_once()
+        self.assertFalse(result['configuration_changed'])
+        self.assertEqual(read_saved(params, KEY, MAX_BYTES), (None, True))
+        if scenario == 'all_refuse':
+          self.assertEqual([i for i, _, _ in calls], [0] * 7 + [1] * 7 + [2] * 7)
+          self.assertFalse(any(validation for _, validation, _ in calls))
+          self.assertEqual(result['reason'], 'no_new_native_feasible_training_step')
+        else:
+          selected = 0 if scenario == 'heldout_refuses' else 2 if scenario == 'overlap' else 1
+          self.assertEqual([i for i, _, _ in calls], ([] if selected == 0 else [0] * 7) + [selected] * 2)
+          self.assertEqual([(i, validation) for i, validation, _ in calls if validation], [(selected, True)])
+          self.assertEqual(result['reason'], 'original_controller_or_registered_encoder_check_refused')
+          report = worker.cache.get(result['assessment_sha256'])['assessment']
+          self.assertEqual(len(report['native_candidate_training']), 1 if selected == 0 else 2)
+          validation_ids = set(roles[selected]['heldout']['windows'])
+          self.assertTrue(all(not validation_ids.intersection(ids) for _, validation, ids in calls if not validation))
+
+  def test_zero_native_change_cannot_consume_independent_validation(self):
+    from types import SimpleNamespace
+    from openpilot.starpilot.flm.offroad_checks import fit_training_step
+
+    train = tuple(str(i) * 64 for i in range(1, 4))
+    heldout = tuple(str(i) * 64 for i in range(4, 7))
+    cohort = {'qualification_roles': {'training': {'windows': train}, 'heldout': {'windows': heldout}}}
+    proposal = {'values': values(0.005), 'delta': 0.005}
+    calls = []
+
+    def unchanged(actual, original, ids, trial_values, root, *, permitted):
+      self.assertTrue(permitted())
+      calls.append(tuple(ids))
+      return [
+        {'window': wid, 'qualified': True,
+         'numerical': {'qualified': True, 'changed_frames': 50},
+         'registered_encoder': {'qualified': True, 'candidate_changed_emissions': 0}}
+        for wid in ids
+      ]
+
+    with patch('openpilot.starpilot.flm.offroad_checks._original_results', new=unchanged):
+      fitted, proof = fit_training_step(SimpleNamespace(), {'qualification_original_windows': []}, cohort, proposal, values(), '.', permitted=lambda: True)
+    self.assertIsNone(fitted)
+    self.assertIsNone(proof['selected_fraction'])
+    self.assertEqual(calls, [train] * 7)
+    self.assertTrue(all(not row['feasible'] for row in proof['attempts']))
+    self.assertEqual(proof['heldout_windows_not_evaluated'], heldout)
 
   def test_recommended_profile_can_fit_below_coarse_native_quantization_boundary(self):
     from types import SimpleNamespace
@@ -1984,10 +2259,8 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
     desired = values()
     desired['friction_threshold_fast'] = 0.0099
     desired['friction_threshold_highway'] = 0.0099
-    proposal = {'values': desired, 'delta': 0.0099, 'policy': 'original_stable_recommended_bounded_route_v1'}
     assessment = SimpleNamespace()
     calls = []
-    boundary = desired['friction_threshold_fast'] * 0.1
 
     def checked(actual, original, ids, trial_values, root, *, permitted):
       self.assertIs(actual, assessment)
@@ -1996,22 +2269,32 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
       amount = trial_values['friction_threshold_fast']
       self.assertEqual(amount, trial_values['friction_threshold_highway'])
       calls.append((tuple(ids), amount))
-      return [{'window': wid, 'qualified': amount <= boundary and wid not in heldout} for wid in ids]
+      return [
+        {'window': wid, 'qualified': amount <= boundary and wid not in heldout,
+         'numerical': {'qualified': True, 'changed_frames': 1},
+         'registered_encoder': {'qualified': amount <= boundary and wid not in heldout, 'candidate_changed_emissions': 1}}
+        for wid in ids
+      ]
 
-    with patch('openpilot.starpilot.flm.offroad_checks._original_results', new=checked):
-      fitted, proof = fit_training_step(assessment, group, cohort, proposal, previous, '.', permitted=lambda: True)
-      assert fitted is not None
-      frozen = dict(fitted['values'])
-      self.assertEqual(proof['selected_fraction'], 0.1)
-      self.assertEqual([ids for ids, _ in calls], [train] * 6)
-      self.assertEqual(frozen['friction_threshold_fast'], boundary)
-      self.assertEqual(previous, values())
-      self.assertEqual(desired['friction_threshold_fast'], 0.0099)
-      result = qualify(assessment, group, cohort, frozen, '.', permitted=lambda: True)
-      self.assertFalse(result['qualified'])
-      self.assertEqual(calls[-1], (train + heldout, boundary))
-      self.assertEqual(len(calls), 7)
-      self.assertEqual(fitted['values'], frozen)
+    for policy in ('observed_tracking_v1', 'original_stable_recommended_bounded_route_v1'):
+      for fraction, training_count in ((0.1, 6), (0.05, 7)):
+        proposal = {'values': desired, 'delta': 0.0099, 'policy': policy}
+        boundary = desired['friction_threshold_fast'] * fraction
+        calls.clear()
+        with patch('openpilot.starpilot.flm.offroad_checks._original_results', new=checked):
+          fitted, proof = fit_training_step(assessment, group, cohort, proposal, previous, '.', permitted=lambda: True)
+          assert fitted is not None
+          frozen = dict(fitted['values'])
+          self.assertEqual(proof['selected_fraction'], fraction)
+          self.assertEqual([ids for ids, _ in calls], [train] * training_count)
+          self.assertEqual(frozen['friction_threshold_fast'], boundary)
+          self.assertEqual(previous, values())
+          self.assertEqual(desired['friction_threshold_fast'], 0.0099)
+          result = qualify(assessment, group, cohort, frozen, '.', permitted=lambda: True)
+          self.assertFalse(result['qualified'])
+          self.assertEqual(calls[-1], (train + heldout, boundary))
+          self.assertEqual(len(calls), training_count + 1)
+          self.assertEqual(fitted['values'], frozen)
 
   @staticmethod
   def windows(prefix, gain, amplitude=1.0):

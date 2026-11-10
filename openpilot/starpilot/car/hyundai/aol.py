@@ -45,27 +45,27 @@ _REQUIRED_FLAGS = int(HyundaiFlags.CANFD | HyundaiFlags.EV | HyundaiFlags.CANFD_
 _FORBIDDEN_FLAGS = int(HyundaiFlags.CANFD_ALT_BUTTONS | HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_CAMERA_SCC)
 
 
-def _ioniq6_hda2_base(CP) -> bool:
+def _ioniq6_hda2_base(CP, *, require_radar=True) -> bool:
   if (
     str(CP.carFingerprint) != str(HyundaiCAR.HYUNDAI_IONIQ_6)
     or CP.brand != 'hyundai'
-    or CP.radarUnavailable
+    or (require_radar and CP.radarUnavailable)
     or CP.notCar
     or CP.passive
     or CP.dashcamOnly
-    or len(CP.safetyConfigs) != 1
-    or CP.safetyConfigs[0].safetyModel != car.CarParams.SafetyModel.hyundaiCanfd
+    or CP.steerControlType != car.CarParams.SteerControlType.torque
+    or config_index(CP) is None
   ):
     return False
   flags = int(CP.flags)
   return flags & _REQUIRED_FLAGS == _REQUIRED_FLAGS and not flags & _FORBIDDEN_FLAGS
 
 
-def _stock_ioniq6(CP, *, marked_only=False) -> bool:
-  if not _ioniq6_hda2_base(CP) or CP.openpilotLongitudinalControl or not CP.pcmCruise:
+def _stock_ioniq6(CP, *, marked_only=False, require_radar=True) -> bool:
+  if not _ioniq6_hda2_base(CP, require_radar=require_radar) or CP.openpilotLongitudinalControl or not CP.pcmCruise:
     return False
   stock = 0x91 if int(CP.flags) & int(HyundaiFlags.CANFD_LKA_STEER_MSG_ALT) else 0x11
-  raw = int(CP.safetyConfigs[0].safetyParam)
+  raw = int(CP.safetyConfigs[config_index(CP)].safetyParam)
   return raw == (stock | 0x0800) or (not marked_only and raw == stock)
 
 
@@ -75,27 +75,33 @@ def qualified_ioniq6(CP) -> bool:
   if not _ioniq6_hda2_base(CP) or not CP.openpilotLongitudinalControl or CP.pcmCruise:
     return False
   flags = int(CP.flags)
-  raw = int(CP.safetyConfigs[0].safetyParam)
+  raw = int(CP.safetyConfigs[config_index(CP)].safetyParam)
   return raw == (0x8895 if flags & int(HyundaiFlags.CANFD_LKA_STEER_MSG_ALT) else 0x8815)
 
 
 def native_admission_key(CP):
-  """Complete mutable CP inputs to exact one-slot Ioniq native admission.
+  """Complete mutable CP inputs to exact selected-owner Ioniq native admission.
 
   Keep this in sync with qualified_ioniq6 and native inventory qualification.
   This key is not an admission decision and never contains live authority.
   """
-  if CP.brand != 'hyundai' or CP.carFingerprint != HyundaiCAR.HYUNDAI_IONIQ_6 or len(CP.safetyConfigs) != 1:
+  if CP.brand != 'hyundai' or CP.carFingerprint != HyundaiCAR.HYUNDAI_IONIQ_6 or config_index(CP) is None:
     return None
   return (str(CP.brand), str(CP.carFingerprint), int(CP.flags), bool(CP.radarUnavailable),
           bool(CP.notCar), bool(CP.passive), bool(CP.dashcamOnly),
-          bool(CP.openpilotLongitudinalControl), bool(CP.pcmCruise), int(CP.alternativeExperience),
+          bool(CP.openpilotLongitudinalControl), bool(CP.pcmCruise), int(CP.alternativeExperience), str(CP.steerControlType),
           tuple((int(c.safetyModel.raw), int(c.safetyParam)) for c in CP.safetyConfigs))
 
 
 def ioniq6_settings_capable(CP) -> bool:
   # Stock ACC lateral settings are independent of the experimental LONG opt-in.
   return _stock_ioniq6(CP) or (IONIQ6_LONG_PREARM_ENABLED and ioniq6_long_eligible(CP))
+
+
+def ioniq6_alpha_long_available(CP) -> bool:
+  # Cached radar discovery may predate the external-bus repair. This saves only
+  # an opt-in; the takeover still requires fresh physical radar and ECU evidence.
+  return _stock_ioniq6(CP, require_radar=False) or (IONIQ6_LONG_PREARM_ENABLED and ioniq6_long_eligible(CP))
 
 
 def qualified_ccnc_long_aol(CP, *, marked_only=False):
@@ -232,9 +238,9 @@ def native_profile_supported(model: int, param: int) -> bool:
 
 
 def native_accepts_cp(CP, model: int, param: int) -> bool:
-  # Ioniq 6 has its own exact contract; no generic Hyundai owner accepts it.
+  # HDA-II retains its dedicated namespace; camera SCC uses the shared exact word.
   # Revalidate the complete contract on every call, without caching live authority.
-  if CP.carFingerprint == HyundaiCAR.HYUNDAI_IONIQ_6:
+  if CP.carFingerprint == HyundaiCAR.HYUNDAI_IONIQ_6 and not CP.flags & HyundaiFlags.CANFD_CAMERA_SCC:
     return qualified_ioniq6(CP)
   if qualified_ccnc_long_aol(CP, marked_only=True):
     return model == int(car.CarParams.SafetyModel.hyundaiCanfd) and param == CP.safetyConfigs[0].safetyParam
@@ -388,7 +394,8 @@ def physical_cancel_lateral_allowed(CP, CS, intent, native, *, settings, previou
         not any(e.type == car.CarState.ButtonEvent.Type.cancel for e in CS.buttonEvents)):
       return False
     ev6_long = CP.carFingerprint == HyundaiCAR.KIA_EV6 and qualified_canfd_long(CP, marked_only=True)
-    return bool((ev6_long or independent_cruise_buttons_supported(CP, marked_only=True)) and
+    return bool((ev6_long or qualified_blended_alpha(CP, marked_only=True) or
+                 independent_cruise_buttons_supported(CP, marked_only=True)) and
       previous is not None and previous.lateral_active and previous.native_acknowledged and
       intent is not None and intent.settingsQualified and intent.allowedLatch and intent.lateralArmed and
       not intent.pauseLateral and intent.producerSessionId and intent.carStateLogMonoTime == source_ns and
@@ -427,9 +434,10 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
       from openpilot.starpilot.car.hyundai.ev6_intent import Ev6CardIntent
       ev6_long = bool(isinstance(owner, Ev6CardIntent) and owner._buttons_current and
                       owner.physical.authorized and owner._last_latch_edge_ns > 0)
-    if (not (ev6_long or qualified_sonata_independent(CP) or qualified_ccnc_long_aol(CP, marked_only=True) or
+    mixed_long = qualified_blended_alpha(CP, marked_only=True)
+    if (not (ev6_long or mixed_long or qualified_sonata_independent(CP) or qualified_ccnc_long_aol(CP, marked_only=True) or
              CP.carFingerprint in INDEPENDENT_LONG_BUTTON_CARS and qualified_canfd_long(CP, marked_only=True)) or
-        owner is None or not owner.explicit_latch or not (owner.independent_cruise_buttons or ev6_long) or
+        owner is None or not owner.explicit_latch or not (owner.independent_cruise_buttons or ev6_long or mixed_long) or
         not owner.allowed_latch or owner.pause_lateral or owner.pause_longitudinal or owner._fault_inhibit):
       return False
     settings = owner.settings

@@ -18,6 +18,9 @@ DESCRIPTIONS = {
   'lane_change:pace': 'Sets how quickly steering moves into the adjacent lane. Higher values change lanes more quickly; lower values make steering gentler.',
   'lane_change:speed': 'Sets the lowest speed at which lane-change assistance can begin.',
   'lane_change:one': 'Allows one assisted lane change until you release the turn signal.',
+  'lane_change:require_cruise': ('Limits nudgeless lane changes to when factory cruise or openpilot speed control is engaged. ' +
+    'With cruise off, use a wheel nudge. If cruise engages after signaling, release and reapply the signal. ' +
+    'Off also allows automatic changes during lateral-only driving; lane and blindspot checks still apply.'),
   'lane_change:auto': 'Starts a lane change after the signal delay without a steering nudge, when the adjacent lane and blind spot are clear.',
   'lane_change:delay': 'Sets the waiting time after signaling before an automatic lane change can begin.',
   'lane_change:width': 'Sets the minimum detected width of the adjacent lane for an automatic lane change.',
@@ -93,6 +96,7 @@ DESCRIPTIONS = {
   'heading:starport': 'Settings for connecting Android Auto to the car through StarPort.',
   'StarPortNewSetup': 'Shows the guided StarPort setup with a live checklist instead of the classic setup screens.',
   'StarPortAllowHevc': 'Lets a car that offers only H.265 video receive H.265; a car with an H.264 mode keeps H.264.',
+  'StarPortHeadUnitExperiments': 'Shows experimental fixes for specific cars and dongles, each with its own switch. Off is the standard connection.',
   'StarPortDedicatedWifi': "Joins the car's Wi-Fi on a second interface so the comma stays on its home Wi-Fi or phone hotspot.",
   'TeslaWakeOnCAN': 'Wakes comma when the Tesla wakes up, before you press the brake.',
   'RadarRecoveryAlert': 'Play a chime and show a brief message when a radar fault clears. You must re-engage manually.',
@@ -164,6 +168,7 @@ DESCRIPTIONS = {
 INITIALIZATION = {
   'StarPortNewSetup': 'Applies the next time the setup screen opens.',
   'StarPortAllowHevc': 'Applies from the next StarPort connection.',
+  'StarPortHeadUnitExperiments': 'Applies from the next StarPort connection.',
   'StarPortDedicatedWifi': 'Applies from the next StarPort connection.',
   'LateralControllerSelection': ('Applies when driving processes next start: the controller class, vehicle policy and ' +
     'PID/filter state are constructed together.'),

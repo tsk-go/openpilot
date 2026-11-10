@@ -18,6 +18,7 @@ from opendbc.bluepilot_lateral.core.lateral_angle_ext import LateralAngleExt
 from opendbc.bluepilot_lateral.core.lateral_inputs import lateral_inputs_complete
 from opendbc.bluepilot_lateral.can.fordcan_ext import lat_ctl2_checksum, create_lat_ctl2_msg
 from opendbc.car.ford.values import CarControllerParams, FordFlags
+from opendbc.car.ford.aol import qualified as qualified_aol
 from opendbc.car import structs
 from opendbc.car.vehicle_model import calc_slip_factor
 from opendbc.bluepilot_lateral.core.carcontroller_ext import pinion_vehicle_model
@@ -41,6 +42,17 @@ HOST_SETTINGS = {
   "lane_centering_strength_ang": 0.0,
 }
 SETTINGS_REFRESH_FRAMES = 300  # 3 s of card's 100 Hz loop
+
+
+def quiet_cluster_display(address, data):
+  if len(data) != 8:
+    return False
+  if address == 0x18A:
+    return ((data[5] >> 2) & 7) <= 1 and not (
+      data[0] & 0xE0 or data[1] & 1 or data[3] & 0xF0 or data[4] & 0xC0 or data[5] & 0x80 or data[6] & 0x3F)
+  if address == 0x3D8:
+    return data[6] >> 3 in (0, 30) and not (data[4] & 0x0D or data[5] & 0x18 or data[6] & 6)
+  return False
 
 
 def startup_params(params, *, enabled: bool) -> dict[str, str]:
@@ -210,11 +222,23 @@ class FordBluePilotController(BluePilotLateral):
     if self.starpilot_selected:
       angle = cast("StarPilotFordController", self.angle)
       angle.native_curvature_bounds = None
-      if self.native_pinion_model is not None and self.measured_seen and CS.out.vEgoRaw > 10.:
-        # Pinion native limits use 150 CAN curvature units, without learned geometry.
-        error = 150 * .00002
-        low = max(-max(self.measured_history) * .00002 - error, measured - CarControllerParams.CURVATURE_ERROR)
-        high = min(-min(self.measured_history) * .00002 + error, measured + CarControllerParams.CURVATURE_ERROR)
+      if self.measured_seen and CS.out.vEgoRaw > 10.:
+        if self.native_pinion_model is not None:
+          # Pinion native limits use 150 CAN curvature units, without learned geometry.
+          error = 150 * .00002
+          low = -max(self.measured_history) * .00002 - error
+          high = -min(self.measured_history) * .00002 + error
+        else:
+          # An old yaw extreme can expire before the next steering packet consumes its metadata.
+          history = list(self.measured_history)
+          sample_step = max((abs(b - a) for a, b in zip(history[:-1], history[1:], strict=True)), default=0)
+          # Native RX may advance one sample before the host receives the same batch.
+          error = max(0., CarControllerParams.CURVATURE_ERROR - (sample_step + 1) * .00002)
+          current_native = -self.measured_history[-1] * .00002
+          low = current_native - error
+          high = current_native + error
+        low = max(low, measured - CarControllerParams.CURVATURE_ERROR)
+        high = min(high, measured + CarControllerParams.CURVATURE_ERROR)
         # Tighten the host envelope only where both measurements agree on a command.
         if low <= high:
           angle.native_curvature_bounds = (low, high)
@@ -222,6 +246,9 @@ class FordBluePilotController(BluePilotLateral):
     return self._constrain_curvature(CC, CS, actuators, apply_curvature_last, packets, applied)
 
   def order_can_sends(self, frames):
+    if not self.CP.flags & (FordFlags.CANFD | FordFlags.NEW_PORT) and qualified_aol(self.CP, marked_only=True) and not self.lateral_active:
+      # Inactive classic steering returns display ownership to the camera.
+      frames = [(a, d, b) for a, d, b in frames if b != self.CAN.main or not quiet_cluster_display(a, d)]
     if (not self.starpilot_selected or self.curv.primary_lateral_control != PrimaryLateralControl.angle or
         self.frame % CarControllerParams.STEER_STEP or self.frame % CarControllerParams.LKA_STEP):
       return frames
