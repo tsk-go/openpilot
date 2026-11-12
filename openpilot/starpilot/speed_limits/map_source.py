@@ -13,7 +13,9 @@ from openpilot.starpilot.speed_limits import acceptance as acc
 
 EVENT_MAX_AGE_NS = 250_000_000
 COMPUTED_MAX_AGE_NS = 250_000_000
-GPS_MAX_AGE_NS = {'external': 500_000_000, 'internal': 2_000_000_000, 'car': 2_500_000_000}
+# 'phone': the phone GPS handoff (Galaxy's GPS source "Prefer phone GPS" / "backup"); mapd's own limit for it
+# (phoneFixMaxAge in mapd_repo/cereal/gps.go), so a frame mapd matched is never thrown away here as stale.
+GPS_MAX_AGE_NS = {'external': 500_000_000, 'internal': 2_000_000_000, 'car': 2_500_000_000, 'phone': 10_000_000_000}
 MAX_EVENT_BYTES = 2 * 1024 * 1024
 MAX_RETIRED_SESSIONS = 16
 MAX_UINT64 = (1 << 64) - 1

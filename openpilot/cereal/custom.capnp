@@ -1210,6 +1210,7 @@ struct MapdOut @0xa4f1eb3323f5f582 {
     internal @1;
     external @2;
     car @3;
+    phone @4;  # mapd's GpsSourcePhone: the phone GPS handoff (StarView's RTK receiver writes it); mapd already sends 4
   }
 
   enum RoadContext @0xabefa88b9563dbae {

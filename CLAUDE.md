@@ -120,6 +120,17 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    ever settles and every step rescans every drive folder (~960 routes, `owns_recording` per file): 63 % of a core over
    a 15-min drive (Nov 3). Upstream fixed = the uploader stops rescanning settled-but-failing routes, or has its own
    "uploads off" switch we can set from offline mode.
+6. **Map speed limits never arrive with the phone GPS handoff** (patch 74): in `openpilot/cereal/custom.capnp`
+   `MapdOut.GpsSource` `phone @4`, in `openpilot/starpilot/speed_limits/map_source.py` the 'phone' entry of
+   `GPS_MAX_AGE_NS` (10 s, mapd's own `phoneFixMaxAge`), and `test_phone_gps_handoff_is_read_and_kept_by_its_own_age`
+   in `speed_limits/tests/test_map_source.py`. mapd (Go) writes its `GpsSourcePhone` (4) when it runs on the phone GPS
+   handoff (StarView's RTK receiver, fork history 16: Galaxy's GPS source "Prefer phone GPS", or "backup" without the
+   comma's own fix); the Python schema had no 4, so `str(road.gpsSource)` raised and `copy_frame` dropped every frame -
+   mapd matched the road and its limit, the speed-limit side stayed `unknown` (Nov 11). Upstream fixed = upstream's
+   schema has the phone source and map_source accepts it. (mapd_repo's own schema copy is left as it is: Go writes the
+   number either way.) Check at every sync: if upstream's `MapdOut.GpsSource` has its own entry for 4 and its
+   `GPS_MAX_AGE_NS` its own 'phone' entry, remove ours (keep upstream's lines, drop our test if upstream tests it),
+   move fork history 43 to "No longer carried" and tell the owner patch 74 was dropped.
 
 # Fork history
 
@@ -424,6 +435,8 @@ Paths are under `openpilot/` unless noted.
 18. A full update shows "failed" after its own reboot (patch 29): `system/updated/updated.py` `recover_fast_state`.
 31. The comma four restarts all night after a parked shutdown (patch 50): a marker in /data/starview from the parked
     shutdown makes a CAN wake with no drive since shut down again after 2 minutes instead of an hour; a drive clears it.
+43. Map speed limits with the phone GPS handoff (patch 74): `MapdOut.GpsSource` `phone @4` and map_source's 'phone'
+    age limit, so mapd's matches made on the RTK fix reach the speed-limit side.
 
 **No longer carried**
 - Lane Centering with one line (patch 37, with StarView's one-line tile and blue lines): dropped by the owner at the Oct 26
