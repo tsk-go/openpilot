@@ -20,6 +20,13 @@
   ~/.ssh/claude_signing.pub` prints that fingerprint; after it, check `git log -1 --format=%GK` shows it too. If the
   key is missing or doesn't match, don't commit or push: stop and tell the owner (`ssh-keygen` comes from
   `apt-get install -y openssh-client` if it isn't installed).
+- `.claude/hooks/session-start.sh` (SessionStart hook in `.claude/settings.json`, cloud sessions only) does that setup
+  by itself at every session start and says in the session context whether it worked; without the key, or with
+  another one, it blocks commits in the clone (`gpg.ssh.program false`) instead of letting the cloud key sign - don't
+  work around that. A session that started in another repo doesn't run it: run
+  `CLAUDE_CODE_REMOTE=true .claude/hooks/session-start.sh` by hand. The same script is in tsk-go/starview-data.
+  Upstream has no `.claude` folder but its `.gitignore` ignores `.claude/`, so the two files are tracked with
+  `git add -f` (like `panda/board/obj`): changes to them need `git add -f` too.
 
 # Syncing upstream
 
