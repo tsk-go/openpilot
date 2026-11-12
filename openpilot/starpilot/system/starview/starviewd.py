@@ -1237,6 +1237,7 @@ class Hub:
       connected = bool(self.data_clients)
     if connected:
       self._tablet_seen = now
+    self._reopen_check(now, connected)
     # Parked: hold 30 s through app switches / reconnects (every drop used to light the comma screen up again).
     # Driving: no hold, so the comma screen comes back within ~5 s (the UI's staleness limit) if the tablet dies.
     hold_s = 0.0 if (self.started or self._onroad()) else 30.0
@@ -1252,6 +1253,51 @@ class Hub:
         os.unlink(self.TABLET_FLAG)
     except OSError:
       pass
+
+  REOPEN_AFTER_S = 8.0     # no tablet connection this long with the car on -> look whether StarView is gone
+  REOPEN_EVERY_S = 20.0
+  REOPEN_TRIES = 5
+
+  def _reopen_check(self, now, connected):
+    """StarView back on the tablet when it disappeared while the car is on: it updated itself (Android closes an app to
+    replace it and doesn't open it again) or crashed. Only after a tablet was connected in the last 5 min, only while
+    started and in tablet mode, and only when StarView's process is gone (a driver who switched to another app keeps
+    it - the connection drops then too). Never over another app: only when the tablet shows its home screen, the
+    lock screen or nothing it can tell (else it looks again 20 s later, as long as the 5 min last). Every 20 s, 5 tries
+    per drop, in a thread (adb can take seconds)."""
+    if connected or not (self.started and self.tablet_mode):
+      self._reopen_tries = 0
+      return
+    gone = now - getattr(self, "_tablet_seen", -1e9)
+    if gone < self.REOPEN_AFTER_S or gone > 300.0 or getattr(self, "_reopen_tries", 0) >= self.REOPEN_TRIES:
+      return
+    if now - getattr(self, "_reopen_t", -1e9) < self.REOPEN_EVERY_S or getattr(self, "_reopen_busy", False):
+      return
+    if shutil.which("adb") is None or not os.path.isdir(ADB_HOME):
+      return
+    self._reopen_t = now
+    self._reopen_tries = getattr(self, "_reopen_tries", 0) + 1
+    self._reopen_busy = True
+
+    def run():
+      try:
+        r = _adb("shell", "pidof", STARVIEW_PKG)
+        if r is None:
+          return                              # tablet not reachable over adb
+        if r.stdout.strip():
+          self._reopen_tries = self.REOPEN_TRIES   # still running (the driver went to another app): leave it
+          return
+        front = _tablet_front()
+        if not _may_cover(front):
+          self._reopen_tries -= 1                  # another app is in front: never pop up over it; look again later
+          return
+        awake = _tablet_awake()
+        cloudlog.warning(f"starview: StarView gone with the car on -> tablet: {_tablet_wake(bool(awake))}")
+      except Exception as e:
+        cloudlog.warning(f"starview: reopen: {e}")
+      finally:
+        self._reopen_busy = False
+    threading.Thread(target=run, name="starview-reopen", daemon=True).start()
 
   # ---- drive replay ----
   def _replaying(self) -> bool:
@@ -3061,6 +3107,29 @@ def _tablet_front():
         if m:
           return m.group(1)
   return None
+
+
+_HOME_PKG = []
+
+
+def _tablet_home():
+  """The tablet's home screen (launcher) package, asked once."""
+  if not _HOME_PKG:
+    r = _adb("shell", "cmd", "package", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN",
+             "-c", "android.intent.category.HOME")
+    if r is None:
+      return None
+    lines = [ln.strip() for ln in r.stdout.splitlines() if "/" in ln]
+    _HOME_PKG.append(lines[-1].split("/")[0] if lines else "")
+  return _HOME_PKG[0] or None
+
+
+def _may_cover(front) -> bool:
+  """Whether StarView may be put in front of [front] (the package in front on the tablet): nothing told, StarView
+  itself, the home screen, the lock screen / system UI. Never another app the driver is using."""
+  if front is None or front == STARVIEW_PKG or front == "com.android.systemui" or "launcher" in front.lower():
+    return True
+  return front == _tablet_home()
 
 
 def _tablet_wake(awake: bool) -> str:

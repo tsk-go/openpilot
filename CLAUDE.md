@@ -405,6 +405,16 @@ Paths are under `openpilot/` unless noted.
     Sound Preview switch (/data/starview/sound_preview_off) is gone. StarView 2.81.3 calls upstream's
     /api/sounds/preview by itself when a volume slider is let go (quiet when onroad - forced offroad with the car on
     works). Ours is in the history (patches 68-70) if onroad previews are ever wanted back.
+42. StarView back on the tablet when it disappears while driving (patch 72): StarView 2.85.8 updates itself as soon
+    as a new version is published (owner's choice, Nov 11 - also while driving; a switch in its Settings turns it
+    off), and Android closes an app to replace it without opening it again. starviewd `Hub._reopen_check` (from
+    `tablet_flag_tick`, every second): car on (started), tablet mode, a tablet connected within the last 5 min, then
+    no data client for 8 s -> in a thread, `adb shell pidof com.starpilot.starview`; no process -> `_tablet_wake`
+    (screen on, StarView started only if it isn't in front). Every 20 s, 5 tries per drop. A running process (the
+    driver switched to another app - the connection drops then too) is left alone, and it never pops up over another
+    app: only when the tablet shows its home screen, the lock screen or nothing adb can tell (`_may_cover`:
+    `_tablet_front()` against the launcher from `cmd package resolve-activity`); another app in front -> looks again
+    20 s later, within the 5 min. Also brings StarView back after a crash. Test: `starview/tests/test_reopen.py`.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
