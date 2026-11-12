@@ -758,3 +758,27 @@ def test_power_management_carries_parked_power(tmp_path):
   hub.started = True                        # driving: Galaxy's rule, parked only
   st = hub.control({"action": "hub_power", "op": "comma_set", "enabled": True})
   assert st["ok"] is False and "parked" in st["error"] and st["comma"]["editable"] is False
+
+
+def test_log_copy_starts_right_after_going_offroad():
+  """Patch 73: the copy starts 15 s after openpilot goes offroad (car off or forced offroad), not at the next 5-min
+  check - the hub (and the stick on it) switches off 5 min after parking."""
+  d = starviewd.ArchiveDue()
+  assert not d.tick(0, True)               # driving
+  assert not d.tick(10, False)             # just parked / forced offroad
+  assert not d.tick(24, False)
+  assert d.tick(25, False)                 # 15 s later
+  d.ran(60)
+  assert not d.tick(65, False)
+  assert not d.tick(359, False)
+  assert d.tick(360, False)                # again 5 min after the last run, while offroad
+  d.ran(370)
+  assert not d.tick(375, True)             # back on the road
+  assert not d.tick(380, False)
+  assert d.tick(395, False)                # the next stop starts at once again
+
+
+def test_log_copy_after_starviewd_starts_offroad():
+  d = starviewd.ArchiveDue()
+  assert not d.tick(100, False)
+  assert d.tick(115, False)

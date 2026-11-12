@@ -12,6 +12,9 @@ Rules (HubPower.tick, every 0.5 s from starviewd's hub_power_thread; the car on/
   * car on (ignition, or openpilot started) -> port on, at once. Never off while the car is on.
   * car off after a drive -> off after the delay (tablet: 1 min - 5 h, default 5 min). The key fob's after-park window
     and StarLock's window close need the hub (radio dongle, Pico), so they last as long as the delay.
+  * the log archive still copying to the USB stick when the delay is up -> on until it finishes, at most
+    ARCHIVE_EXTRA_S more (patch 73): the stick is on the hub, and a copy cut off by the delay left drives behind until
+    the comma deleted them. A low battery still turns it off at once.
   * the comma woke up with the car already off (a CAN wake, or the low-voltage restart loop) -> off after
     min(delay, BOOT_DELAY_S): nothing needs the hub then.
   * car off and the battery (panda voltage, smoothed over LOW_V_TAU_S) below the comma's own low-voltage cutoff
@@ -39,6 +42,7 @@ HUB_MARGIN_MV = 200          # the hub goes off 0.2 V above the comma's own cuto
 LOW_V_S = 60.0               # smoothed voltage below that for this long
 LOW_V_TAU_S = 10.0
 STOCK_CUTOFF_TENTHS = 118
+ARCHIVE_EXTRA_S = 20 * 60.0   # the log copy may keep the hub on this long past the delay
 
 _open = open                 # tests swap it to act like the comma user (PermissionError on debugfs)
 
@@ -61,7 +65,7 @@ def _sudo(args, data=None):
 
 class HubPower:
   def __init__(self, vbus: str = VBUS, cfg: str = CFG, device_mode=lambda: False, log=print, wall=time.time,  # noqa: TID251  wall: event times
-               cutoff_tenths=lambda: STOCK_CUTOFF_TENTHS, sudo=_sudo):
+               cutoff_tenths=lambda: STOCK_CUTOFF_TENTHS, sudo=_sudo, busy=lambda: False):
     self.vbus = vbus
     self.cfg_path = cfg
     self.device_mode = device_mode     # the port is a USB device (gadget) right now: not ours to switch
@@ -69,6 +73,8 @@ class HubPower:
     self.wall = wall
     self.cutoff_tenths = cutoff_tenths  # the comma's own low-voltage cutoff (Parked Power), in 0.1 V
     self.sudo = sudo
+    self.busy = busy                   # the log archive is copying to the stick on the hub (looked at only when due off)
+    self.held = False                  # kept on past the delay for that copy
     self.cut = False                   # we switched the port off
     self.car = None                    # True / False / None (no panda data)
     self.off_since = None              # monotonic time the car went off (or the comma woke with it off)
@@ -211,6 +217,7 @@ class HubPower:
       return
     if car:
       self.car = True
+      self.held = False
       self.off_since = None
       self.boot_off = False
       self._quiet_since = None
@@ -248,7 +255,19 @@ class HubPower:
     if self._low_since is not None and now - self._low_since >= LOW_V_S:
       self._write(False, f"battery low ({self.volts_mv / 1000:.1f} V)")
     elif now - self.off_since >= self.delay_s():
+      if now - self.off_since < self.delay_s() + ARCHIVE_EXTRA_S and self._busy():
+        if not self.held:
+          self.held = True
+          self.log("starview: hub power: kept on while the log copy finishes")
+        return
+      self.held = False
       self._write(False, f"car off {self._fmt(now - self.off_since)}")
+
+  def _busy(self) -> bool:
+    try:
+      return bool(self.busy())
+    except Exception:
+      return False
 
   @staticmethod
   def _fmt(s: float) -> str:
@@ -267,4 +286,4 @@ class HubPower:
             "car": None if self.car is None else ("on" if self.car else "off"), "cut_in_s": cut_in,
             "battery_v": None if self.volts_mv is None else round(self.volts_mv / 1000.0, 2),
             "hub_cutoff_v": round(self.hub_cutoff_mv(now) / 1000.0, 1),
-            "error": self.error, "events": list(reversed(self.events[-10:]))}
+            "held_for_copy": self.held, "error": self.error, "events": list(reversed(self.events[-10:]))}

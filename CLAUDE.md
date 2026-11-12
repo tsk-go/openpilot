@@ -206,6 +206,15 @@ Paths are under `openpilot/` unless noted.
     Patch 45: while a copy runs, its progress (phase, bytes and files done of total, MB/s, time left) is in
     `/dev/shm/starview_logarchive_progress.json` (RAM only); starviewd's `/storage` adds it as `stick.progress` (ignored
     once its pid is gone) and the auto copy's last start as `stick.auto_last`, for StarView's Storage page.
+    Patch 73 (Nov 12): the archive fell ~36 GB behind and lost the Nov 9 evening drive (deleted on the comma before
+    it reached the stick): starviewd checked only every 5 min, so after parking it often started just as the hub (and
+    the stick on it) switched off 5 min later, and it copied at most 20 MB/s (~40 min of driving per stop). Now
+    starviewd `ArchiveDue` starts it 15 s after openpilot goes offroad - car off or forced offroad, the same here - then
+    every 5 min while offroad (one param read every 5 s); no speed cap (`MAX_BYTES_PER_S = 0`: offroad only, the eGPU
+    is idle); `plan()` copies every drive's rlog / qlog / qcamera first, oldest drive first (by time: route counters
+    restart and segment numbers aren't zero-padded), the full-size videos after; and `hub_power` keeps the hub on
+    past its delay while a copy runs (`busy`, at most 20 min more; a low battery still turns it off at once). Watch:
+    key fob presses during a copy (the radio dongle streams ~5 MB/s on the same hub).
 
 29. Door lock / unlock while running (patch 46): the 4th-gen Sienna's Main Body module (0x750, sub-address 0x40)
     refuses StarPilot's KWP door command (`7F 30 11`) and takes Toyota's UDS active test instead (GTS+ "Door Lock" DID

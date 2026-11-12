@@ -2979,7 +2979,8 @@ def hub_power_thread(hub):
   """hub_power.py: the comma's USB-C port off a while after the car turns off, on again when it starts (or the CAN
   bus wakes). pandaStates (conflated) every 0.5 s with the car off, 1 s with it on; CAN only read with the car off."""
   from openpilot.common.hardware.usb import usb_host_connected
-  hp = HubPower(device_mode=usb_host_connected, log=cloudlog.warning, cutoff_tenths=hub.comma_cutoff_tenths)
+  hp = HubPower(device_mode=usb_host_connected, log=cloudlog.warning, cutoff_tenths=hub.comma_cutoff_tenths,
+                busy=lambda: log_archive_progress() is not None)
   hub.hubpower = hp
   try:
     hp.ensure_on("StarView started")
@@ -3171,17 +3172,48 @@ def log_archive_progress():
     return None
 
 
+class ArchiveDue:
+  """When the log copy runs (patch 73). Before: every 5 min while offroad, so after parking it often started just
+  as the hub (and the stick on it) switched off 5 min later. Now: START_S after openpilot goes offroad - the car off
+  or forced offroad, the same thing here - then again every AGAIN_S while it stays offroad. Polled every POLL_S
+  (one param read)."""
+  POLL_S = 5.0
+  START_S = 15.0       # loggerd closes the drive's last segment
+  AGAIN_S = 300.0
+
+  def __init__(self):
+    self.off_at = None   # monotonic time openpilot went offroad (None while onroad or after the first run)
+    self.last = None     # monotonic time the last run ended
+    self.was_on = True   # starviewd starting counts as just gone offroad
+
+  def tick(self, now: float, onroad: bool) -> bool:
+    if onroad:
+      self.was_on, self.off_at = True, None
+      return False
+    if self.was_on:
+      self.was_on, self.off_at = False, now
+    if self.off_at is not None:
+      return now - self.off_at >= self.START_S
+    return self.last is None or now - self.last >= self.AGAIN_S
+
+  def ran(self, now: float):
+    self.off_at = None
+    self.last = now
+
+
 def log_archive_thread():
   """Parked only: copy finished drives from internal storage to the USB stick (logarchive.py mounts, copies, unmounts).
   loggerd itself always records to internal storage - a stalling stick can never reach the driving processes."""
   # bundled with this file; the old installer copied it to /data/starview instead
   bundled = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logarchive.py")
   script = bundled if os.path.exists(bundled) else "/data/starview/logarchive.py"
+  params = Params()
+  due = ArchiveDue()
   time.sleep(90)
   while True:
     try:
-      if os.path.exists(script) and not os.path.exists("/data/starview/no_log_archive") and \
-         not compat.is_onroad(Params()):
+      if due.tick(time.monotonic(), compat.is_onroad(params)) and os.path.exists(script) and \
+         not os.path.exists("/data/starview/no_log_archive"):
         t = time.time()  # noqa: TID251  shown as a time on the tablet
         LOG_ARCHIVE_LAST.clear()
         LOG_ARCHIVE_LAST.update(time=t, running=True)
@@ -3189,11 +3221,13 @@ def log_archive_thread():
                            capture_output=True, text=True, timeout=4 * 3600)
         tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
         LOG_ARCHIVE_LAST.update(running=False, rc=r.returncode, out=(tail[-1] if tail else "")[:300])
+        due.ran(time.monotonic())
     except Exception as e:
       if LOG_ARCHIVE_LAST.get("running"):
         LOG_ARCHIVE_LAST.update(running=False, rc=None, out=f"stopped: {e}"[:300])
       cloudlog.warning(f"starview: log archive: {e}")
-    time.sleep(300)
+      due.ran(time.monotonic())
+    time.sleep(ArchiveDue.POLL_S)
 
 
 def doorbelt_thread():

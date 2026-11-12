@@ -288,3 +288,51 @@ def test_a_brief_dip_does_nothing(tmp_path):
   for t in range(2, 200):
     hp.tick(t, False, False, volts_mv=11000 if 50 <= t < 55 else 12600)
   assert port(vbus) == "1"
+
+
+def test_kept_on_while_the_log_copy_runs(tmp_path):
+  """Patch 73: the stick is on the hub - a copy still running when the delay is up keeps it on (at most 20 min more)."""
+  hp, vbus, logs = make(tmp_path)
+  copying = [True]
+  hp.busy = lambda: copying[0]
+  drive_then_park(hp)
+  hp.tick(1 + 300, False, False)
+  assert port(vbus) == "1" and hp.held and hp.status(301)["held_for_copy"]
+  assert any("log copy" in m for m in logs)
+  hp.tick(1 + 600, False, False)
+  assert port(vbus) == "1"
+  copying[0] = False                       # the copy finished
+  hp.tick(1 + 601, False, False)
+  assert port(vbus) == "0" and not hp.held and "10 min" in hp.events[-1]["why"]
+
+
+def test_the_copy_keeps_it_on_at_most_20_more_minutes(tmp_path):
+  hp, vbus, _ = make(tmp_path)
+  hp.busy = lambda: True
+  drive_then_park(hp)
+  hp.tick(1 + 300 + 1199, False, False)
+  assert port(vbus) == "1"
+  hp.tick(1 + 300 + 1200, False, False)
+  assert port(vbus) == "0"
+
+
+def test_battery_low_beats_the_copy(tmp_path):
+  hp, vbus, _ = make(tmp_path, cfg={"on": True, "delay_min": 1})
+  hp.busy = lambda: True
+  hp.cutoff_tenths = lambda: 118
+  hp.tick(0, True, True, volts_mv=14200)
+  t = 1
+  while port(vbus) == "1" and t < 2000:
+    hp.tick(t, False, False, volts_mv=11500)
+    t += 1
+  assert port(vbus) == "0" and "battery low" in hp.events[-1]["why"]
+
+
+def test_a_broken_copy_check_never_keeps_it_on(tmp_path):
+  hp, vbus, _ = make(tmp_path)
+  def boom():
+    raise OSError("no /dev/shm")
+  hp.busy = boom
+  drive_then_park(hp)
+  hp.tick(1 + 300, False, False)
+  assert port(vbus) == "0"

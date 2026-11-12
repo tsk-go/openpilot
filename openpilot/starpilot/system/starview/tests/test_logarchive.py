@@ -124,3 +124,43 @@ def test_progress_left_by_a_killed_copy_is_ignored(progress_file):
 def test_progress_file_is_in_ram():
   # read the source: the autouse fixture points PROGRESS at tmp for every test
   assert 'PROGRESS = "/dev/shm/' in open(logarchive.__file__).read()
+
+
+def test_logs_and_small_video_go_first_oldest_drive_first(tmp_path, monkeypatch):
+  """Patch 73: every drive's logs and low-res video before any full-size video; oldest drive first (by time - route
+  counters start over after a reset and segment numbers aren't zero-padded)."""
+  src, mnt = tmp_path / "realdata", tmp_path / "mnt"
+  mnt.mkdir()
+  segs = {"00000961--old--0": 1000, "000000f8--new--2": 3000, "000000f8--new--10": 4000, "000000f7--mid--0": 2000}
+  for seg, t in segs.items():
+    d = src / seg
+    d.mkdir(parents=True)
+    for name in ("fcamera.hevc", "qcamera.ts", "rlog.zst", "qlog.zst"):
+      (d / name).write_bytes(b"x")
+    os.utime(d, (t, t))
+  monkeypatch.setattr(logarchive, "SRC", str(src))
+  monkeypatch.setattr(logarchive, "MNT", str(mnt))
+  todo, skipped = logarchive.plan()
+  names = [(seg, name) for seg, name, _ in todo]
+  first = [n for n in names if n[1] != "fcamera.hevc"]
+  assert names[:len(first)] == first and len(first) == 12          # all 12 small files before any fcamera
+  order = ["00000961--old--0", "000000f7--mid--0", "000000f8--new--2", "000000f8--new--10"]
+  assert [s for s, n in names if n == "rlog.zst"] == order
+  assert [s for s, n in names if n == "fcamera.hevc"] == order
+  assert skipped == 0
+
+
+def test_no_speed_cap_by_default(tmp_path, params, monkeypatch):
+  """Patch 73: offroad only, so nothing else needs the USB link: as fast as the stick takes it."""
+  assert logarchive.MAX_BYTES_PER_S == 0
+  src, mnt = tmp_path / "realdata", tmp_path / "mnt"
+  (src / "00000001--abc--0").mkdir(parents=True)
+  mnt.mkdir()
+  (src / "00000001--abc--0" / "rlog.zst").write_bytes(os.urandom(4 * 1024 * 1024))
+  monkeypatch.setattr(logarchive, "SRC", str(src))
+  monkeypatch.setattr(logarchive, "MNT", str(mnt))
+  params("IsOffroad", True)
+  slept = []
+  monkeypatch.setattr(logarchive.time, "sleep", slept.append)
+  copied, files = logarchive.copy_all({})
+  assert files == 1 and not slept

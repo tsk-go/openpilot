@@ -7,7 +7,10 @@ gets I/O errors and crashes, which trips "Process Not Running" / "Communication 
 always records to internal storage, and this script mirrors the finished segments onto the stick afterwards:
 
   * runs only while offroad (IsOffroad = 1; unknown counts as the car on) and stops within 1 MB if the car turns on
-  * copies at most 20 MB/s: the stick shares the comma's one USB link with the eGPU
+  * copies as fast as the stick takes it (patch 73; was at most 20 MB/s): it only ever runs with openpilot offroad
+    (car off, or forced offroad), so the eGPU on the same USB link is idle, and it stops within 1 MB when openpilot starts
+  * the logs and the low-res video of every drive go first (oldest drive first), the full-size videos after: the comma
+    keeps about a day and a half of drives, and a backlog of video must never cost a drive its logs
   * mounts the EXTDATA stick on its own folder (/data/extstorage/mnt), copies, syncs and UNMOUNTS again
   * never deletes anything on internal storage (openpilot's deleter keeps managing that, uploads keep working)
   * when the stick gets full, the oldest drives ON THE STICK are removed (keeps ~10 % free)
@@ -45,7 +48,9 @@ def sh(cmd, timeout=120):
 
 
 PARAMS_DIRS = ("/data/params/d", "/dev/shm/params/d")
-MAX_BYTES_PER_S = 20 * 1024 * 1024   # the stick shares the comma's one USB link with the eGPU: never flood it
+MAX_BYTES_PER_S = 0                  # 0 = no cap. Patch 73: the copy only runs offroad (eGPU idle); was 20 MB/s, which
+                                     # with the hub off 5 min after parking copied ~40 min of driving per stop at best
+FIRST = ("rlog.zst", "rlog", "qlog.zst", "qlog", "qcamera.ts")   # small and what matters: before any full-size video
 
 
 def _flag(name):
@@ -166,13 +171,24 @@ def prune(st):
       return
 
 
+def _seg_order(seg):
+  """Oldest drive first (the comma deletes those first): by the segment folder's time, then its number. Folder
+  names alone don't sort: route counters start over after a reset, and segment numbers aren't zero-padded."""
+  try:
+    t = os.path.getmtime(os.path.join(SRC, seg))
+  except OSError:
+    t = 0.0
+  route, _, num = seg.rpartition("--")
+  return (t, route, int(num) if num.isdigit() else 0)
+
+
 def plan():
-  """What still has to go to the stick: [(segment, name, size)], and how many files are already there."""
+  """What still has to go to the stick: [(segment, name, size)], and how many files are already there.
+  Order: every drive's logs and low-res video (FIRST) before any full-size video; within each, oldest drive first."""
   todo, skipped = [], 0
-  for seg in sorted(os.listdir(SRC)):
+  segs = sorted((d for d in os.listdir(SRC) if os.path.isdir(os.path.join(SRC, d))), key=_seg_order)
+  for seg in segs:
     sp = os.path.join(SRC, seg)
-    if not os.path.isdir(sp):
-      continue
     dp = os.path.join(MNT, seg)
     for name in sorted(os.listdir(sp)):
       s = os.path.join(sp, name)
@@ -184,6 +200,8 @@ def plan():
         skipped += 1
       else:
         todo.append((seg, name, size))
+  rank = {seg: i for i, seg in enumerate(segs)}
+  todo.sort(key=lambda t: (t[1] not in FIRST, rank[t[0]]))
   return todo, skipped
 
 
@@ -219,9 +237,10 @@ def copy_all(st, prog=None):
         fo.write(b)
         sent += len(b)
         prog.set(done_bytes=copied + sent, done_files=files, segment=seg)
-        ahead = sent / MAX_BYTES_PER_S - (time.monotonic() - t0)
-        if ahead > 0:
-          time.sleep(ahead)
+        if MAX_BYTES_PER_S > 0:
+          ahead = sent / MAX_BYTES_PER_S - (time.monotonic() - t0)
+          if ahead > 0:
+            time.sleep(ahead)
         if onroad():
           break
     if onroad():
