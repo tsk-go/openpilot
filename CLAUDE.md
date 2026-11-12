@@ -3,27 +3,34 @@
 - Every commit (including merges) is authored and committed as `tsk-go <cmc686@gmail.com>`. Before committing, run
   `git config user.name tsk-go && git config user.email cmc686@gmail.com`.
 - Never mention Claude or Anthropic in commits: no `Co-Authored-By` trailer, no session links, no attribution lines.
-- Every commit is signed with the owner's SSH signing key so GitHub shows it as Verified. The private key is in the
-  environment variable `GIT_SIGNING_KEY_B64` (base64 of the OpenSSH private key file); its public key is on the tsk-go
-  account as a Signing Key, fingerprint `SHA256:ituxS1NO/VJowXXhvOv/nUdnZQYSQkHbkSL4fQIDC2E`. Set it up once per session:
+- Every commit is signed with one of the owner's two SSH signing keys - no other key - so GitHub shows it as Verified.
+  Both are Signing Keys on the tsk-go account:
+  - main key: private key in the environment variable `GIT_SIGNING_KEY_B64` (base64 of the OpenSSH private key file;
+    Claude Code cloud sessions), fingerprint `SHA256:ituxS1NO/VJowXXhvOv/nUdnZQYSQkHbkSL4fQIDC2E`.
+  - "StarView chat" key: `~/.ssh/chat_signing` in the owner's claude.ai StarView chat workspace (no environment
+    variables there), fingerprint `SHA256:98d19r36BEJtwbf8sddMlMqnjrmEf1dEHMqNcT3u9ww`.
+  Set it up once per session (in the chat: skip the `printf` line and use `chat_signing` instead of `claude_signing`):
   ```
   mkdir -p ~/.ssh && chmod 700 ~/.ssh
   printf '%s' "$GIT_SIGNING_KEY_B64" | base64 -d > ~/.ssh/claude_signing && chmod 600 ~/.ssh/claude_signing
   ssh-keygen -y -f ~/.ssh/claude_signing > ~/.ssh/claude_signing.pub
-  echo "cmc686@gmail.com $(cut -d' ' -f1,2 ~/.ssh/claude_signing.pub)" > ~/.ssh/allowed_signers
+  printf 'cmc686@gmail.com %s\ncmc686@gmail.com %s\n' \
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFgAaE174fTZQ1Z9Ks/WMMnBHjM3lUsvrsvamI7ZrNXL" \
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGAojto2C+2H/F8PZ7pC8QIrNzCzuVbYf11rVhZub9UH" > ~/.ssh/allowed_signers
   git config gpg.format ssh && git config gpg.ssh.program ssh-keygen
   git config user.signingkey ~/.ssh/claude_signing.pub && git config gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
   git config commit.gpgsign true && git config tag.gpgsign true
   ```
   `gpg.ssh.program ssh-keygen` matters: the cloud environment's global git config signs with its own key
-  (`/tmp/code-sign`), which GitHub shows as Unverified. Before every commit, check `ssh-keygen -lf
-  ~/.ssh/claude_signing.pub` prints that fingerprint; after it, check `git log -1 --format=%GK` shows it too. If the
-  key is missing or doesn't match, don't commit or push: stop and tell the owner (`ssh-keygen` comes from
-  `apt-get install -y openssh-client` if it isn't installed).
+  (`/tmp/code-sign`), which GitHub shows as Unverified. Before every commit, check `ssh-keygen -lf` of the key in
+  `git config user.signingkey` prints one of the two fingerprints; after it, check `git log -1 --format=%GK` shows that
+  same one. If neither key is there or a key doesn't match, don't commit or push: stop and tell the owner (`ssh-keygen`
+  comes from `apt-get install -y openssh-client` if it isn't installed).
 - `.claude/hooks/session-start.sh` (SessionStart hook in `.claude/settings.json`, cloud sessions only) does that setup
-  by itself at every session start and says in the session context whether it worked; without the key, or with
-  another one, it blocks commits in the clone (`gpg.ssh.program false`) instead of letting the cloud key sign - don't
-  work around that. A session that started in another repo doesn't run it: run
+  by itself at every session start - the main key when `GIT_SIGNING_KEY_B64` is set, else `~/.ssh/chat_signing` if it
+  is exactly the chat key, `allowed_signers` holding both - and says in the session context which key it uses; with
+  neither key, or another one, it blocks commits in the clone (`gpg.ssh.program false`) instead of letting the cloud
+  key sign - don't work around that. A session that started in another repo (or the chat) doesn't run it: run
   `CLAUDE_CODE_REMOTE=true .claude/hooks/session-start.sh` by hand. The same script is in tsk-go/starview-data.
   Upstream has no `.claude` folder but its `.gitignore` ignores `.claude/`, so the two files are tracked with
   `git add -f` (like `panda/board/obj`): changes to them need `git add -f` too.
