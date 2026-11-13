@@ -171,7 +171,7 @@ assert.deepEqual(cardsFor(""), [["", [0]], ["StarPort", [2, 3]]], "a heading row
 assert.deepEqual(cardsFor("h.265"), [["", []], ["StarPort", [3]]], "search keeps a row in its card when the heading is filtered out")
 assert.deepEqual(cardsFor("voacc"), [["", [0]]], "an emptied card is not shown")
 
-const experimentRows = [{ label: "Stay on Wi-Fi", value: "On", reason: "" }, { label: "Specific car experiments", value: "", reason: "", heading: true, collapsed: true },
+const experimentRows = [{ label: "Stay on Wi-Fi", value: "On", reason: "" }, { key: "heading:experiments", label: "Specific car experiments", value: "", reason: "", heading: true, collapsed: true },
   { label: "Try experimental fixes", value: "Off", reason: "" }]
 const experimentCards = (state) => {
   const view = { state: { query: "", data: { rows: experimentRows }, ...state }, initialPage: "developer", activeSection: {} }
@@ -179,12 +179,12 @@ const experimentCards = (state) => {
   return SettingsPage.computed.rowCards.call(view).map(({ title, open }) => [title, open])
 }
 assert.deepEqual(experimentCards({ openCards: [] }), [["", true], ["Specific car experiments", false]], "a collapsible group starts closed")
-assert.deepEqual(experimentCards({ openCards: ["Specific car experiments"] }), [["", true], ["Specific car experiments", true]])
+assert.deepEqual(experimentCards({ openCards: ["heading:experiments"] }), [["", true], ["Specific car experiments", true]])
 assert.deepEqual(experimentCards({ openCards: [], query: "experimental" }).at(-1), ["Specific car experiments", true], "searching opens a matching group")
 const toggled = { state: { openCards: [] } }
-SettingsPage.methods.toggleCard.call(toggled, "Specific car experiments")
-assert.deepEqual(toggled.state.openCards, ["Specific car experiments"])
-SettingsPage.methods.toggleCard.call(toggled, "Specific car experiments")
+SettingsPage.methods.toggleCard.call(toggled, "heading:experiments")
+assert.deepEqual(toggled.state.openCards, ["heading:experiments"])
+SettingsPage.methods.toggleCard.call(toggled, "heading:experiments")
 assert.deepEqual(toggled.state.openCards, [])
 
 const conditional = fixture()
@@ -450,3 +450,27 @@ assert.equal(sentryMonitorStatus({ subtitle: "Waiting for monitor: The monitor h
 assert.equal(sentryMonitorStatus({ subtitle: "Motion monitor status is unavailable. Reconnecting automatically…" }).label, "Status unavailable")
 assert.equal(sentryMonitorStatus(null).label, "Status unavailable")
 assert.equal(sentryMonitorStatus({ subtitle: 42 }).label, "Status unavailable")
+
+// Vehicle-specific controls must remain reachable from the actual section filter.
+const vehicleHub = {
+  initialPage: "hub",
+  activeSection: SETTINGS_SECTIONS.find(section => section.id === "lateral"),
+  state: { query: "", data: { page: "hub", rows: [
+    { label: "Always On Lateral", page: "aol", available: true },
+    { label: "Vehicle Settings", page: "vehicle", available: true },
+  ] } },
+}
+const vehicleLinks = SettingsPage.computed.visibleRows.call(vehicleHub)
+assert.deepEqual(vehicleLinks.map(entry => entry.row.page), ["aol"])
+assert.equal(vehicleLinks[0].index, 0, "navigation must retain the server row index")
+const vehicleSection = SettingsPage.computed.activeSection.call({
+  sections: SETTINGS_SECTIONS, state: { developerOpen: false, data: { page: "vehicle" } },
+})
+assert.equal(vehicleSection.id, "vehicle", "Vehicle Settings belongs to the dedicated Toggles tab")
+const brakeRows = SettingsPage.computed.visibleRows.call({
+  initialPage: "hub", activeSection: vehicleSection,
+  state: { query: "", data: { page: "vehicle", rows: [
+    { label: "Disengage AOL on Brake", choices: ["Off", "On"], value: "Off", available: true },
+  ] } },
+})
+assert.equal(brakeRows[0].row.label, "Disengage AOL on Brake")

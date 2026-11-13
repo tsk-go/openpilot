@@ -333,6 +333,26 @@ def early_native_long_withdrawal_supported(CP) -> bool:
                CP.carFingerprint == HyundaiCAR.HYUNDAI_PALISADE_2023 and qualified_blended_alpha(CP, marked_only=True)))
 
 
+
+def raw_longitudinal_withdrawal(CP, CS, sm, native, *, session, now_ns) -> bool:
+  from openpilot.starpilot.aol.transport_pause import independent_lateral_health
+
+  try:
+    if (CP.brand != 'hyundai' or not CP.openpilotLongitudinalControl or native is None or
+        not native.requestedLateral or not native.lateralAllowed or not native.requestedLongitudinal or
+        not native.longitudinalAllowed or not native.pandaInventory or
+        not 0 < native.sourcePandaStatesMonoTime < int(sm.logMonoTime['pandaStates'])):
+      return False
+    index = 0 if len(CP.safetyConfigs) == 1 else config_index(CP)
+    pandas = sm['pandaStates']
+    if (index is None or len(pandas) != len(CP.safetyConfigs) or len(native.pandaInventory) != len(CP.safetyConfigs) or
+        pandas[index].controlsAllowed or not native.pandaInventory[index].controlsAllowed or
+        not (early_native_long_withdrawal_supported(CP) or qualified_ccnc_long_aol(CP, marked_only=True))):
+      return False
+    return independent_lateral_health(sm, CP, CS, session, now_ns) == native
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return False
+
 def classic_brake_withdrawal(CP, CS) -> bool:
   return bool(CP.brand == 'hyundai' and CS.brakePressed and not CS.gasPressed and not CS.regenBraking and
               CS.cruiseState.available and not CS.doorOpen and not CS.seatbeltUnlatched and not CS.vehicleSensorsInvalid and
@@ -376,7 +396,8 @@ def source_deadline_supported(CP) -> bool:
 
 def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
   # Dedicated EV6 LONG raw-button/optional-release behavior stays unchanged.
-  if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
+  if (CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl and
+      CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG):
     return False
   return bool(qualified_ccnc_long_aol(CP, marked_only=marked_only) or qualified_sonata_independent(CP) or
               qualified_angle_aol(CP, marked_only=marked_only) or
@@ -554,3 +575,57 @@ def pending_stock_angle_arm(CP, CS, sm, owner, *, now_ns, producer, acknowledged
                 not native.requestedLongitudinal and not native.longitudinalAllowed)
   except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
     return False
+
+
+def retain_stopped_eps_arm(feedback, sm, cp, cs, axis, now_ns, *, latched, arm_ns, producer):
+  from openpilot.cereal import log
+  from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS
+  from openpilot.starpilot.aol.transport_pause import _configured_transport_native
+
+  pending = getattr(feedback, '_stopped_eps_arm', None)
+  feedback._stopped_eps_arm = None
+  if not cs.steerFaultTemporary and pending is None:
+    return False
+  if (not latched or feedback.failed or feedback.paused or feedback.pending_event or
+      feedback.retention_started_ns or cs.steerFaultPermanent or not cs.canValid or cs.canTimeout or
+      cs.accFaulted or cs.doorOpen or cs.vehicleSensorsInvalid or cs.steeringDisengage or
+      cs.gearShifter not in (car.CarState.GearShifter.drive, car.CarState.GearShifter.sport,
+                            car.CarState.GearShifter.low, car.CarState.GearShifter.brake) or
+      str(axis.faultReason) != 'none' or axis.longitudinalActive or axis.desiredLongitudinal or
+      not producer or axis.intentProducerSessionId != producer or
+      not 0 < axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
+      now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS):
+    return False
+  binding = (int(arm_ns), str(axis.sessionId), producer, int(axis.intentIntegrityEpoch))
+  if pending is None:
+    if (not cs.steerFaultTemporary or not cs.standstill or not cs.brakePressed or
+        not 0 < arm_ns <= now_ns <= arm_ns + AXIS_MAX_AGE_NS or
+        not qualified_classic_scc(cp, marked_only=True) or
+        axis.lateralActive or axis.desiredLateral):
+      return False
+  elif pending[:4] != binding or not 0 <= now_ns - pending[5] <= AXIS_MAX_AGE_NS:
+    return False
+  event_ns = int(sm.logMonoTime['onroadEvents'])
+  temporary = (log.OnroadEvent.EventName.steerTempUnavailable,
+               log.OnroadEvent.EventName.steerTempUnavailableSilent)
+  allowed = (*temporary, log.OnroadEvent.EventName.wrongCarMode,
+             log.OnroadEvent.EventName.preEnableStandstill, log.OnroadEvent.EventName.pcmDisable,
+             log.OnroadEvent.EventName.pedalPressed, log.OnroadEvent.EventName.gasPressedOverride,
+             log.OnroadEvent.EventName.steerOverride)
+  events = sm['onroadEvents']
+  if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+      not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000 or
+      any(e.name not in allowed or e.immediateDisable or e.softDisable and e.name not in temporary for e in events) or
+      cs.steerFaultTemporary and not any(e.name in temporary for e in events)):
+    return False
+  native = _configured_transport_native(sm, cp, str(axis.sessionId), now_ns,
+    require_longitudinal=False, allow_restricted_lateral=True)
+  if native is None or not native.pandaInventory or native.requestedLongitudinal or native.longitudinalAllowed:
+    return False
+  inventory = (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory))
+  if pending is not None and inventory != pending[4]:
+    return False
+  if axis.lateralActive:
+    return False
+  feedback._stopped_eps_arm = (*binding, inventory, now_ns)
+  return True

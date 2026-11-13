@@ -7,13 +7,14 @@ from openpilot.starpilot.ui.long_profile_feature import CATEGORY_HELP, VALUE_HEL
 from openpilot.starpilot.ui.feature_settings_state import SLC_OFFSET_KEYS
 
 DESCRIPTIONS = {
+  'FordRearFogIndicator': 'Shows a movable amber telltale while the Ford rear fog light is on, using read-only vehicle status.',
   'DisengageOnAccelerator': 'When enabled, pressing the accelerator pedal will disengage openpilot.',
   'ReduceMotion': 'Reduces interface animations for a steadier display.',
   'IsMetric': 'On displays speed and distance in kilometers; Off uses miles. Saved speed-limit offsets keep their physical values.',
   'IsRhdDetected': 'Sets the initial steering-wheel side used by driver monitoring. Applies next drive; automatic side detection continues.',
   'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
-  'AlphaLongitudinalEnabled': ('Requests StarPilot speed control instead of factory ACC. May disable Automatic Emergency Braking. ' +
-                              'Applies after the next startup; exact vehicle takeover checks remain required.'),
+  'AlphaLongitudinalEnabled': ('Let StarPilot control acceleration and braking instead of factory ACC. ' +
+                              'Takes effect next drive. May disable factory Automatic Emergency Braking.'),
   'lane_change:enabled': 'Enables lane-change assistance after you signal. With Automatic Lane Changes off, give the wheel a nudge to begin.',
   'lane_change:pace': 'Sets how quickly steering moves into the adjacent lane. Higher values change lanes more quickly; lower values make steering gentler.',
   'lane_change:speed': 'Sets the lowest speed at which lane-change assistance can begin.',
@@ -49,7 +50,7 @@ DESCRIPTIONS = {
   'CustomCruise': 'Sets how much a short cruise-button press changes the set speed.',
   'CustomCruiseLong': 'Sets how much holding a cruise button changes the set speed.',
   'ReverseCruise': 'Swaps the Toyota short-press and held-press cruise-speed increments.',
-  'ForceStops': 'Commits to stops detected by the driving model. Press the accelerator to continue.',
+  'ForceStops': 'Improves stopping behavior at traffic lights and enables automatic stopping at detected stop signs. Press the accelerator to continue.',
   'ForceStopDistanceOffset': 'Moves the planned stopping point. Positive values stop farther forward; negative values stop earlier.',
   'LeadApproachBuffer': 'Gradually adds following distance when approaching a slower or braking lead vehicle.',
   'ExperimentalSpeedNudge': ('Gently recovers toward set speed when Experimental mode hesitates on a clear road. ' +
@@ -65,12 +66,23 @@ DESCRIPTIONS = {
   'CurveSpeedControllerNoLead': 'Pauses curve-speed adjustments while following a lead vehicle.',
   'ShowCSCStatus': 'Shows when Curve Speed Controller is adjusting speed on the driving screen.',
   'curve_reset': 'Deletes saved cornering learning so Curve Speed Controller can learn your preferences again.',
-  'SpeedLimitController': 'Adjusts the set speed to accepted speed limits using your source priority and offsets.',
+  'SpeedLimitController': 'Follows accepted limits plus offsets up to SET speed. Missing data uses the previous accepted limit.',
+  'SLCOnEngage': ('Starts software cruise SET at the SLC limit plus offset. ' +
+                  'A limit accepted this session remains available during data gaps. Previous-drive history does not initialize SET. ' +
+                  'RES restores the previous SET.'),
+  'SLCOverrideMode': ('Cruise uses this target when you lift off the accelerator. ' +
+                      'Holding your speed uses the highest speed you reached, up to SET.'),
+  'SLCWheelOverride': 'Press + to raise SET past the adjusted limit and use your new SET speed.',
   'ShowSpeedLimits': 'Shows recognized speed-limit signs on the driving screen.',
-  'SLCConfirmation': 'Auto adopts new limits immediately. With Automatic adoption off, + accepts and − declines within 10 seconds.',
-  'SLCAdvanceSeconds': 'Offers mapped limits early using road distance and current speed. Existing adoption and confirmation settings still apply.',
+  'SLCConfirmation': ('Off adopts new limits automatically. Both, Higher only, and Lower only prompt relative to the last accepted limit. ' +
+                      '+ accepts and − declines within 30 seconds.'),
+  'SLCAdvanceHigherSeconds': ('Offers higher mapped limits early using road distance and current speed. ' +
+                             'Existing adoption and confirmation settings still apply.'),
+  'SLCAdvanceLowerSeconds': ('Offers lower mapped limits early using road distance and current speed. ' +
+                            'Existing adoption and confirmation settings still apply.'),
   'SLCPriority1': 'Chooses the first source checked for a fresh speed limit.',
   'SLCPriority2': 'Chooses the source used when the primary source has no fresh speed limit.',
+  'SLCPriority3': 'Chooses an optional third source when neither earlier source has a fresh speed limit.',
   'slc_reset': 'Resets saved speed-limit offsets while retaining valid configured speed ranges.',
   'reset_calibration': 'Clears saved camera and steering calibration. The device recalibrates on the next drive.',
   'reset_driver_monitoring': 'Clear saved wheel-side detection. Automatic detection restarts on the next drive.',
@@ -89,7 +101,7 @@ DESCRIPTIONS = {
   'TruckTuning': 'Softens small acceleration requests, reduces grade correction and smooths light braking on supported GM trucks.',
   'EVTuning': 'Selects EV acceleration curves for inherited acceleration presets.',
   'TeslaAOLScreenTap': 'Lets a three-finger tap on a supported Tesla screen toggle Always On Lateral.',
-  'TeslaAOLDisengageOnBrake': 'Disarms screen-tap Always On Lateral when you press the brake.',
+  'TeslaAOLDisengageOnBrake': 'Disarms Tesla Always On Lateral when you press the brake, with either harness.',
   'RemoteStartBootsComma': 'Wakes comma during GM remote start.',
   'HKGRemoteStartBootsComma': 'Wakes comma during Hyundai, Kia or Genesis remote climate operation.',
   'IgnoreIgnitionLine': 'Uses GM CAN ignition instead of the harness ignition signal.',
@@ -182,7 +194,7 @@ INITIALIZATION = {
     'permission. An already admitted mode can be disabled live.'),
   'VoltSNG': 'Applies when the vehicle controller next starts: its fresh resume-plan input is created for the selected stop-and-go mode.',
   'TeslaAOLScreenTap': 'Requires the next vehicle startup to configure the screen-button CAN source and matching safety permission.',
-  'TeslaAOLDisengageOnBrake': 'Requires the next vehicle startup to configure the screen-button brake/disarm safety permission.',
+  'TeslaAOLDisengageOnBrake': 'Requires the next vehicle startup to configure the Tesla brake/disarm safety permission.',
   'RemoteStartBootsComma': 'Requires a device restart to load the matching Panda ignition firmware.',
   'HKGRemoteStartBootsComma': 'Requires a device restart to load the matching Panda ignition firmware.',
   'IgnoreIgnitionLine': 'Requires a device restart to load the matching Panda ignition firmware.',

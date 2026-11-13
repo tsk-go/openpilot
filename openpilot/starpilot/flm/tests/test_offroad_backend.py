@@ -161,7 +161,7 @@ class TestOffroadCache(unittest.TestCase):
       row['state'] = 'accepted_after_drive'
       self.assertIsNone(from_configuration(None, None, self.cache.directory, vehicle_session='c' * 32).stopped)
 
-  def test_unused_session_waits_but_started_or_withdrawn_trials_still_roll_back(self):
+  def test_unmeasured_sessions_wait_but_withdrawn_trials_still_roll_back(self):
     from types import SimpleNamespace
     from openpilot.starpilot.flm.offroad_worker import assess_next_drive, POLICY
     from openpilot.starpilot.flm.offroad_surface import stop_marker
@@ -169,7 +169,7 @@ class TestOffroadCache(unittest.TestCase):
     declared = dict(trial(), policy=POLICY, values=values(0.01), original_metadata={})
     empty = SimpleNamespace(groups=(), stable_groups=(), quality_stop_markers=())
     self.assertEqual(assess_next_drive(declared, empty, scope(), trial_started=False)['outcome'], 'pending')
-    self.assertEqual(assess_next_drive(declared, empty, scope(), trial_started=True)['outcome'], 'rolled_back')
+    self.assertEqual(assess_next_drive(declared, empty, scope(), trial_started=True)['outcome'], 'pending')
     marker = stop_marker(scope().key(), declared['values'], 'gross_tracking_or_oscillation_worse')
     stopped = SimpleNamespace(groups=(), stable_groups=(), quality_stop_markers=({'reason': marker},))
     self.assertEqual(assess_next_drive(declared, stopped, scope(), trial_started=False)['outcome'], 'rolled_back')
@@ -211,8 +211,9 @@ class TestOffroadCache(unittest.TestCase):
     driving = SimpleNamespace(receipt=SimpleNamespace(cp_sha256='a' * 64), counts=dict(counts, active_lateral_request_rows=70), quality_stops=[])
     calls = []
 
-    def collect(root, route, *, permitted):
+    def collect(root, route, *, permitted, walker=None):
       self.assertTrue(permitted())
+      self.assertTrue(callable(walker))
       calls.append(route['routeId'])
       return parked if route is latest else driving
 

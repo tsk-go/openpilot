@@ -60,6 +60,15 @@ gates the tablet's confirmed lane changes too, through the same `engaged`) with 
 (route turn or the tablet's "turn"), `starview_lane`, `starview_evidence`, `nudge_torque`; panda images rebuilt from
 source - upstream changed fdcan.h and HKG / VW / Tesla safety). Galaxy rows gained `collapsed` (a folded heading); no
 row sets it, and the Galaxy check now fails once one does (StarView would have to fold that card too).
+Nov 12: synced `Dom` up to upstream `81a9e19e3` (198 commits; four source conflicts, both sides kept: card.py - upstream
+removed the card loop's timing sampling (the `can_parse` mark from Nov 6) and added `read_slc_match_on_engage` beside our
+`poll_door_request` / `publish_driver_door`, so our door-reply scan stays without the mark; longitudinal_planner.py -
+upstream's `faster_takeoffs` with our `mpc_follow` (StarView advice's extra follow time); modeld.py - upstream's Model
+Laboratory pair load after our `big_stage = "load"`, and its `turn_models` check before our StarView blinker inputs;
+test_modeld_startup_fallback.py - both parametrizations (`cached`, `laboratory`) with our warmup asserts; panda images
+rebuilt from source - upstream changed Toyota safety for the stronger Faster Takeoffs). Brings AGNOS 20.5.1. Galaxy's
+setting row gained a `compact` mode used only on the FLM page's manual rows (StarView doesn't draw them): parity
+fingerprint updated. No fork fix is fixed upstream yet (no phone `GpsSource`; upstream's car-clock time is HKG only).
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,

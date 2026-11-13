@@ -18,11 +18,13 @@ ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 # labels the manual steering coordinates on Galaxy's FLM page, which StarView doesn't draw; "previewSound" (upstream
 # 359cb9fda, Nov 6) - Galaxy's play button on a volume row - StarView calls the same /api/sounds/preview by itself when
 # a volume slider is let go; "collapsed" (upstream d4b781ab, Nov 8) - a heading whose card stays folded until opened -
-# no row sets it, see test_no_row_is_collapsed_yet)
+# no row sets it, see test_no_row_is_collapsed_yet; the "compact" prop (upstream 10b9c7aef, Nov 11: first sentence of the
+# text with "What this changes" for the rest, bare numbers) - only flm.js passes it, for the FLM page's manual steering
+# rows, which StarView doesn't draw)
 MIRRORED_SCALES = {"lane-strength"}
 ROW_FIELDS = {"action", "available", "choices", "collapsed", "confirm", "coordinate", "defaultValue", "displayScale", "heading", "label",
               "maximum", "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
-PRESENTATION_SHA256 = "1bf21707507137fe81bba21be8a5e39e75128b1c76037728e4dc5b2d36e09268"
+PRESENTATION_SHA256 = "4d8cada96c00f7086d610523181208e62e639c99c8bbf1efc7fee5944daadbc2"
 
 
 def presentation_source() -> str:

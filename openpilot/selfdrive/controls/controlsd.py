@@ -456,12 +456,14 @@ class Controls:
 
     # accel PID loop
     publish_takeoff_state = getattr(self.LoC, 'takeoff_starting', False)
-    pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
+    longitudinal_context = self.longitudinal_inputs.context(CC.longActive)
+    pid_accel_limits = self.CI.get_pid_accel_limits(
+      self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS, faster_takeoffs=longitudinal_context.faster_takeoffs)
     from opendbc.car.tesla.preap.pedal_profile import accel_limits as preap_pedal_limits
 
     pid_accel_limits = preap_pedal_limits(self.CP, CS.vEgo, getattr(self.sm['selfdriveState'].personality, 'raw', 1), pid_accel_limits)
     longitudinal_output = self.LoC.update(
-      CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits, context=self.longitudinal_inputs.context(CC.longActive)
+      CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits, context=longitudinal_context
     )
     actuators.accel = final_output(longitudinal_output)
     if self.longitudinal_inputs.publish_state or publish_takeoff_state:
@@ -478,22 +480,25 @@ class Controls:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
     assist = self.turn_assist_enabled()
     rolling = math.isfinite(CS.vEgo) and CS.vEgo > max(0.1 * CV.MPH_TO_MS, self.CP.minSteerSpeed)
-    if (
+    assist_ready = (
       assist
-      and rolling
       and self.sm.all_checks(['modelV2'])
       and CC.latActive
-      and not CS.standstill
       and not CS.steerFaultTemporary
       and not CS.steerFaultPermanent
       and CS.gearShifter in (car.CarState.GearShifter.drive, car.CarState.GearShifter.low)
-    ):
+    )
+    if assist_ready and rolling and not CS.standstill:
       self.model_turn_assist.curvature = self.curvature
-      self.model_turn_assist.twitch_guard_remaining = update_twitch_guard(self.model_turn_assist.twitch_guard_remaining, CS.vEgo, CS.standstill)
+      self.model_turn_assist.twitch_guard_armed = update_twitch_guard(self.model_turn_assist.twitch_guard_armed, CS.vEgo, CS.standstill)
       new_desired_curvature = self.model_turn_assist.update(CS, model_v2, CC, new_desired_curvature)
+    elif assist_ready:
+      self.model_turn_assist.curvature = self.curvature
+      new_desired_curvature = self.model_turn_assist.update_stopped(CS, new_desired_curvature)
+      self.model_turn_assist.twitch_guard_armed = update_twitch_guard(self.model_turn_assist.twitch_guard_armed, CS.vEgo, CS.standstill)
     elif getattr(self, 'model_turn_assist', None) is not None:
       self.model_turn_assist.reset()
-      self.model_turn_assist.twitch_guard_remaining = update_twitch_guard(0.0, CS.vEgo, CS.standstill)
+      self.model_turn_assist.twitch_guard_armed = update_twitch_guard(False, CS.vEgo, CS.standstill)
     lane_base_curvature = new_desired_curvature
     self.lane_centering_applied = 0.0
     self.lane_centering_inactive_reason = 'inactive'
