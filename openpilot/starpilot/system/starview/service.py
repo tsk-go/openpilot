@@ -31,6 +31,12 @@ STATE_DIR = Path(os.getenv("STARVIEW_SERVICE_STATE", "/dev/shm"))  # cleared on 
 VERSION_FILE = STATE_DIR / "starview_service_version"
 DISABLE_FLAG = Path("/data/starview/disabled")
 MODULE = "openpilot.starpilot.system.starview.starviewd"
+# AGNOS 20.5.2's /usr/lib/systemd/system/service.d/background.conf caps every service at 128 MB. starviewd alone uses
+# ~110 MB, so its jobs (the log copy, the doors & belts scan, ~40 MB each) were killed by the memory cgroup every time
+# they started (Nov 16). A drop-in overrides the main unit, and drop-ins apply in file-name order, so ours is named to
+# come after background.conf; 320 MB stays well inside system.slice's 512 MB.
+MEMORY_MAX = "320M"
+DROPIN = Path(f"/run/systemd/system/{UNIT}.service.d/zz-starview.conf")
 # set by systemd for the manager itself; must not leak into the new unit
 SKIP_ENV = {"INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET", "LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES",
             "SYSTEMD_EXEC_PID", "WATCHDOG_PID", "WATCHDOG_USEC", "MANAGERPID", "_"}
@@ -91,12 +97,23 @@ def stop_unit() -> None:
   _systemctl("reset-failed", UNIT)
 
 
+def memory_dropin() -> None:
+  """Our own memory cap, written before the unit starts (in /run: gone at reboot, written again at the next start)
+  and set on the running unit too (a daemon-reload re-reads the drop-ins, where ours comes last)."""
+  text = f"[Service]\nMemoryMax={MEMORY_MAX}\n"
+  r = _run("sudo", "-n", "sh", "-c", f"mkdir -p '{DROPIN.parent}' && printf '{text}' > '{DROPIN}'")
+  if r.returncode != 0:
+    cloudlog.warning(f"starview service: memory drop-in: {r.stderr.strip()[:200]}")
+
+
 def start_unit(version: str) -> bool:
   _systemctl("reset-failed", UNIT)  # a failed run that wasn't collected yet would block the name
+  memory_dropin()
   r = _run(*start_command())
   if r.returncode != 0:
     cloudlog.warning(f"starview service: systemd-run failed: {r.stderr.strip()[:300]}")
     return False
+  _systemctl("set-property", "--runtime", UNIT, f"MemoryMax={MEMORY_MAX}")
   try:
     VERSION_FILE.write_text(version)
   except OSError:

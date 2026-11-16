@@ -140,3 +140,15 @@ def test_falls_back_to_the_manager_if_the_unit_never_starts(systemd, monkeypatch
 def test_no_systemd_on_pc():
   # this test machine is a PC: the manager runs starviewd directly, exactly like before
   assert service.systemd_usable() is False
+
+
+def test_our_memory_cap_comes_after_agnos_background_conf(systemd):
+  """AGNOS 20.5.2 caps every service at 128 MB (service.d/background.conf); the log copy and the doors & belts scan
+  were killed by the memory cgroup each time they started. Our drop-in sorts after it and the running unit gets it too."""
+  assert service.DROPIN.name > "background.conf"
+  service.ensure()
+  cmds = [" ".join(c) for c in systemd.calls]
+  dropin = next(i for i, c in enumerate(cmds) if str(service.DROPIN) in c)
+  run = next(i for i, c in enumerate(cmds) if "systemd-run" in c)
+  assert dropin < run and f"MemoryMax={service.MEMORY_MAX}" in cmds[dropin]
+  assert any(c.endswith(f"set-property --runtime starview MemoryMax={service.MEMORY_MAX}") for c in cmds[run:])

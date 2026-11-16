@@ -485,6 +485,13 @@ Paths are under `openpilot/` unless noted.
     /dev/disk/by-label/EXTDATA, so the tablet's Storage page said "USB stick: not connected" with the stick in
     (the copy itself already fell back on `sudo -n blkid -L EXTDATA`). `logarchive.stick_cached()`: the link, else
     blkid at most once a minute, again at once when a USB disk comes or goes, never with no /sys/block/sd* at all.
+    Patch 78: AGNOS 20.5.2's /usr/lib/systemd/system/service.d/background.conf caps every service at 128 MB;
+    starviewd alone is ~110 MB, so the memory cgroup killed its jobs each time one started - the log copy and the
+    doors & belts scan (~40 MB each; dmesg "Memory cgroup out of memory ... sacrifice child", the scan's empty
+    warning lines) - since the morning update. `service.memory_dropin()` writes
+    /run/systemd/system/starview.service.d/zz-starview.conf (MemoryMax=320M; drop-ins apply in file-name order,
+    so it comes after background.conf; system.slice is 512 MB) before systemd-run, and `set-property --runtime`
+    sets the running unit. Test: `starview/tests/test_service.py`.
 45. Galaxy's Google navigation on the tablet (patch 76, Nov 16 sync): `starview/nav_link.py` action `nav_google` {op:
     status | set {mapProvider, routeProvider, googleKey} | test {key}} (owner.configure / test_google_key, usage and
     failures; the key itself never goes back to the tablet); tile styles `trafficGoogleLight` / `trafficGoogleDark`
