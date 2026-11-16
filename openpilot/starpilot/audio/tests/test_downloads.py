@@ -120,6 +120,23 @@ class SoundDownloadTests(unittest.TestCase):
       self.assertEqual(job["state"], "complete", job.get("error"))
     self.assertEqual(events, [("open", "sounds"), ("close", "sounds")])
 
+  def test_named_eras_download_select_and_cache_independently(self):
+    stock = self.base / "stock"
+    stock.mkdir()
+    (stock / "engage.wav").write_bytes(wav(500))
+    for slug, sample in (("old_engage_sounds", 1000), ("classic_openpilot", 2000)):
+      manager = self.manager(archive({"engage.wav": wav(sample)}), slug=slug)
+      manager.action("download", {"pack": slug})
+      self.assertEqual(self.finish(manager)["job"]["state"], "complete")
+    selected = self.base / "SoundPack"
+    loader = SoundPackLoader(Params(selected), stock, self.root)
+    for now, (slug, sample) in enumerate((("old_engage_sounds", 1000), ("classic_openpilot", 2000), ("old_engage_sounds", 1000))):
+      selected.write_text(slug)
+      loaded = loader.refresh(("engage.wav",), now)
+      assert loaded is not None
+      self.assertAlmostEqual(loaded["engage.wav"][0], sample / 32768)
+      self.assertIsNone(loader.refresh(("engage.wav",), now + .5))
+
   def test_truncation_and_checksum_fail_without_publish(self):
     payload = archive({"engage.wav": wav()})
     for case, stream, digest in (("short", payload[:-1], None), ("checksum", payload, "0" * 64)):

@@ -69,6 +69,17 @@ test_modeld_startup_fallback.py - both parametrizations (`cached`, `laboratory`)
 rebuilt from source - upstream changed Toyota safety for the stronger Faster Takeoffs). Brings AGNOS 20.5.1. Galaxy's
 setting row gained a `compact` mode used only on the FLM page's manual rows (StarView doesn't draw them): parity
 fingerprint updated. No fork fix is fixed upstream yet (no phone `GpsSource`; upstream's car-clock time is HKG only).
+Nov 16: synced `Dom` up to upstream `064420831` (220 commits; four source conflicts, both sides kept: intent.py -
+upstream's Turn Signal Guidance release after a completed stop (`signal_stop_completed`) with our tablet "no street"
+check after it; owner.py - upstream's Google map / routes / places (`mapProvider`, `routeProvider`, `googleKey`) and
+pooled session with our traffic map styles, our search-row extras (distance, maki, category, now in
+`_mapbox_suggestions`) and the tablet relay, which now wraps the pooled session and relays Mapbox hosts only (Google's
+requests go straight out; offline mode blocks them, so routing falls back to Mapbox); StarView's route options join
+upstream's `routing_fields`; runtime.py - upstream's Google routing, parked-at-destination end, joined-route reroute
+rule and Google traffic ETA, with our `route_exclusions`, 5-min refresh (Mapbox routes only now, `keep_road`) and
+`fastest_first`; test_downloads.py - both tests; panda images rebuilt from source - upstream changed GM, Subaru and
+VW safety and the bootstubs, which follow upstream). Brings AGNOS 20.5.2. Galaxy parity unchanged. No fork fix is
+fixed upstream yet (still no phone `GpsSource`).
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
@@ -173,7 +184,8 @@ Paths are under `openpilot/` unless noted.
 6. Replay fixes and 7.0 cards (patch 8).
 7. In-app navigation, Waze removed (patches 9-12): `starview/nav_link.py`; `starpilot/navigation/` owner, runtime,
    route_engine, mapbox_budget (alternatives, traffic refresh, lanes, spoken directions, place search, saved places);
-   `navigation/relay.py` sends Mapbox requests through the tablet when the comma has no internet.
+   `navigation/relay.py` sends Mapbox requests through the tablet when the comma has no internet (since Nov 16 it wraps
+   upstream's pooled session; Google's requests never go through the tablet, its relay passes Mapbox only).
 8. GPU icon state + quiet mode while the big model loads (patch 13): starviewd `ChestnutState`, `gpu_quiet_tick`.
 9. Satellite reports for the tablet's GPS card (patch 15): `starview/compat.py` passes only `ubloxGnss.satReport`.
 10. Lane-change nudge strength from the tablet (patch 18): `starview/nudge.py`, `desire_helper.py` `nudge_torque`,

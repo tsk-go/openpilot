@@ -279,6 +279,8 @@ struct StarPilotLongitudinalPlan @0xda96579883444c35 {
   forceStopHolding @4 :Bool;
   forceStopBraking @5 :Bool;
   forceStopEpisodeMonoTime @6 :UInt64;
+  departureAlertKind @7 :UInt8; # 0: none, 1: green-light advisory, 2: lead departing
+  departureAlertMonoTime @8 :UInt64; # Original advisory model-source timestamp, ns
 }
 
 struct SlcState @0xa1680744031fdb2d {
@@ -330,7 +332,7 @@ struct SlcState @0xa1680744031fdb2d {
   pendingSource @36 :Text;
   effectiveClusterTarget @37 :Float32; # m/s in the selected-cruise cluster coordinate
   hasEffectiveClusterTarget @38 :Bool;
-  isLimitingMaxSet @39 :Bool; # qualified raw ceiling below selected raw cruise
+  isLimitingMaxSet @39 :Bool; # adjusted limit at or below SET, in displayed units
   driverOverrideActive @40 :Bool;
   # Presentation only. Qualified source observations from this publisher cycle;
   # consumers use the outer session and frame freshness, never these rows for control.
