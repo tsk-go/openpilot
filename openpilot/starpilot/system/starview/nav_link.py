@@ -26,6 +26,13 @@
                                                                      when the comma has no internet (navigation/relay.py)
          --control "nav_tiles" {count}                               tiles the tablet fetched from Mapbox itself (with
                                                                      the key nav_state gives it), added to that count
+         --control "nav_google" {op: status | set {mapProvider?, routeProvider?, googleKey?} | test {key?}}   Galaxy's
+                                     Google map / routes / places (Nov 16 sync): the same settings, usage and key test
+         --GET /nav/tile/trafficGoogle{Light,Dark}/{z}/{x}/{y}.png   with Galaxy's Map provider "Google": Google's map with
+                                     traffic, as the 512-pixel tiles the tablet draws (four Google tiles one zoom deeper,
+                                     counted in upstream's Google allowance); Mapbox's traffic map when Google can't
+         --control "nav_share_parse" {text}                          a shared link or text (Google Maps, Waze, Apple
+                                     Maps...) read with upstream's share rules: {place} or {query}; changes nothing
 navigationd plans the route, offers the alternatives, follows the drive and asks again for live traffic every 5 minutes
 (runtime.py); this module only reads its results and changes its settings, like Galaxy does.
 """
@@ -58,10 +65,29 @@ CATEGORIES = {
 CATEGORY_WORDS = {"gas": "gas station", "ev": "EV charging", "coffee": "coffee", "food": "restaurant", "fast_food": "fast food",
                   "parking": "parking", "grocery": "grocery store", "pharmacy": "pharmacy", "hotel": "hotel", "rest_area": "rest area"}
 
-TILE_STYLES = ("light", "dark", "trafficLight", "trafficDark")
+# StarView's map with Galaxy's Map provider "Google": the theme of upstream's Google tiles (which always carry traffic)
+GOOGLE_TILE_STYLES = {"trafficGoogleLight": "light", "trafficGoogleDark": "dark"}
+TILE_STYLES = ("light", "dark", "trafficLight", "trafficDark", *GOOGLE_TILE_STYLES)
+GOOGLE_DOWN_S = 60.     # after Google refused or couldn't be reached (offline mode blocks it), Mapbox's map this long
 # What the old Waze bridge left behind (StarView 2.48 has no Waze): removed once
 OLD_FILES = ("/dev/shm/starview_waze.json", "/data/starview/waze_destination.json", "/data/starview/no_waze")
 OLD_DIRS = ("/data/media/0/waze_logs",)
+
+
+def join_tiles(parts: list[bytes]) -> bytes:
+  """Four 256-pixel PNG tiles (top left, top right, bottom left, bottom right) as one 512-pixel PNG."""
+  from io import BytesIO
+  from PIL import Image
+  out = Image.new("RGB", (512, 512))
+  for i, part in enumerate(parts):
+    with Image.open(BytesIO(part)) as im:
+      tile = im.convert("RGB")
+      if tile.size != (256, 256):
+        tile = tile.resize((256, 256))
+      out.paste(tile, ((i % 2) * 256, (i // 2) * 256))
+  buf = BytesIO()
+  out.save(buf, "PNG", compress_level=1)   # fast: it goes over the USB link once and the tablet keeps it
+  return buf.getvalue()
 
 
 class _HubNavigation:
@@ -113,6 +139,9 @@ class NavLink:
     self._previews = {}         # previewId -> (expires, destination, temporary, route rows)
     self._wanted = None         # after nav_go: the previewed route to choose once navigationd offers its routes
     self._engine = None
+    self._google_engine = None
+    self._google_down_until = 0.   # Google's map tiles failed: Mapbox's until then
+    self._google_failure = None
 
   @property
   def owner(self) -> NavigationOwner:
@@ -292,9 +321,89 @@ class NavLink:
     if style not in TILE_STYLES:
       raise ValidationError("Invalid map style")
     owner = self.owner
+    if style in GOOGLE_TILE_STYLES:
+      theme = GOOGLE_TILE_STYLES[style]
+      tile = self._google_tile(theme, z, x, y)
+      if tile is not None:
+        return tile
+      style = "trafficLight" if theme == "light" else "trafficDark"   # Google can't now: Mapbox's traffic map
     if owner.tile_budget.remaining() <= 0:
       raise ValidationError("This month's free Mapbox map views are used up. They reset on the 1st.")
     return owner.map_tile(z, x, y, style)
+
+  def _google_tile(self, theme: str, z: int, x: int, y: int) -> bytes | None:
+    """A 512-pixel tile like Mapbox's from Google's four 256-pixel tiles one zoom deeper (the same detail the tablet
+    shows with Mapbox). Each counts in upstream's Google allowance (fetch_tile: its budget, disk store and 10-minute
+    life); None when Google isn't the map provider or can't give them now."""
+    owner = self.owner
+    settings = owner.read()
+    key = settings.get("googleKey", "") if settings.get("mapProvider") == "google" else ""
+    if not key or not 0 <= z < 22 or time.monotonic() < self._google_down_until:
+      return None
+    import requests
+    from openpilot.starpilot.navigation.google_tiles import fetch_tile
+    from openpilot.starpilot.navigation.owner import TILE_SLOT_WAIT_S
+    if not owner._tile_slots.acquire(timeout=TILE_SLOT_WAIT_S):
+      raise ValidationError("Map is busy; try again")
+    try:
+      parts = [fetch_tile(key, z + 1, 2 * x + dx, 2 * y + dy, theme, http=owner.session, root=owner.google_root)
+               for dy in (0, 1) for dx in (0, 1)]
+    except (requests.RequestException, ValueError, OSError) as e:
+      self._google_down_until = time.monotonic() + GOOGLE_DOWN_S
+      self._google_failure = str(e)[:200]
+      return None
+    finally:
+      owner._tile_slots.release()
+    self._google_failure = None
+    return join_tiles(parts)
+
+  def google_status(self) -> dict:
+    """Galaxy's Google settings and this month's use (no key: only whether one is saved)."""
+    from openpilot.starpilot.navigation.google_places import places_budget, suggestions_budget
+    from openpilot.starpilot.navigation.google_routes import essentials_budget, read_route_failure, route_budget
+    from openpilot.starpilot.navigation.google_tiles import GoogleBudget, read_status
+    owner = self.owner
+    doc = owner.read()
+    root = owner.google_root
+    has_key = bool(doc.get("googleKey"))
+    map_on = doc.get("mapProvider") == "google" and has_key
+    routes_on = doc.get("routeProvider") == "google" and has_key
+    status = read_status(root)
+    copyright_text = status.get("copyright") if isinstance(status.get("copyright"), str) else ""
+    return {"mapProvider": doc.get("mapProvider", "mapbox"), "routeProvider": doc.get("routeProvider", "mapbox"),
+            "hasKey": has_key, "map": map_on, "routes": routes_on, "copyright": copyright_text[:200],
+            "failures": {"map": self._google_failure if map_on else None,
+                         "routes": read_route_failure(root) if routes_on else None},
+            "usage": {"map": GoogleBudget(root).snapshot(), "routes": route_budget(root).snapshot(),
+                      "essentials": essentials_budget(root).snapshot(), "places": places_budget(root).snapshot(),
+                      "suggestions": suggestions_budget(root).snapshot()}}
+
+  def google(self, op, patch=None, key=None) -> dict:
+    """nav_google: Galaxy's Google settings from the tablet (owner.configure, the same checks as Galaxy's page)."""
+    if op == "set":
+      allowed = ("mapProvider", "routeProvider", "googleKey")
+      if not isinstance(patch, dict) or not patch or set(patch) - set(allowed):
+        raise ValidationError("Unknown Google setting")
+      self._change(lambda rev: self.owner.configure(dict(patch), rev, True))
+      self._google_down_until = 0.
+    elif op == "test":
+      return {"ok": True, "test": self.owner.test_google_key(key if isinstance(key, str) and key else None),
+              **self.google_status()}
+    elif op != "status":
+      raise ValidationError("Unknown Google action")
+    return {"ok": True, **self.google_status()}
+
+  def share_parse(self, text) -> dict:
+    """A link or text shared to StarView, read with upstream's rules (navigation/share.py, as Galaxy's share page):
+    Google short links followed, Waze links, coordinates in any map link; else the words to search for."""
+    from openpilot.starpilot.navigation.share import map_link_query, search_text, shared_coordinates
+    if not isinstance(text, str) or not text.strip() or len(text) > 8192:
+      raise ValidationError("The shared text could not be read")
+    text = self.owner.resolve_share(text)
+    place = shared_coordinates(text)
+    if place is not None:
+      return {"ok": True, "place": {k: v for k, v in place.items() if v is not None}}
+    return {"ok": True, "query": map_link_query(text) or search_text(text)}
 
   # ------------------------------------------------------------------ changes (retried when Galaxy changed something in between)
   def _change(self, fn):
@@ -312,6 +421,24 @@ class NavLink:
       from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine
       self._engine = MapboxRouteEngine(self.owner.session, MonthlyBudget("directions", self.owner.root / "mapbox-usage"))
     return self._engine
+
+  def _fetch_routes(self, settings, position, selected, bearing, exclusions):
+    """The routes as navigationd will ask for them: Google's (traffic-aware) when Galaxy's Route provider is Google,
+    Mapbox's when it isn't or Google can't (runtime.RouteRuntime._fetch_google)."""
+    key = settings.get("googleKey", "") if settings.get("routeProvider") == "google" else ""
+    if key:
+      from openpilot.starpilot.navigation.google_routes import (GoogleRouteEngine, GoogleRoutesFailed, essentials_budget,
+                                                                route_budget, write_route_status)
+      owner = self.owner
+      if self._google_engine is None:
+        self._google_engine = GoogleRouteEngine(owner.session, route_budget(owner.google_root), essentials_budget(owner.google_root))
+      try:
+        route = self._google_engine.fetch(key, position, selected, None, exclusions)   # parked: no heading, like navigationd
+        write_route_status(owner.google_root, None)
+        return route
+      except GoogleRoutesFailed as error:
+        write_route_status(owner.google_root, error.failure)
+    return self._route_engine().fetch(settings["token"], position, selected, bearing, exclusions)
 
   def _origin(self, origin):
     """(lon, lat, bearing) to plan from: what the tablet sent, else the GPS navigationd uses (incl. the RTK receiver's
@@ -360,7 +487,7 @@ class NavLink:
     start = self._origin(origin)
     if start is None:
       raise ValidationError("The car's position isn't known yet")
-    first = self._route_engine().fetch(token, (start[0], start[1]), selected, start[2], route_exclusions(settings))
+    first = self._fetch_routes(settings, (start[0], start[1]), selected, start[2], route_exclusions(settings))
     rows, lines = [], []
     for index, route in enumerate(getattr(first, "alternatives", None) or [first]):
       d = getattr(route, "details", None) or {}

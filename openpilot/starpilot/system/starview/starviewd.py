@@ -2149,6 +2149,10 @@ class Hub:
         return self.nav.relay(req.get("_peer"), req.get("port"))
       if act == "nav_tiles":
         return self.nav.tiles_used(req.get("count"))
+      if act == "nav_google":  # Galaxy's Google map / routes / places (nav_link.google)
+        return self.nav.google(req.get("op", "status"), req.get("set"), req.get("key"))
+      if act == "nav_share_parse":  # a link shared to StarView, read with upstream's share rules
+        return self.nav.share_parse(req.get("text"))
       if act == "nav_pick":
         return self.nav.pick(req.get("id"), req.get("searchId"))
       if act == "nav_preview":  # the routes to a place before it becomes the destination (nav_link.preview)
@@ -2312,7 +2316,8 @@ async def _action(ws, hub, c, req):
     await ws.send_str(json.dumps(ack))
   except Exception as e:
     cloudlog.warning(f"starview: action {req.get('action')}: {e}")
-  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles", "nav_relay", "software_status"):
+  if req.get("action") in ("nav_state", "nav_list", "nav_search", "nav_category", "nav_tiles", "nav_relay", "software_status",
+                           "nav_share_parse") or (req.get("action") == "nav_google" and req.get("op", "status") != "set"):
     return   # reads only: no params resend (the map asks every 2 s, the search on every keystroke)
   hub.invalidate_params_snapshot()
   c.force_params = True

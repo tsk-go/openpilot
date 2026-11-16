@@ -109,6 +109,12 @@ that lands upstream's images there silently removes the door lock.
 - The build is reproducible: rebuilding unchanged source gives the committed image except the version string and the
   signature. A diff bigger than that means the source isn't what was built.
 - The comma four uses `panda_h7.bin.signed`.
+After every sync, port to StarView whatever Galaxy gained - new settings, pages, options, features - without asking the
+owner first (owner, Nov 16: "Whatever was added to Galaxy should be added also automatically to the app, I don't need to
+ask for it every single time"). Galaxy's setting rows already reach the tablet by themselves (StarView draws Galaxy's
+catalog) and its tool pages open inside StarView (Tools); what needs porting is what StarView does natively instead of
+Galaxy (navigation, the map, search, sharing...). The comma side goes to `Dom` like any patch; the app work goes on a
+starview-data side branch, and the release itself still waits for the owner's OK.
 After the merge, run `pytest openpilot/starpilot/system/starview/tests/test_galaxy_parity.py`. It fails when Galaxy
 changed how its settings rows are presented (galaxy-setting-row.js, a new displayScale, new row fields). StarView draws
 those rows natively, so tell the owner: the StarView app needs the same change (GalaxyRows.kt / GalaxySettingsView.kt);
@@ -469,6 +475,16 @@ Paths are under `openpilot/` unless noted.
     (`PicoBlinker._open`), the u-blox (`rtk._open`), the fob radio's RTL-SDR (`fob.Radio`, 0bda:2838) and the tablet's
     adb interface (`_adb`, auto-tether; at most every 10 s). Test: `starview/tests/test_devperm.py`. Drop when AGNOS
     opens these nodes again by itself.
+45. Galaxy's Google navigation on the tablet (patch 76, Nov 16 sync): `starview/nav_link.py` action `nav_google` {op:
+    status | set {mapProvider, routeProvider, googleKey} | test {key}} (owner.configure / test_google_key, usage and
+    failures; the key itself never goes back to the tablet); tile styles `trafficGoogleLight` / `trafficGoogleDark`
+    (Map provider Google: one 512-pixel tile from Google's four 256-pixel tiles one zoom deeper via upstream's
+    `fetch_tile` - its budget, store and 10-minute life - joined with Pillow; Mapbox's traffic map for a minute when
+    Google can't); `nav_preview` routes with Google when Route provider is Google (`_fetch_routes`, like
+    `RouteRuntime._fetch_google`); `nav_share_parse` {text} reads a shared link with upstream's `share.py` (Waze,
+    Google short links, coordinates) for StarView's share target. `navigation/google_places.py` autocomplete sends
+    `origin` and keeps `distanceMeters` / maki / category for the tablet's search list. Tests:
+    `starview/tests/test_nav_google.py`. The app side: StarView 2.89.0.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
