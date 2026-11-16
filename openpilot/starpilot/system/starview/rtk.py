@@ -626,7 +626,20 @@ class Rtk:
     for path in sorted(glob.glob(self.port_glob)):
       if self._is_ublox(path):
         return path
+    # AGNOS 20.5.2 no longer makes the /dev/serial/by-id links (its udev rules are gone): the ttyACM node by vendor
+    if self.port_glob == PORT_GLOB:
+      for path in sorted(glob.glob("/dev/ttyACM*")):
+        if self._is_ublox_tty(path):
+          return path
     return None
+
+  @staticmethod
+  def _is_ublox_tty(path: str) -> bool:
+    try:
+      dev = os.path.realpath(f"/sys/class/tty/{os.path.basename(path)}/device")
+      return open(os.path.join(os.path.dirname(dev), "idVendor")).read().strip().lower() == "1546"
+    except OSError:
+      return False
 
   @staticmethod
   def _is_ublox(path: str) -> bool:

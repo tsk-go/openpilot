@@ -56,3 +56,14 @@ def test_usb_nodes_by_vendor_and_adb_interface(tmp_path, monkeypatch):
   devperm._last.clear()
   devperm.grant_adb()
   assert granted == ["/dev/bus/usb/001/009"]
+
+
+def test_rtk_found_by_vendor_without_the_by_id_links(monkeypatch):
+  from openpilot.starpilot.system.starview import rtk
+  r = rtk.Rtk.__new__(rtk.Rtk)
+  r.port_glob = rtk.PORT_GLOB
+  monkeypatch.setattr(rtk.glob, "glob", lambda pattern: ["/dev/ttyACM0", "/dev/ttyACM1"] if pattern == "/dev/ttyACM*" else [])
+  monkeypatch.setattr(rtk.Rtk, "_is_ublox_tty", staticmethod(lambda path: path == "/dev/ttyACM1"))
+  assert r._find() == "/dev/ttyACM1"
+  r.port_glob = "/tmp/test-ports/*"          # a test's own ports: never the real ttyACM nodes
+  assert r._find() is None

@@ -473,8 +473,10 @@ Paths are under `openpilot/` unless noted.
     "not connected". `starview/devperm.py`: before opening one of its own devices starviewd hands that node to its own
     user (`sudo -n chown` + `chmod u+rw`, only when access() says it can't use it, at most every 5 s per node): the Pico
     (`PicoBlinker._open`), the u-blox (`rtk._open`), the fob radio's RTL-SDR (`fob.Radio`, 0bda:2838) and the tablet's
-    adb interface (`_adb`, auto-tether; at most every 10 s). Test: `starview/tests/test_devperm.py`. Drop when AGNOS
-    opens these nodes again by itself.
+    adb interface (`_adb`, auto-tether; at most every 10 s). AGNOS 20.5.2 also stopped making the /dev/serial/by-id
+    links, which the RTK reader looked for: `rtk._find` now also takes a /dev/ttyACM* whose USB vendor is u-blox (1546),
+    as the Pico finder always did. Test: `starview/tests/test_devperm.py`. Drop when AGNOS opens these nodes again by
+    itself.
 45. Galaxy's Google navigation on the tablet (patch 76, Nov 16 sync): `starview/nav_link.py` action `nav_google` {op:
     status | set {mapProvider, routeProvider, googleKey} | test {key}} (owner.configure / test_google_key, usage and
     failures; the key itself never goes back to the tablet); tile styles `trafficGoogleLight` / `trafficGoogleDark`
