@@ -481,6 +481,10 @@ Paths are under `openpilot/` unless noted.
     usb*) and `devperm.address_tether_links` puts host .200 of that network on the first rndis_host / cdc_ncm link
     without an IPv4 address and brings it up (`sudo -n ip`; no default route - Mapbox keeps using the tablet's relay).
     Test: `starview/tests/test_devperm.py`. Drop when AGNOS does all this by itself again.
+    Patch 77: no udev also means no /dev/disk/by-label links, and starviewd's /storage looked only for
+    /dev/disk/by-label/EXTDATA, so the tablet's Storage page said "USB stick: not connected" with the stick in
+    (the copy itself already fell back on `sudo -n blkid -L EXTDATA`). `logarchive.stick_cached()`: the link, else
+    blkid at most once a minute, again at once when a USB disk comes or goes, never with no /sys/block/sd* at all.
 45. Galaxy's Google navigation on the tablet (patch 76, Nov 16 sync): `starview/nav_link.py` action `nav_google` {op:
     status | set {mapProvider, routeProvider, googleKey} | test {key}} (owner.configure / test_google_key, usage and
     failures; the key itself never goes back to the tablet); tile styles `trafficGoogleLight` / `trafficGoogleDark`

@@ -23,6 +23,7 @@ By hand:
     python3 /data/starview/logarchive.py --once        (parked only)
 """
 import argparse
+import glob
 import json
 import os
 import shutil
@@ -79,6 +80,30 @@ def stick():
     return os.path.realpath(p)
   rc, o = sh(f"blkid -L {LABEL}", timeout=15)
   return o.strip() if rc == 0 and o.strip().startswith("/dev/") else None
+
+
+_seen = {"t": -1e9, "dev": None, "disks": None}
+
+
+def stick_cached(max_age=60.0):
+  """The stick's partition for status pages (starviewd's /storage). AGNOS 20.5.2 has no udev, so no
+  /dev/disk/by-label links: the tablet said "not connected" with the stick plugged in. Without the link this asks blkid
+  (root) at most once a minute, again at once when a USB disk comes or goes, and never with no USB disk plugged in."""
+  p = f"/dev/disk/by-label/{LABEL}"
+  if os.path.exists(p):
+    return os.path.realpath(p)
+  disks = tuple(sorted(glob.glob("/sys/block/sd*")))
+  if not disks:
+    _seen.update(dev=None, disks=disks)
+    return None
+  now = time.monotonic()
+  if disks != _seen["disks"] or now - _seen["t"] >= max_age:
+    _seen.update(t=now, disks=disks)
+    try:
+      _seen["dev"] = stick()
+    except Exception:
+      _seen["dev"] = None
+  return _seen["dev"]
 
 
 def mounted(mp):

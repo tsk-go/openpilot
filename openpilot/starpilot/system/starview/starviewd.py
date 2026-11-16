@@ -2910,7 +2910,8 @@ def storage_info():
       out["internal"]["oldest_time"] = oldest.stat().st_mtime
   except Exception as e:
     out["internal_error"] = str(e)
-  stick = {"present": os.path.exists("/dev/disk/by-label/EXTDATA"),
+  from openpilot.starpilot.system.starview import logarchive
+  stick = {"present": logarchive.stick_cached() is not None,   # AGNOS 20.5.2: no by-label link (patch 77)
            "auto": not os.path.exists("/data/starview/no_log_archive")}
   try:
     stick.update(json.load(open("/data/starview/log_archive_status.json")))

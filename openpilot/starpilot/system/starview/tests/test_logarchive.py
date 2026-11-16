@@ -164,3 +164,21 @@ def test_no_speed_cap_by_default(tmp_path, params, monkeypatch):
   monkeypatch.setattr(logarchive.time, "sleep", slept.append)
   copied, files = logarchive.copy_all({})
   assert files == 1 and not slept
+
+
+def test_stick_found_without_the_by_label_link(monkeypatch):
+  """AGNOS 20.5.2 has no udev: no /dev/disk/by-label/EXTDATA, so the storage page asks blkid, at most once a minute."""
+  calls = []
+  disks = ["/sys/block/sda"]
+  now = [100.0]
+  monkeypatch.setattr(logarchive.glob, "glob", lambda pattern: list(disks))
+  monkeypatch.setattr(logarchive.time, "monotonic", lambda: now[0])
+  monkeypatch.setattr(logarchive, "stick", lambda: calls.append(1) or "/dev/sda1")
+  logarchive._seen.update(t=-1e9, dev=None, disks=None)
+  assert logarchive.stick_cached() == "/dev/sda1"
+  now[0] += 30
+  assert logarchive.stick_cached() == "/dev/sda1" and len(calls) == 1      # cached
+  disks.clear()
+  assert logarchive.stick_cached() is None and len(calls) == 1             # no USB disk: no blkid at all
+  disks.append("/sys/block/sdb")
+  assert logarchive.stick_cached() == "/dev/sda1" and len(calls) == 2      # a disk came: asked again at once
