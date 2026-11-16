@@ -67,3 +67,30 @@ def test_rtk_found_by_vendor_without_the_by_id_links(monkeypatch):
   assert r._find() == "/dev/ttyACM1"
   r.port_glob = "/tmp/test-ports/*"          # a test's own ports: never the real ttyACM nodes
   assert r._find() is None
+
+
+
+def test_comma_joins_the_tablets_tethering_network(monkeypatch):
+  out = "1: lo    inet 127.0.0.1/8 scope host lo\n24: rndis0    inet 192.168.42.129/24 brd 192.168.42.255 scope global rndis0\n" \
+        "30: wlan0    inet 10.0.0.5/24 scope global wlan0\n"
+  assert devperm.tablet_addrs(out) == ["192.168.42.129/24"]
+  assert devperm.comma_addr("192.168.42.129/24") == "192.168.42.200/24"
+  assert devperm.comma_addr("10.1.2.200/24") == "10.1.2.201/24"
+  assert devperm.comma_addr("10.0.0.1/30") is None
+  calls = []
+
+  class R:
+    stdout = "3: wlan0    inet 10.144.217.111/24 brd 10.144.217.255 scope global wlan0\n"
+
+  def run(cmd, **kw):
+    calls.append(cmd)
+    return R()
+  monkeypatch.setattr(devperm, "tether_links", lambda drivers=None: ["usb1"])
+  monkeypatch.setattr(devperm.subprocess, "run", run)
+  assert devperm.address_tether_links(["192.168.42.129/24"], log=lambda m: None) == ["usb1"]
+  assert calls[1:] == [["sudo", "-n", "ip", "addr", "replace", "192.168.42.200/24", "dev", "usb1"],
+                       ["sudo", "-n", "ip", "link", "set", "usb1", "up"]]
+  R.stdout += "9: usb1    inet 192.168.42.200/24 scope global usb1\n"
+  calls.clear()
+  assert devperm.address_tether_links(["192.168.42.129/24"], log=lambda m: None) == [] and len(calls) == 1
+  assert devperm.address_tether_links([], log=lambda m: None) == []

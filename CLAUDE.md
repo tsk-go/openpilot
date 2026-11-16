@@ -475,8 +475,12 @@ Paths are under `openpilot/` unless noted.
     (`PicoBlinker._open`), the u-blox (`rtk._open`), the fob radio's RTL-SDR (`fob.Radio`, 0bda:2838) and the tablet's
     adb interface (`_adb`, auto-tether; at most every 10 s). AGNOS 20.5.2 also stopped making the /dev/serial/by-id
     links, which the RTK reader looked for: `rtk._find` now also takes a /dev/ttyACM* whose USB vendor is u-blox (1546),
-    as the Pico finder always did. Test: `starview/tests/test_devperm.py`. Drop when AGNOS opens these nodes again by
-    itself.
+    as the Pico finder always did. And NetworkManager leaves the tablet's USB tethering link "strictly unmanaged" (the
+    tablet said rndis, usb1 (rndis_host) stayed DOWN; `nmcli dev set managed yes` is refused): auto-tether, while
+    there is no USB link, reads the tablet's own tethering address over adb (`ip -4 -o addr show`, rndis* / ncm* /
+    usb*) and `devperm.address_tether_links` puts host .200 of that network on the first rndis_host / cdc_ncm link
+    without an IPv4 address and brings it up (`sudo -n ip`; no default route - Mapbox keeps using the tablet's relay).
+    Test: `starview/tests/test_devperm.py`. Drop when AGNOS does all this by itself again.
 45. Galaxy's Google navigation on the tablet (patch 76, Nov 16 sync): `starview/nav_link.py` action `nav_google` {op:
     status | set {mapProvider, routeProvider, googleKey} | test {key}} (owner.configure / test_google_key, usage and
     failures; the key itself never goes back to the tablet); tile styles `trafficGoogleLight` / `trafficGoogleDark`

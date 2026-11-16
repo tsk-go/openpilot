@@ -3026,6 +3026,11 @@ def auto_tether_thread(hub=None):
       if not serials:
         continue
       last_try = time.monotonic()
+      # AGNOS 20.5.2: NetworkManager leaves the tablet's tethering link unaddressed - the comma joins it itself
+      if devperm.tether_links(("rndis_host", "cdc_ncm")):
+        cidrs = [c for sn in serials for c in devperm.tablet_addrs(run(sn, "shell", "ip", "-4", "-o", "addr", "show"))]
+        if devperm.address_tether_links(cidrs):
+          continue
       watch.step(last_try, serials)
     except Exception as e:
       cloudlog.warning(f"starview: auto-tether: {e}")
