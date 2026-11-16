@@ -673,7 +673,10 @@ class PicoBlinker:
 
   def _open(self):
     if self.fd is None:
-      fd = os.open(self._port(), os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+      port = self._port()
+      from openpilot.starpilot.system.starview import devperm
+      devperm.grant(port)   # AGNOS 20.5.2 brings it up root-only (devperm.py)
+      fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
       a = termios.tcgetattr(fd)
       a[0] = a[1] = a[3] = 0
       a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
@@ -3011,6 +3014,8 @@ def auto_tether_thread(hub=None):
         continue
       if time.monotonic() - last_try < 20:
         continue
+      from openpilot.starpilot.system.starview import devperm
+      devperm.grant_adb()   # the tablet's USB node (AGNOS 20.5.2, devperm.py)
       r = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=10, env=env)
       serials = [ln.split()[0] for ln in r.stdout.splitlines()[1:] if ln.strip().endswith("device")]
       if not serials:
@@ -3075,6 +3080,8 @@ def _adb(*args, timeout=10):
   if adb is None:
     return None
   env = dict(os.environ, HOME=ADB_HOME)
+  from openpilot.starpilot.system.starview import devperm
+  devperm.grant_adb()   # the tablet's USB node (AGNOS 20.5.2, devperm.py)
   r = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=timeout, env=env)
   serials = [ln.split()[0] for ln in r.stdout.splitlines()[1:] if ln.strip().endswith("device")]
   if not serials:

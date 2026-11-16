@@ -130,6 +130,8 @@ def _die_with_parent() -> None:
 class Radio:
   """rtl_sdr | fob_radio, both at the lowest priority; events() yields the radio's JSON lines until it stops."""
   def __init__(self, ids):
+    from openpilot.starpilot.system.starview import devperm
+    devperm.grant_usb("0bda", "2838")   # the dongle's USB node: AGNOS 20.5.2 brings it up root-only (devperm.py)
     self.rtl = subprocess.Popen(["nice", "-n", str(NICE), RTL_SDR, "-f", "313.22M", "-s", "2560000", "-g", "40", "-"],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=_die_with_parent)
     try:

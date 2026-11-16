@@ -637,6 +637,9 @@ class Rtk:
       return "u-blox" in path    # by-id name only (tests, or sysfs laid out differently)
 
   def _open(self, path: str) -> None:
+    if path.startswith("/dev/"):
+      from openpilot.starpilot.system.starview import devperm
+      devperm.grant(path)   # AGNOS 20.5.2 brings it up root-only (devperm.py)
     fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
       a = termios.tcgetattr(fd)

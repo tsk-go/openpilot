@@ -461,6 +461,14 @@ Paths are under `openpilot/` unless noted.
     app: only when the tablet shows its home screen, the lock screen or nothing adb can tell (`_may_cover`:
     `_tablet_front()` against the launcher from `cmd package resolve-activity`); another app in front -> looks again
     20 s later, within the 5 min. Also brings StarView back after a crash. Test: `starview/tests/test_reopen.py`.
+44. StarView's devices after AGNOS 20.5.2 (patch 75, Nov 16): AGNOS 20.5.2 dropped the udev rules that opened serial
+    and USB nodes to the comma user (upstream fixed only its modem, `1c1a3c033` "Recover modem ports after AGNOS udev
+    removal"), so starviewd got "Permission denied" on the Pico relay box (/dev/ttyACM*) and the RTK receiver showed
+    "not connected". `starview/devperm.py`: before opening one of its own devices starviewd hands that node to its own
+    user (`sudo -n chown` + `chmod u+rw`, only when access() says it can't use it, at most every 5 s per node): the Pico
+    (`PicoBlinker._open`), the u-blox (`rtk._open`), the fob radio's RTL-SDR (`fob.Radio`, 0bda:2838) and the tablet's
+    adb interface (`_adb`, auto-tether; at most every 10 s). Test: `starview/tests/test_devperm.py`. Drop when AGNOS
+    opens these nodes again by itself.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,
