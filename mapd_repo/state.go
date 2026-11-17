@@ -148,6 +148,32 @@ func (s *State) expireGpsEvidenceAt(now uint64) {
 	}
 }
 
+func unknownBearing(location log.GpsLocationData) bool {
+	acc := float64(location.BearingAccuracyDeg())
+	return math.IsNaN(acc) || math.IsInf(acc, 0) || acc <= 0 || acc >= 180
+}
+
+// holdStoppedRoad (tsk-go fork, Nov 2026): the phone handoff (StarView's RTK receiver) has no heading while the car
+// stands still, so every stop dropped the road and its limit ("noMatch" at 0 mph). Standing still - a measured speed
+// under 1 m/s - on the road matched a moment ago, inside that road's normal match distance and in the loaded tile,
+// keeps it; moving again needs a heading as before.
+func (s *State) holdStoppedRoad(location log.GpsLocationData, pos m.Position) bool {
+	way := s.CurrentWay.Way
+	box := s.Data.Box()
+	if !s.RoadMatched() || way.Nodes.Len() < 2 || !s.Data.Loaded || !box.PosInside(pos) {
+		return false
+	}
+	speed, speedAcc := float64(location.Speed()), float64(location.SpeedAccuracy())
+	if math.IsNaN(speed) || speed < 0 || speed >= 1 || math.IsNaN(speedAcc) || speedAcc <= 0 || speedAcc >= 100 {
+		return false
+	}
+	d, err := way.DistanceFrom(pos)
+	if err != nil {
+		return false
+	}
+	return d.Distance < maps.MatchDistance(location, way.Width(), way.DistanceMultiplier())
+}
+
 // ProcessGps updates road evidence before any output is serialized. A cached
 // fix may be used across map loops, but its original timestamp is preserved.
 func (s *State) ProcessGps(sample cereal.GpsSample, success bool, load MapLoader, now time.Time) {
@@ -177,6 +203,9 @@ func (s *State) ProcessGps(sample cereal.GpsSample, success bool, load MapLoader
 	location := sample.Location
 	pos := m.PosFromLocation(location)
 	s.Position = pos
+	if sample.Source == cereal.GpsSourcePhone && unknownBearing(location) && s.holdStoppedRoad(location, pos) {
+		return
+	}
 	// Unknown CAN direction or speed uncertainty cannot create confident road evidence.
 	if (sample.Source == cereal.GpsSourceCar || sample.Source == cereal.GpsSourcePhone) && (math.IsNaN(float64(location.BearingAccuracyDeg())) || math.IsInf(float64(location.BearingAccuracyDeg()), 0) || location.BearingAccuracyDeg() <= 0 || location.BearingAccuracyDeg() >= 180 || math.IsNaN(float64(location.SpeedAccuracy())) || math.IsInf(float64(location.SpeedAccuracy()), 0) || location.SpeedAccuracy() >= 100) {
 		s.clearRoadDerived()

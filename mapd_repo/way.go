@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"time"
 
 	"pfeifer.dev/mapd/cereal/custom"
@@ -102,13 +103,49 @@ func plausibleLoadedWays(offlineMaps *maps.Offline, location log.GpsLocationData
 	return ways
 }
 
+// clearlyNearestWay (tsk-go fork, Nov 2026) settles a multi-road envelope when the fix is good enough to tell the
+// roads apart: a boulevard with service roads beside it put the main road and its service roads inside the same 2x
+// envelope, and with the RTK receiver at 0.2 m the shadow published "unknown" - no map limit - for minutes. The
+// nearest road wins only when every other candidate is farther by at least max(6 m, 3 x horizontal accuracy);
+// otherwise, and with no usable accuracy, it stays ambiguous as before.
+func clearlyNearestWay(candidates []maps.Way, location log.GpsLocationData) (maps.Way, bool) {
+	acc := float64(location.HorizontalAccuracy())
+	if math.IsNaN(acc) || math.IsInf(acc, 0) || acc <= 0 || acc > 10 {
+		return maps.Way{}, false
+	}
+	margin := float32(max(6, 3*acc))
+	pos := m.NewPosition(location.Latitude(), location.Longitude())
+	best, second := float32(math.MaxFloat32), float32(math.MaxFloat32)
+	bestIdx := -1
+	for i := range candidates {
+		d, err := candidates[i].DistanceFrom(pos)
+		if err != nil {
+			return maps.Way{}, false
+		}
+		switch {
+		case d.Distance < best:
+			second, best, bestIdx = best, d.Distance, i
+		case d.Distance < second:
+			second = d.Distance
+		}
+	}
+	if bestIdx < 0 || second-best < margin {
+		return maps.Way{}, false
+	}
+	return candidates[bestIdx], true
+}
+
 func GetCurrentWay(currentWay CurrentWay, nextWays []maps.NextWayResult, offlineMaps *maps.Offline, location log.GpsLocationData) (CurrentWay, error) {
 	candidates := plausibleLoadedWays(offlineMaps, location)
 	if len(candidates) == 0 {
 		return CurrentWay{SelectionType: custom.WaySelectionType_fail}, errors.New("no plausible loaded-tile way")
 	}
 	if len(candidates) > 1 {
-		return CurrentWay{SelectionType: custom.WaySelectionType_fail}, ErrAmbiguousWay
+		nearest, ok := clearlyNearestWay(candidates, location)
+		if !ok {
+			return CurrentWay{SelectionType: custom.WaySelectionType_fail}, ErrAmbiguousWay
+		}
+		candidates = []maps.Way{nearest}
 	}
 	// Use the loaded tile's representation, even when a prior sticky way has the
 	// same ID. This prevents an old tile's geometry/limit from being republished.
