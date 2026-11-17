@@ -171,6 +171,23 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    number either way.) Check at every sync: if upstream's `MapdOut.GpsSource` has its own entry for 4 and its
    `GPS_MAX_AGE_NS` its own 'phone' entry, remove ours (keep upstream's lines, drop our test if upstream tests it),
    move fork history 43 to "No longer carried" and tell the owner patch 74 was dropped.
+7. **The map speed limit drops beside service roads and at every stop on the RTK fix** (patch 79): in `mapd_repo/way.go`
+   `clearlyNearestWay` and its call in `GetCurrentWay`; in `mapd_repo/state.go` `unknownBearing`, `holdStoppedRoad` and
+   its check in `ProcessGps`; the two tests at the end of `mapd_repo/road_ambiguity_test.go`; and the provider built
+   from that source (`openpilot/starpilot/maps/provider/mapd` + `manifest.json`). (a) A boulevard's main road and its
+   service road both fall inside the 2x match envelope and mapd called it ambiguous - `unknown`, no map limit, for
+   minutes on a 0.2 m RTK fix; now with a horizontal accuracy up to 10 m the nearest road wins when every other one
+   is at least max(6 m, 3 x accuracy) farther. (b) The phone handoff has no heading while stopped, so every stop was
+   `noMatch`; a phone fix without heading, under 1 m/s, still within the matched road's match distance keeps it
+   (Nov 16). Upstream fixed = mapd resolves close parallel roads by distance on a precise fix, and keeps the road
+   while stopped without heading. At every sync that touches `mapd_repo/`, `upstream-sync.json`'s mapd pin or the
+   provider: keep our lines in the merged source, never keep upstream's `mapd` / `manifest.json`, run `go test ./...`
+   in mapd_repo and rebuild the provider from the merged source in a commit of its own (HEAD = the merge, so the
+   manifest stamps it), then check `tools/release/stage_mapd_provider.py`'s `validate_provider` passes. The build:
+   Go 1.25.1 as `go` on PATH, `GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc` (apt
+   `gcc-aarch64-linux-gnu`) and a static ARM64 zlib in `CGO_CFLAGS` / `CGO_LDFLAGS`, then
+   `PYTHONPATH=$PWD python3 openpilot/starpilot/maps/package_shadow.py` from the repo root. The binary's sha differs
+   from upstream's build (other toolchain); only the manifest's fields are checked.
 
 # Fork history
 
@@ -513,6 +530,9 @@ Paths are under `openpilot/` unless noted.
     shutdown makes a CAN wake with no drive since shut down again after 2 minutes instead of an hour; a drive clears it.
 43. Map speed limits with the phone GPS handoff (patch 74): `MapdOut.GpsSource` `phone @4` and map_source's 'phone'
     age limit, so mapd's matches made on the RTK fix reach the speed-limit side.
+46. Map speed limit beside service roads and at stops (patch 79): mapd matches the clearly nearest road on a precise
+    fix instead of calling a boulevard and its service road ambiguous, and keeps the matched road while standing still
+    on the phone handoff (no heading there). Our own mapd provider build ships with it (see fork fix 7).
 
 **No longer carried**
 - Lane Centering with one line (patch 37, with StarView's one-line tile and blue lines): dropped by the owner at the Oct 26
