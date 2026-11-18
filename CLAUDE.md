@@ -37,9 +37,13 @@
 
 # Syncing upstream
 
-"Sync" means: merge https://github.com/StarPilotHQ/StarPilot branch `Dom` into this repo's `Dom` with a merge commit
-(`git fetch https://github.com/StarPilotHQ/StarPilot.git Dom && git merge --no-edit -m "Merge upstream StarPilot Dom"
-FETCH_HEAD`), then a normal push. firestar's repo moved from firestar5683/StarPilot to StarPilotHQ/StarPilot (the old
+"Sync" means: merge https://github.com/StarPilotHQ/StarPilot branch `testing` into this repo's `Dom` with a merge commit
+(`git fetch https://github.com/StarPilotHQ/StarPilot.git testing && git merge --no-edit -m "Merge upstream StarPilot
+testing" FETCH_HEAD`), then a normal push. Nov 17: upstream renamed `Dom` to `testing` (and `StarPilot` to `stable`);
+its `Dom` ends at `2c9a556f5` "Branch-Migration: Dom -> testing", whose `scripts/branch_migration.py` (run by
+launch_chffrplus.sh at every start) moves a comma from `Dom` to `testing` - but only when the installed commit is that
+exact migration commit, so on our merges it does nothing ("not migration release") and the comma stays on our `Dom`.
+This repo's branch keeps its name `Dom`. firestar's repo moved from firestar5683/StarPilot to StarPilotHQ/StarPilot (the old
 address still redirects). Oct 29: firestar folded `SecretGoodStarPilot` into `Dom` and deleted it, so this repo's
 `Dom` branch was started from `SecretGoodStarPilot_v2` (all our patches through 57) and syncs from `Dom` now;
 `SecretGoodStarPilot_v2` and `SecretGoodStarPilot_v2-pre-oct26` are kept as they were and no longer synced.
@@ -80,6 +84,16 @@ rule and Google traffic ETA, with our `route_exclusions`, 5-min refresh (Mapbox 
 `fastest_first`; test_downloads.py - both tests; panda images rebuilt from source - upstream changed GM, Subaru and
 VW safety and the bootstubs, which follow upstream). Brings AGNOS 20.5.2. Galaxy parity unchanged. No fork fix is
 fixed upstream yet (still no phone `GpsSource`).
+
+Nov 18: synced `Dom` up to upstream `testing` `a214a2916` (310 commits, the first sync from `testing`; three source
+conflicts, both sides kept: card.py - upstream's `self.RI.v_ego` (Honda Bosch-A radar) after our door-reply scan;
+longitudinal_planner.py - upstream's `NAVIGATION_BRAKE_MAGNITUDE` import beside our `Advice`; test_intent.py - upstream's
+turn-onset tests and our patch 38 tests; panda images rebuilt from source - upstream changed GM hybrid, Hyundai CAN-FD
+AOL / DAW and Volvo CMA safety). Brings AGNOS 20.5.3 and Galaxy's Networks page (Wi-Fi, cellular, hotspot; it reaches
+StarView's Tools by itself through catalog.json). Upstream renamed Parked Power's "On" to "Custom limits": starviewd's
+`comma_set` follows (it was refused). Galaxy parity: rows gained `learnedValue` (Developer Parameters) and
+`acceptedFindingValue` (FLM page only), and the `selected-profile` scale - mirrored in StarView 2.90.1 (GalaxyMirror.kt,
+starview-data branch `galaxy-nov18`, waits for the owner's OK). No fork fix is fixed upstream yet.
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,

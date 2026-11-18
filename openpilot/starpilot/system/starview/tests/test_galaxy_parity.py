@@ -20,11 +20,17 @@ ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 # a volume slider is let go; "collapsed" (upstream d4b781ab, Nov 8) - a heading whose card stays folded until opened -
 # no row sets it, see test_no_row_is_collapsed_yet; the "compact" prop (upstream 10b9c7aef, Nov 11: first sentence of the
 # text with "What this changes" for the rest, bare numbers) - only flm.js passes it, for the FLM page's manual steering
-# rows, which StarView doesn't draw)
-MIRRORED_SCALES = {"lane-strength"}
-ROW_FIELDS = {"action", "available", "choices", "collapsed", "confirm", "coordinate", "defaultValue", "displayScale", "heading", "label",
-              "maximum", "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "step", "unit", "value"}
-PRESENTATION_SHA256 = "4d8cada96c00f7086d610523181208e62e639c99c8bbf1efc7fee5944daadbc2"
+# rows, which StarView doesn't draw; StarPilot testing, Nov 18 - mirrored in StarView 2.90.1, GalaxyMirror.kt: "selected-profile"
+# (upstream 76cf9331e: the global acceleration / deceleration profile selectors show "StarPilot Default" as "Normal" and
+# don't offer it), "learnedValue" (upstream 3ac334352: Developer Parameters' learned value beside the slider's), and
+# "acceptedFindingValue" (upstream 40a5b52dd: marks a manual FLM coordinate that matches an accepted finding - the FLM
+# page's rows, which StarView doesn't draw); the slider's range line rounds to 7 digits in Galaxy now, which StarView's
+# fmt already did)
+MIRRORED_SCALES = {"lane-strength", "selected-profile"}
+ROW_FIELDS = {"acceptedFindingValue", "action", "available", "choices", "collapsed", "confirm", "coordinate", "defaultValue",
+              "displayScale", "heading", "label", "learnedValue", "maximum", "minimum", "page", "previewSound", "reason",
+              "repairValue", "resetAvailable", "step", "unit", "value"}
+PRESENTATION_SHA256 = "8a5e0c5a823b8e46cbee25c956421669249d195e23b5b2b46a4664e48f5ed3b9"
 
 
 def presentation_source() -> str:
