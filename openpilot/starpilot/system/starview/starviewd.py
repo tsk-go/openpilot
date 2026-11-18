@@ -1878,7 +1878,7 @@ class Hub:
     owner = self._power_owner()
     asks = []
     if req.get("enabled") is not None:
-      asks.append((ENABLED, "On" if req.get("enabled") else "Stock"))
+      asks.append((ENABLED, "Custom limits" if req.get("enabled") else "Stock"))   # Galaxy's "On" (upstream, Nov 17)
     if req.get("hours") is not None:
       asks.append((HOURS, f"{max(1, min(30, int(round(float(req['hours'])))))} h"))
     if req.get("volts") is not None:
