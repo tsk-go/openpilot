@@ -195,6 +195,9 @@ MAP_OPACITY = (15, 100, 50)  # percent: min, max, default
 _nav_card = _widget("Turn-by-turn", NAV_CARD_WIDGET, *NAV_CARD_SIZE, 1230, 355)
 _nav_card["note"] = "The next maneuver while a route is active"
 PROFILES["large"]["widgets"][NAV_CARD_WIDGET] = _nav_card
+PROFILES["compact"]["widgets"][NAV_CARD_WIDGET] = {
+  **_widget("Turn-by-turn", NAV_CARD_WIDGET, 368, 142, 96, 16),
+  "note": "The next maneuver on the comma screen. StarPort has its own layout."}
 _nav_map = _widget("Map overlay", NAV_MAP_WIDGET, 560, 420, 1230, 625)
 _nav_map["default"].update(enabled=False, width=560, height=420, opacity=MAP_OPACITY[2])
 _nav_map["box"] = {"minWidth": MAP_MIN_SIZE[0], "maxWidth": 1800, "minHeight": MAP_MIN_SIZE[1], "maxHeight": 1020}
@@ -227,7 +230,7 @@ for _profile, _geometry in {"large": (112, 70, 165, 294), "compact": (45, 28, 22
 
 ROAD_BASE_WIDTH = 1860
 SIDEBAR_EXTRA = 300
-ANCHOR_SHIFT = {"steering_wheel": 1.0, NAV_CARD_WIDGET: 1.0, NAV_MAP_WIDGET: 1.0,
+ANCHOR_SHIFT = {"steering_wheel": 1.0, "pip_right": 1.0, NAV_CARD_WIDGET: 1.0, NAV_MAP_WIDGET: 1.0,
                 "current_speed": .5, "torque_bar": .5, MODE_WIDGET: .5, CLOCK_WIDGET: .5, WEATHER_WIDGET: .5}
 for _key, _widget_data in PROFILES["large"]["widgets"].items():
   if _key in ANCHOR_SHIFT:
@@ -292,7 +295,8 @@ DEFAULT_WIDGET_ORDER = {
             "steering_wheel", "torque_bar", "following_distance", "driver_monitor", MODE_WIDGET, CLOCK_WIDGET, WEATHER_WIDGET,
             STOPPED_TIMER_WIDGET, NAV_CARD_WIDGET, JETLINK_WIDGET, "rear_fog"),
   "compact": ("pip_left", "pip_right", "speed_limit", "max_speed", "steering_wheel", "torque_bar",
-              "speed_limit_actions", "driver_monitor", *RAIL_WIDGETS, MODE_WIDGET, CLOCK_WIDGET, WEATHER_WIDGET, STOPPED_TIMER_WIDGET, "rear_fog"),
+              "speed_limit_actions", "driver_monitor", *RAIL_WIDGETS, MODE_WIDGET, CLOCK_WIDGET, WEATHER_WIDGET,
+              STOPPED_TIMER_WIDGET, NAV_CARD_WIDGET, "rear_fog"),
 }
 
 
@@ -305,6 +309,12 @@ def validate_widget_order(order, widgets):
 
 def widget_order(document, profile):
   return document.get("widgetOrder", {}).get(str(profile), DEFAULT_WIDGET_ORDER[str(profile)])
+
+
+def rendered_widget_order(document, profile):
+  """Side cameras cover widgets regardless of the saved editor layer order."""
+  order = widget_order(document, profile)
+  return [key for key in order if key not in CAMERA_WIDGETS] + [key for key in order if key in CAMERA_WIDGETS]
 
 
 def widget_bounds(profile, widget):
@@ -401,7 +411,7 @@ def _compact_action_collisions(layout):
   actions, area = layout['speed_limit_actions'], widgets['speed_limit_actions']
   for key, widget in widgets.items():
     saved = layout[key]
-    if (not saved['enabled'] or key in ('speed_limit_actions', 'speed_limit', 'stopped_timer') or widget.get('layer') == 'underlay'):
+    if (not saved['enabled'] or key in ('speed_limit_actions', 'speed_limit', 'stopped_timer', NAV_CARD_WIDGET) or widget.get('layer') == 'underlay'):
       continue
     width, height = (saved['size'],) * 2 if key in WIDGET_SIZES else (widget['width'], widget['height'])
     if (saved['x'] < actions['x'] + area['width'] and saved['x'] + width > actions['x'] and

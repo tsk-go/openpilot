@@ -1,6 +1,6 @@
 """Immutable saved-feature settings presentation and guarded user intent."""
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import math
 from collections import deque
@@ -60,6 +60,7 @@ class FeaturePage(StrEnum):
   TRAFFIC = "traffic"
   CURVE = "curve"
   TORQUE = "torque"
+  DEVELOPER_LATERAL = "torque/developer"
   TUNING = "tuning"
   BLUEPILOT = "torque/bluepilot"
   AOL = "aol"
@@ -114,6 +115,8 @@ class FeatureRow:
   presets: tuple[tuple[str, str], ...] = ()
   default_reset_available: bool = False
   collapsed: bool = False  # a heading whose rows are hidden until it is opened
+  learned_value: str = field(default='', compare=False, repr=False)
+  accepted_finding_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -211,7 +214,7 @@ def lane_strength_level(row: FeatureRow) -> float | None:
 def value_reason(row: FeatureRow) -> str:
   if row.available and lane_strength_level(row) is not None:
     return "1–10; 5 is normal. Lower values reduce centering and higher values strengthen it"
-  return row.reason
+  return (row.learned_value + ' · ' + row.reason) if row.learned_value else row.reason
 
 
 def value_text(row: FeatureRow) -> str:
@@ -314,7 +317,7 @@ def feature_parent_page(page: str) -> str | None:
 def feature_parent_title(page: str) -> str:
   parent = feature_parent_page(page)
   return {None: "StarPilot", FeaturePage.HUB: "Driving Controls", FeaturePage.PROFILES: "Long Planner",
-          FeaturePage.CONDITIONAL: "Conditional Driving Modes", FeaturePage.TORQUE: "Steering and Torque"}.get(parent, (parent or "").replace("_", " ").title())
+          FeaturePage.CONDITIONAL: "Conditional Driving Modes", FeaturePage.TORQUE: "Steering & Torque"}.get(parent, (parent or "").replace("_", " ").title())
 
 
 def boolean_value(row: FeatureRow) -> bool | None:

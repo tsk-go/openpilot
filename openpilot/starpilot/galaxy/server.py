@@ -124,6 +124,16 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         hotspot_source = HotspotSettings()
     return hotspot_source
 
+  network_source = None
+
+  def network_owner():
+    nonlocal network_source
+    with hotspot_source_lock:
+      if network_source is None:
+        from openpilot.starpilot.galaxy.network_prefs import NetworkSettings
+        network_source = NetworkSettings()
+    return network_source
+
   def cloud_status():
     from openpilot.starpilot.connect.provider import status
     return cloud.status() if cloud is not None else status()
@@ -856,6 +866,16 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           result = hotspot_owner().snapshot(parked())
         except (OSError, ValueError):
           self.json(503, {'error': 'Hotspot settings are unavailable.'})
+        else:
+          if self.require_session():
+            self.json(200, result)
+      elif path == '/api/galaxy/networks':
+        if not self.require_session():
+          return
+        try:
+          result = network_owner().snapshot(parked())
+        except (OSError, ValueError):
+          self.json(503, {'error': 'Network settings are unavailable.'})
         else:
           if self.require_session():
             self.json(200, result)
@@ -1703,10 +1723,11 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
                       '/api/connect/proxy', '/api/connect/provider', '/api/auth/login', '/api/auth/logout', '/api/settings/preview', '/api/settings/confirm',
                       '/api/settings/recovery/preview', '/api/settings/recovery/confirm',
                       '/api/settings/flm-backup/preview', '/api/settings/flm-backup/confirm',
+                      '/api/settings/flm-finding/accept',
                       '/api/settings/reset-default', '/api/settings/restore', '/api/recordings/action',
                       '/api/replay/start', '/api/replay/control', '/api/replay/stop',
                       '/api/replay/export-start',
-                      '/api/galaxy/pair', '/api/galaxy/unpair', '/api/galaxy/device-name', '/api/galaxy/hotspot',
+                      '/api/galaxy/pair', '/api/galaxy/unpair', '/api/galaxy/device-name', '/api/galaxy/hotspot', '/api/galaxy/networks',
                       '/api/cameras/snapshot', '/api/cameras/white-balance',
                       '/api/starport/layout', '/api/starport/enable', '/api/starport/control', '/api/starport/pairing',
                       '/api/starport/logs/send',
@@ -1783,6 +1804,24 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
         else:
           self.json(200 if authorized() else 401, result if authorized() else {'error': 'Sign in to Galaxy'})
         return
+      if path == '/api/settings/flm-finding/accept':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        from openpilot.starpilot.galaxy.flm_acceptance import accept_finding
+        def authorized():
+          return self.settings_session() == identity
+        try:
+          with effect_lock:
+            result = accept_finding(feature_settings(), training_results_source, payload, authorized=authorized)
+        except (ValueError, SettingsChanged) as error:
+          self.json(409 if authorized() else 401, {'error': str(error) if authorized() else 'Sign in to Galaxy'})
+        except (SettingsUnavailable, OSError, RuntimeError, TypeError, KeyError):
+          self.json(503, {'error': 'Could not confirm this finding was saved. Refresh the saved settings before trying again.'})
+        else:
+          self.json(200 if authorized() else 401, result if authorized() else {'error': 'Sign in to Galaxy'})
+        return
       if path.startswith('/api/replay/'):
         replay_api.post(self, path, payload)
         return
@@ -1810,6 +1849,27 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
           self.json(400, {'error': str(error)})
         except OSError:
           self.json(503, {'error': 'Companion settings unavailable'})
+        else:
+          self.json(200, result)
+        return
+      if path == '/api/galaxy/networks':
+        identity = self.settings_session()
+        if identity is None:
+          self.json(401, {'error': 'Sign in to Galaxy'})
+          return
+        try:
+          from openpilot.starpilot.galaxy.network_prefs import via_hotspot
+          with effect_lock:
+            result = network_owner().apply(payload, lambda: self.settings_session() == identity and parked(),
+                                           background=via_hotspot(self.client_address[0]))
+        except PermissionError:
+          self.json(409, {'error': 'Park before changing network settings.'})
+        except FileExistsError as error:
+          self.json(409, {'error': str(error)})
+        except ValueError as error:
+          self.json(400, {'error': str(error)})
+        except OSError:
+          self.json(503, {'error': 'Network settings are unavailable.'})
         else:
           self.json(200, result)
         return
@@ -2516,18 +2576,6 @@ def make_server(*, port=8082, host='127.0.0.1', monitor=None, owner=None, crashe
               self.json(200, {'status': current})
             else:
               self.json(401, {'error': 'Sign in to Galaxy'})
-          return
-        if action == 'new_setup' and set(payload) == {'action', 'enabled'} and type(payload['enabled']) is bool:
-          # The way back to the classic screens, so it works with the StarPort service off or broken.
-          from openpilot.starpilot.system.starport import new_setup
-          if not configuration_allowed():
-            self.json(403, {'error': 'Park before changing the setup screens'})
-          elif not new_setup.set_enabled(payload['enabled']):
-            self.json(503, {'error': 'Could not save the setup screen choice'})
-          elif self.settings_session() == identity:
-            self.json(200, {'newSetup': new_setup.enabled()})
-          else:
-            self.json(401, {'error': 'Sign in to Galaxy'})
           return
         if not starport_setup_owner().enabled():
           self.json(409, {'error': 'Enable StarPort first'})

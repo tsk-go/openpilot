@@ -6,7 +6,10 @@ This presentation catalog supplies the purpose before any genuine prerequisite.
 from openpilot.starpilot.ui.long_profile_feature import CATEGORY_HELP, VALUE_HELP
 from openpilot.starpilot.ui.feature_settings_state import SLC_OFFSET_KEYS
 
+from openpilot.starpilot.longitudinal.enhanced_stop_hold import KEY as HOLD_KEY, DESCRIPTION as HOLD_DESCRIPTION
+
 DESCRIPTIONS = {
+  HOLD_KEY: HOLD_DESCRIPTION,
   'GreenLightAlert': 'Chimes once when the model’s traffic-light stop prediction clears while you remain stopped.',
   'LeadDepartingAlert': 'Chimes once when the tracked vehicle ahead starts moving while you remain stopped.',
   'DriveModeProfiles': 'Matches acceleration and deceleration profiles to the vehicle’s Eco, Normal or Sport drive mode.',
@@ -16,6 +19,8 @@ DESCRIPTIONS = {
   'HighwaySmoothingLevel': 'Reduces small steering corrections on highways above about 40 mph. 0% is off; higher values add more smoothing.',
   'FordRearFogIndicator': 'Shows a movable amber telltale while the Ford rear fog light is on, using read-only vehicle status.',
   'DisengageOnAccelerator': 'When enabled, pressing the accelerator pedal will disengage openpilot.',
+  'TurnByTurn:large': 'Shows the next maneuver on the comma screen without changing the StarPort layout.',
+  'TurnByTurn:compact': 'Shows the next maneuver on the comma screen without changing the StarPort layout.',
   'ReduceMotion': 'Reduces interface animations for a steadier display.',
   'IsMetric': 'On displays speed and distance in kilometers; Off uses miles. Saved speed-limit offsets keep their physical values.',
   'IsRhdDetected': 'Sets the initial steering-wheel side used by driver monitoring. Applies next drive; automatic side detection continues.',
@@ -49,10 +54,12 @@ DESCRIPTIONS = {
   'TurnAssist': 'Uses steering-angle feedback to assist rolling low-speed turns above the vehicle minimum steering speed.',
   'LateralControllerSelection': 'Chooses the stock steering controller or the vehicle-specific StarPilot controller.',
   'ForceAutoTuneOff': ('StarPilot’s FLM tuning will attempt to automatically correct torque profiles as you drive. ' +
-                       'On allows automatic learning; Off disables it. Nonzero manual FLM overrides pause Auto Learn.'),
+                       'On allows automatic learning; Off disables it. Manual FLM overrides lock only the settings you change.'),
   'torque_prepare_firestar': 'Prepares steering settings for a tuning-request recording. Turning it off restores the previous settings.',
   'SteerLatAccel': 'Sets the legacy lateral-acceleration-to-torque conversion. Review the vehicle-specific tuning profile before applying it.',
   'SteerFriction': 'Sets legacy steering friction compensation. Review the vehicle-specific tuning profile before applying it.',
+  'steering_delay': 'Accounts for the time between a steering request and the car’s response.',
+  'steering_delay_reset': 'Restores automatic actuator delay for this vehicle without changing other steering settings.',
   'UseStarPilotLongitudinalPlanner': 'Selects the StarPilot acceleration, braking and following planner. Off selects the upstream planner.',
   'CustomCruise': 'Sets how much a short cruise-button press changes the set speed.',
   'CustomCruiseLong': 'Sets how much holding a cruise button changes the set speed.',
@@ -66,8 +73,8 @@ DESCRIPTIONS = {
                         'Selected acceleration profiles, stop detection and vehicle limits still apply.'),
   'CustomPersonalities': 'Uses your following-time and jerk settings for the selected driving personality.',
   'profile:stopped_gap': 'Adds this distance to the following gap behind a stopped lead vehicle.',
-  'profile:global_acceleration': 'Chooses the acceleration curve used by personalities set to Selected Profile.',
-  'profile:global_braking': 'Chooses the braking response used by personalities set to Selected Profile.',
+  'profile:global_acceleration': 'Chooses the acceleration curve used by personalities set to Use global preset.',
+  'profile:global_braking': 'Chooses the braking response used by personalities set to Use global preset.',
   'reset_profiles': 'Restores the default acceleration, braking and following curves and presets.',
   'CurveSpeedController': 'Adjusts cruise speed for curves ahead using available learned cornering preferences.',
   'CurveSpeedControllerNoLead': 'Pauses curve-speed adjustments while following a lead vehicle.',
@@ -112,11 +119,11 @@ DESCRIPTIONS = {
   'RemoteStartBootsComma': 'Wakes comma during GM remote start.',
   'HKGRemoteStartBootsComma': 'Wakes comma during Hyundai, Kia or Genesis remote climate operation.',
   'IgnoreIgnitionLine': 'Uses GM CAN ignition instead of the harness ignition signal.',
-  'heading:starport': 'Settings for connecting Android Auto to the car through StarPort.',
-  'StarPortNewSetup': 'Shows the guided StarPort setup with a live checklist instead of the classic setup screens.',
   'StarPortAllowHevc': 'Lets a car that offers only H.265 video receive H.265; a car with an H.264 mode keeps H.264.',
   'StarPortKeyframeTest': 'Sends every H.265 frame as a keyframe and logs the car\'s acknowledgments, to diagnose H.265-only cars.',
   'StarPortTallHevc': 'Uses the car\'s 1080x1920 H.265 screen mode instead of 720x1280, to diagnose H.265-only cars. Needs Allow H.265 video on.',
+  'StarPortUnackedVideo': 'Sends video without waiting for the car\'s acknowledgments, on H.264 or H.265, for cars that show video but never acknowledge it.',
+  'StarPortPatientConnect': 'Keeps trying for up to a minute when a wireless adapter hands over its Wi-Fi but refuses the connection.',
   'StarPortHeadUnitExperiments': 'Shows experimental fixes for specific cars and dongles, each with its own switch. Off is the standard connection.',
   'StarPortDedicatedWifi': "Joins the car's Wi-Fi on a second interface so the comma stays on its home Wi-Fi or phone hotspot.",
   'TeslaWakeOnCAN': 'Wakes comma when the Tesla wakes up, before you press the brake.',
@@ -187,10 +194,11 @@ DESCRIPTIONS = {
 
 # These are initialization explanations, not a second defaults table.
 INITIALIZATION = {
-  'StarPortNewSetup': 'Applies the next time the setup screen opens.',
   'StarPortAllowHevc': 'Applies from the next StarPort connection.',
   'StarPortKeyframeTest': 'Applies from the next StarPort connection.',
   'StarPortTallHevc': 'Applies from the next StarPort connection.',
+  'StarPortUnackedVideo': 'Applies from the next StarPort connection.',
+  'StarPortPatientConnect': 'Applies from the next StarPort connection.',
   'StarPortHeadUnitExperiments': 'Applies from the next StarPort connection.',
   'StarPortDedicatedWifi': 'Applies from the next StarPort connection.',
   'LateralControllerSelection': ('Applies when driving processes next start: the controller class, vehicle policy and ' +
@@ -343,6 +351,13 @@ FLM_DESCRIPTIONS = {
     'Higher fades it more; lower keeps more. The fade can be limited by Curvy unwind floor relief. No effect with ' +
     'FF gain at zero.'),
 }
+FLM_DESCRIPTIONS.update({
+  'friction_threshold_' + speed: (
+    'Shapes small steering corrections at ' + label + '. Higher makes compensation build more gradually; ' +
+    'lower makes it respond sooner. Auto Learn can refine an accepted finding.')
+  for speed, label in (('crawl', 'crawling speeds'), ('low', 'low speeds'), ('mid', 'medium speeds'),
+                       ('fast', 'higher speeds'), ('highway', 'highway speeds'))
+})
 
 
 def purpose(row):
@@ -419,6 +434,8 @@ def description(row):
   if base is None:
     return row.reason
   suffix = INITIALIZATION.get(row.key, '')
+  if row.key == 'steering_delay':
+    suffix = row.reason.strip()
   if row.key.startswith('lane_change:') and row.key not in ('lane_change:close_gap', 'lane_change:close_gap_seconds', 'lane_change:reset'):
     suffix = 'Changes apply when the current signal and maneuver end; turning assistance off cancels it after the preference refresh.'
   if row.key.startswith('torque:surface:'):

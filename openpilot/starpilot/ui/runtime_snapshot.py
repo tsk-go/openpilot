@@ -341,6 +341,9 @@ class RuntimeSnapshotAdapter:
     self._stopped_timer = StoppedTimer()
     self._replay_stopped_history = False
     self._developer_metrics = DeveloperMetrics()
+    self._developer_delay = None
+    self._developer_delay_key = None
+    self._developer_delay_read_ns = None
     self._reverse_driver_camera = ReverseDriverCamera()
     self._vision_stop = StopConfirmation(display_only=True)
     self._slc_sign_cache: tuple[int, tuple[int, int], str, SpeedLimitObservation] | None = None
@@ -683,23 +686,34 @@ class RuntimeSnapshotAdapter:
            (car.standstill or cruise_state.standstill or not cruise_state.enabled)))
     developer_metrics = ()
     if not (onroad_view_only and stopped_timer_profile == "compact"):
+      delay_key = ((after, str(cp.carFingerprint), str(cp.steerControlType), str(cp.lateralTuning.which()), float(cp.steerActuatorDelay))
+                   if cp is not None else None)
+      if (delay_key != self._developer_delay_key or self._developer_delay_read_ns is None or
+          not 0 <= now_ns - self._developer_delay_read_ns < 1_000_000_000):
+        from openpilot.starpilot.lateral.delay_preferences import read_delay
+        self._developer_delay = read_delay(params, cp) if cp is not None else None
+        self._developer_delay_key, self._developer_delay_read_ns = delay_key, now_ns
+      lateral = current_message(sm, 'starpilotLateralState', now_ns, after_frame=after) if started else None
       developer_metrics = self._developer_metrics.observe(
         drive=after if started else None, car=display_car if display_car_valid else None,
         delay=current_message(sm, 'lateralDelay', now_ns, after_frame=after) if started else None,
         torque=current_message(sm, 'lateralTorqueParameters', now_ns, after_frame=after) if started else None,
         parameters=display_message(sm, 'vehicleParameters', now_ns, after_frame=after) if started else None,
-        metric=bool(ui.is_metric), cp=cp)
+        metric=bool(ui.is_metric), cp=cp, applied=getattr(lateral, 'torqueTuning', None), delay_selection=self._developer_delay)
     stop_observed_ns = (self._vision_stop.observe_message(
       sm, now_ns=now_ns, now_boot_ns=now_ns + pair[2], drive_id=drive_id, after_frame=after)
       if started and pair is not None else self._vision_stop.observe(None, now_ns=now_ns))
     weather_location = None
     if (started and getattr(ui, 'replay_clock', None) is None and
         any(layout.get('weather', {}).get('enabled', False) for layout in self._customization_value['layouts'].values())):
-      from openpilot.starpilot.ui.weather import valid_location
-      for service in ('gpsLocationExternal', 'gpsLocation'):
-        gps = current_message(sm, service, now_ns, after_frame=after)
-        if gps is not None and gps.hasFix and valid_location((gps.latitude, gps.longitude)):
-          weather_location = (gps.latitude, gps.longitude)
+      from openpilot.starpilot.gps.source import GPS_SOURCES, SOURCE_SERVICES, observation
+      # Weather needs a recent location, not the high-frequency driving-message age gate.
+      # Include car/phone fixes when this device has no native GNSS receiver.
+      for service in GPS_SOURCES:
+        carrier = SOURCE_SERVICES.get(service, service)
+        fix = observation(sm, service, now_ns)
+        if fix is not None and int(sm.recv_frame.get(carrier, 0)) > after:
+          weather_location = (fix[1].latitude, fix[1].longitude)
           break
     aol_latched = (display_aol_latch(sm, now_ns, after_frame=after)
                    if started and getattr(ui, "aol_runtime", False) else None)

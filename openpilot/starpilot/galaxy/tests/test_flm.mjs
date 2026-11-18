@@ -64,7 +64,7 @@ assert.match(app, /<FlmPage v-else-if/)
 assert.match(app, /:initial-view="route.path === '\/tuning\/plots' \? 'plots' : 'overview'"/)
 assert.doesNotMatch(app, /<FlmPage embedded/)
 const catalog = JSON.parse(readFileSync(new URL("../web/data/catalog.json", import.meta.url), "utf8"))
-assert(catalog.tools.some(tool => tool.path === "/tuning" && tool.name === "Tuning and Analysis"))
+assert(catalog.tools.some(tool => tool.path === "/tuning" && tool.name === "Tuning & Analysis"))
 assert.equal(catalog.tools.filter(tool => tool.path.startsWith('/tuning')).length, 1)
 const driving = readFileSync(new URL('../web/js/driving.js', import.meta.url), 'utf8')
 assert.match(driving, /go\('\/tuning'\)/)
@@ -73,6 +73,14 @@ assert.doesNotMatch(readFileSync(new URL('../web/js/flm.js', import.meta.url), '
 for (const view of ['overview', 'tune', 'activity', 'plots']) assert(FlmPage.template.includes(`view === '${view}'`))
 const choice = { version: 1, valid: true, enabled: true, parked: true, vehicle: 'HYUNDAI_IONIQ_6' }
 assert(validLearningPreference(choice))
+for (const controller of [null, 'torque', 'pid', 'angle', 'curvature']) {
+  const preference = { ...choice, controller }
+  assert(validLearningPreference(preference))
+  assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: true, preference }), ['pid', 'angle', 'curvature'].includes(controller))
+  assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: false, preference }), false)
+}
+assert(!validLearningPreference({ ...choice, controller: 'unknown' }))
+assert.equal(FlmPage.computed.nonTorqueController.call({ choiceLive: true, preference: choice }), false)
 assert.equal(tunerStatus({ ...value, preference: choice }, false, true).key, 'parked')
 assert.equal(tunerStatus({ ...value, preference: { ...choice, enabled: false } }, true, true).key, 'off')
 assert.equal(tunerStatus({ ...value, preference: choice }, false, false).key, 'stale')
@@ -143,3 +151,44 @@ assert.doesNotMatch(FlmPage.template, /Steering settings|One change\. A fair com
 assert.match(FlmPage.template, /<h2>Your steering<\/h2>/)
 assert.match(FlmPage.template, /<PlotsPage[^>]+:active="view === 'plots'"[^>]+embedded/)
 assert.doesNotMatch(FlmPage.template, /gx-tuner__plots-link/)
+
+// An explicit acceptance uses its own endpoint; slider editing remains manual.
+const acceptanceContext = { mode: 'local', preference: { valid: true, enabled: true, parked: true, controller: 'torque' },
+  current: { fresh: true }, error: '', manualBusy: false }
+assert.equal(FlmPage.computed.canAcceptFindings.call(acceptanceContext), true)
+for (const change of [{ manualBusy: true }, { current: { fresh: false } }, { mode: 'remote' },
+  ...['parked', 'enabled', 'valid'].map(key => ({ preference: { ...acceptanceContext.preference, [key]: false } })),
+  { preference: { ...acceptanceContext.preference, controller: 'pid' } }])
+  assert.equal(FlmPage.computed.canAcceptFindings.call({ ...acceptanceContext, ...change }), false)
+const acceptanceFetch = globalThis.fetch
+try {
+  const idea = { parameter: 'ff_gain_left', target: .005 }
+  const vm = { ...FlmPage.data(), canAcceptFindings: true, review: { findings: [idea] },
+    current: { details: { 'Offroad assessment hash': 'a'.repeat(64) } },
+    manualFeed: { active: false }, parameterLabel: name => name, unauthorized: () => {} }
+  vm.reviewFinding = FlmPage.methods.reviewFinding.bind(vm)
+  vm.acceptFinding = FlmPage.methods.acceptFinding.bind(vm)
+  const calls = []
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options })
+    return { ok: true, json: async () => ({ status: 'saved', parameter: idea.parameter, value: idea.target, learning: 'automatic', for_next_drive: true }) }
+  }
+  vm.reviewFinding(idea)
+  assert.equal(calls.length, 0, 'Reviewing acceptance never writes')
+  await vm.acceptFinding()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, './api/settings/flm-finding/accept')
+  assert.deepEqual(JSON.parse(calls[0].options.body), { parameter: idea.parameter, target: idea.target, assessment: 'a'.repeat(64) })
+  assert.equal(vm.findingDraft, null)
+  assert.match(vm.findingNotice, /Auto Learn stays on/)
+  vm.reviewFinding(idea)
+  globalThis.fetch = async () => { calls.push('failed');throw new TypeError('offline') }
+  await vm.acceptFinding()
+  assert.equal(calls.length, 2, 'An unknown write outcome is not retried automatically')
+  assert.equal(vm.findingNotice, '')
+  assert.match(vm.findingError, /Could not confirm/)
+  vm.canAcceptFindings = false
+  vm.reviewFinding(idea)
+  assert.equal(vm.findingDraft, null)
+} finally { globalThis.fetch = acceptanceFetch }
+console.log('Accept finding keeps learning enabled, requires parked authority, and preserves uncertain write outcomes')

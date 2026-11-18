@@ -27,6 +27,8 @@ from openpilot.starpilot.gps.source import observation as gps_observation
 from openpilot.selfdrive.car.car_events import CarEvents
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET, Alert, Priority as AlertPriority
+from openpilot.selfdrive.selfdrived.bookmarks import BookmarkCounter
+from openpilot.starpilot.bookmark_state import BookmarkCheckpoint
 from openpilot.starpilot.longitudinal.force_stop_alert import HoldAlertState, EVENT_TYPE as FORCE_STOP_HOLD
 from openpilot.selfdrive.selfdrived.helpers import (ExcessiveActuationCheck, jetlink_in_control, jetlink_lost_alert, throttled_param,
                                                     update_big_model_status, update_jetlink_swaps)
@@ -39,7 +41,7 @@ from openpilot.starpilot.aol.vehicle import native_bootstrap_supported
 from opendbc.car.gm.steering_authority import monitored_profile
 from openpilot.starpilot.car.gm.steering_companion import SteeringCompanion
 from openpilot.starpilot.car.hyundai.aol import qualified_ioniq6
-from opendbc.car.gm.values import GMFlags, is_volt_ascm_longitudinal
+from opendbc.car.gm.values import GMFlags, is_volt_ascm_longitudinal, malibu_hybrid_profile
 from openpilot.starpilot.aol.intent import read_settings
 from openpilot.starpilot.aol.intent_companion import IntentCompanion
 from openpilot.starpilot.aol.transport_pause import AvailabilityPause, TransportPause, availability_only, cp_identity, healthy_transport
@@ -106,6 +108,8 @@ class SelfdriveD:
     self.ordinary_axis_ack_required = axis_policy_for(self.CP).ordinary_axis_ack_required
     self.aol_cruise_main_required = axis_policy_for(self.CP).cruise_main_required
     self.axis_transport_required = self.aol_replay or self.ordinary_axis_ack_required
+    hybrid = malibu_hybrid_profile(self.CP) if self.CP.brand == 'gm' else None
+    self.hybrid_input_reconcile = bool(hybrid is not None and hybrid.pedal and hybrid.longitudinal)
     self.nostalgia_enabled = nostalgia_saved_enabled(self.params)
     self.nostalgia_paddle_cancel = False
     self.aol_session_id = uuid.uuid4().hex
@@ -195,7 +199,7 @@ class SelfdriveD:
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'extrinsicsCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'deviceMotion', 'lateralDelay',
                                    'managerState', 'vehicleParameters', 'radarState', 'lateralTorqueParameters',
-                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark',
+                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug',
                                    'lateralManeuverPlan', 'laneChangeAssistWire', 'starpilotLongitudinalPlan'] +
                                   (['aolIntentWire'] if self.aol_replay else []) +
                                    (['aolSafetyWire'] if self.axis_transport_required else []) +
@@ -203,6 +207,9 @@ class SelfdriveD:
                                    self.camera_packets + self.sensor_packets + self.gps_packets + radar_notifications,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
+
+    # Event streams must not conflate: two quick bookmarks are two saved events.
+    self.bookmark_sock = messaging.sub_sock('userBookmark')
 
     # read params
     self.is_metric = self.params.get_bool("IsMetric")
@@ -221,7 +228,8 @@ class SelfdriveD:
     self.CS_prev = car.CarState.new_message()
     self.AM = AlertManager()
     from openpilot.starpilot.car.events import event_rules
-    self.events = Events(event_rules(self.CP))
+    self.bookmarks = BookmarkCounter(BookmarkCheckpoint())
+    self.events = Events(event_rules(self.CP) | self.bookmarks.event_rules())
 
     self.initialized = False
     self.enabled = False
@@ -369,10 +377,28 @@ class SelfdriveD:
         self.events.add(EventName.pedalPressed)
 
 
+  def _update_bookmarks(self):
+    # Run before initialization/dashcam early returns and independently of UI rendering.
+    # Only userBookmark represents a saved event; bookmarkButton is the same action.
+    if not hasattr(self, 'bookmarks') or not self.sm.seen['deviceState']:
+      return
+    count = 0
+    for _ in range(64):
+      bookmark = messaging.recv_one_or_none(self.bookmark_sock)
+      if bookmark is None:
+        break
+      count += 1
+    device = self.sm['deviceState']
+    if self.bookmarks.update(started=device.started, drive_id=int(device.startedMonoTime), bookmarks=count):
+      prime_type = self.params.get("PrimeType")
+      paired = prime_type is not None and int(prime_type) >= 0
+      self.events.add(EventName.userBookmark if paired else EventName.userBookmarkNotPaired)
+
   def update_events(self, CS):
     """Compute onroadEvents from carState"""
 
     self.events.clear()
+    self._update_bookmarks()
     self.car_event_sample_count = 0
     self.aol_reconciled_sources = ()
     self.tesla_stock_alerts = []
@@ -420,12 +446,6 @@ class SelfdriveD:
       self._update_steering_authority(CS)
       self.events.add(EventName.selfdriveInitializing)
       return
-
-    # Check for user bookmark press
-    if self.sm.updated['userBookmark']:
-      prime_type = self.params.get("PrimeType")
-      paired = prime_type is not None and int(prime_type) >= 0
-      self.events.add(EventName.userBookmark if paired else EventName.userBookmarkNotPaired)
 
     # Don't add any more events while in dashcam mode
     if self.CP.passive:
@@ -547,7 +567,8 @@ class SelfdriveD:
     from openpilot.starpilot.car.hyundai.aol import source_deadline_supported
     input_proof = getattr(self, 'aol_step_input_proof', None)
     reconcile_input = bool(input_proof is not None and not REPLAY and self.aol_replay and self.axis_transport_required and
-                           (source_deadline_supported(self.CP) or self.ford_source_deadline_supported()) and
+                           (source_deadline_supported(self.CP) or self.ford_source_deadline_supported() or
+                            getattr(self, 'hybrid_input_reconcile', False)) and
                            input_proof[0] == self.aol_session_id and
                            (input_proof[8] or input_proof[9]))
     self.aol_event_input_reconcile = reconcile_input
