@@ -131,6 +131,8 @@ class Controls:
       LaneCenteringController(body=interface_dimensions(self.CI, self.CP), body_required=True) if predict_lane_clearance else LaneCenteringController()
     )
     self.highway_correction_gain = HighwayCorrectionGain()
+    from openpilot.starpilot.lateral.low_speed_smoothing import LowSpeedSmoothing  # tsk-go: Sienna stop-and-go wobble
+    self.low_speed_smoothing = LowSpeedSmoothing(self.CP, live=os.getenv("REPLAY") != "1")
     self.highway_smoothing_supported = lateral_supported(self.CP)
     self.live_steering_preferences = (
       LiveSteeringPreferences(self.params) if self.highway_smoothing_supported and os.getenv("REPLAY") != "1" else None)
@@ -497,6 +499,10 @@ class Controls:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      if getattr(self, "low_speed_smoothing", None) is not None:
+        new_desired_curvature = self.low_speed_smoothing.update(
+          new_desired_curvature, CS.vEgo, active=CC.latActive, blinker=bool(CS.leftBlinker or CS.rightBlinker),
+          lane_change=model_v2.meta.laneChangeState != LaneChangeState.off)
     assist = self.turn_assist_enabled()
     rolling = math.isfinite(CS.vEgo) and CS.vEgo > max(0.1 * CV.MPH_TO_MS, self.CP.minSteerSpeed)
     assist_ready = (

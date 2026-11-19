@@ -212,6 +212,17 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `gcc-aarch64-linux-gnu`) and a static ARM64 zlib in `CGO_CFLAGS` / `CGO_LDFLAGS`, then
    `PYTHONPATH=$PWD python3 openpilot/starpilot/maps/package_shadow.py` from the repo root. The binary's sha differs
    from upstream's build (other toolchain); only the manifest's fields are checked.
+8. **The Sienna's steering wheel wobbles in stop-and-go** (patch 81): `openpilot/starpilot/lateral/low_speed_smoothing.py`,
+   in `openpilot/selfdrive/controls/controlsd.py` `self.low_speed_smoothing` (made in `__init__`, applied right after
+   the model's `desiredCurvature` is taken), in `openpilot/starpilot/ui/feature_settings_owner.py` the TORQUE page's
+   `low_speed_smoothing.rows` and the `starview:low_speed_smoothing` apply line, and the tests
+   `starpilot/lateral/tests/test_low_speed_smoothing.py`, `test_low_speed_smoothing_controls.py`,
+   `starpilot/galaxy/tests/test_low_speed_smoothing_page.py`. Recorded Nov 16 (owner's bookmarks, Belt Parkway): 8
+   wobbles in 7 minutes, all at 3 - 11 mph, the wheel about 12 degrees each way every 2 s - the model's request and the
+   wheel in a loop, the torque command on Toyota's rate limit 85 % of the time (0.6 s late), the model answering the
+   van's swing 0.3 s later. Upstream fixed = upstream's low-speed steering itself stops that loop on the Sienna (its
+   action floor - comma's #39182 put it at 2.5 m/s - or damping reaching 10 mph, or the Sienna's own tune): test
+   with Galaxy's Low Speed Smoothing off in stop-and-go; no wobble -> remove ours, tell the owner patch 81 was dropped.
 
 # Fork history
 
@@ -569,6 +580,18 @@ Paths are under `openpilot/` unless noted.
 46. Map speed limit beside service roads and at stops (patch 79): mapd matches the clearly nearest road on a precise
     fix instead of calling a boulevard and its service road ambiguous, and keeps the matched road while standing still
     on the phone handoff (no heading there). Our own mapd provider build ships with it (see fork fix 7).
+48. Low Speed Smoothing (patch 81, Nov 19; fork fix 8): in stop-and-go the Sienna's wheel swung back and forth (owner:
+    "zigzag, wobble, back and forth ... only in stop and go"). The model asks for the same small sideways push at every
+    speed (about 0.01 m/s2 when calm) and the curvature for it grows as 1 / speed squared, so at a crawl it needs big
+    wheel angles; the Sienna's torque may only grow 1500 units a second (panda), so the wheel came 0.6 s late, overshot,
+    and the model answered the swing. 4th-gen Sienna only (torque steering, steering possible): from the model's
+    `desiredCurvature`, corrections under 0.004 / m (an 820 ft radius) are halved below 10 mph, the halving fading out
+    by 15 mph and toward 0.012 / m (270 ft; intersection turns are 0.05 - 0.15) - a bigger request never comes out
+    smaller; nothing with a blinker on or during a lane change; a change eases in over 0.5 s. Galaxy's Driving
+    controls page has the switch "Low Speed Smoothing" under Highway Smoothing (StarView draws it by itself), default
+    On, changeable while driving. Not a param (the comma's list is compiled in): Off = /data/starview/low_speed_smoothing_off,
+    which controlsd looks at once a second from a thread of its own (`low-speed-smoothing`). Export tool for steering
+    data: starview-data `docs/tools/steer/sv_steer_export.py`. Not yet driven.
 
 **No longer carried**
 - Lane Centering with one line (patch 37, with StarView's one-line tile and blue lines): dropped by the owner at the Oct 26

@@ -1108,6 +1108,8 @@ class FeatureSettingsOwner:
         rows.append(self._turn_assist_row(configurable))
       if self._highway_smoothing_capability() is not None:
         rows.append(self._highway_smoothing_row(configurable))
+      from openpilot.starpilot.lateral import low_speed_smoothing  # tsk-go: Sienna only
+      rows.extend(low_speed_smoothing.rows(self, configurable))
       setup_row = self.controller.setup_row()
       if setup_row is not None:
         rows.append(setup_row)
@@ -1464,6 +1466,9 @@ class FeatureSettingsOwner:
       return self._apply_turn_assist(request)
     if key == "HighwaySmoothingLevel":
       return self._apply_highway_smoothing(request)
+    if key == "starview:low_speed_smoothing":  # tsk-go: Sienna only
+      from openpilot.starpilot.lateral import low_speed_smoothing
+      return low_speed_smoothing.apply(self, request)
     if key == 'LateralControllerSelection':
       return self.controller.apply(request)
     if key == SETUP_ACTION:
