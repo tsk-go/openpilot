@@ -94,6 +94,16 @@ StarView's Tools by itself through catalog.json). Upstream renamed Parked Power'
 `comma_set` follows (it was refused). Galaxy parity: rows gained `learnedValue` (Developer Parameters) and
 `acceptedFindingValue` (FLM page only), and the `selected-profile` scale - mirrored in StarView 2.90.1 (GalaxyMirror.kt,
 starview-data branch `galaxy-nov18`, waits for the owner's OK). No fork fix is fixed upstream yet.
+Nov 18 (2): synced `Dom` up to upstream `testing` `fd052d15f` (72 commits; one source conflict, modeld.py's lane-change
+call - kept upstream's forecast-confirmed turn `signal_turn` (Turn Signal Guidance on the model's turn forecast, under
+14 m/s and slowing) with our StarView inputs, and `signal_turn` / the route's turn never for a blinker the tablet holds
+with "lane" or "exit" (patch 80: at an exit's opening the forecast sees the ramp curve away and would make the move a
+turn, the exit missed); the mapd provider rebuilt from the merged source in its own commit (upstream's Canadian map
+catalog; our patch 79 kept, `go test` passes, `validate_provider` OK); no panda / safety change). Brings Cheddar as the
+shipped default driving model, highway wobble detection in Auto Learn, updater failure details, Canadian offline maps.
+Galaxy's settings pages gained a wiki guide link in their header (`wiki-links.js`): mirrored in StarView
+(`GalaxyMirror.guide`, starview-data `scene-street`, waits for the owner's OK). Galaxy parity unchanged. No fork fix is
+fixed upstream yet.
 
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
@@ -542,7 +552,8 @@ Paths are under `openpilot/` unless noted.
     changes on, a held blinker would otherwise start one after its delay - onto the shoulder), and modeld treats it
     like "lane": never a turn (Turn Signal Guidance), the lane change helper's desire. At the opening the tablet says
     "lane" on the same hold (the usual confirm: adjacent lane seen, blind spot clear, 0.5 s settle). The driver's own
-    nudge still starts a change at any time. Tests: `test_starview_signal.test_exit_signal_is_a_signal_only`,
+    nudge still starts a change at any time. Since the Nov 18 (2) sync modeld also keeps upstream's forecast turn
+    (`signal_turn`) and the route's turn away from a "lane" / "exit" hold. Tests: `test_starview_signal.test_exit_signal_is_a_signal_only`,
     `test_blinker.test_why_is_published_while_held_and_cleared_on_release`.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
