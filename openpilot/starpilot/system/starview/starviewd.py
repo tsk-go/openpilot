@@ -623,7 +623,7 @@ class PicoBlinker:
   WINDOW_KEEP_S = 1.2          # StarLock's hold-to-close: a slow Bluetooth answer shouldn't let go of the "key"
   PERIOD_S = 0.2
   SIGNAL_PATH = "/dev/shm/starview_signal"
-  WHYS = ("turn", "lane")
+  WHYS = ("turn", "lane", "exit")
 
   def __init__(self, path=None, signal_path=None):
     self.path = path
@@ -728,7 +728,7 @@ class PicoBlinker:
       if ch == "0" and self.fd is None:       # nothing open, nothing held: no need to find the Pico to let go
         self.side = "0"
         self._signal("off", "")
-        return {"ok": True, "side": "off", "signal": True}
+        return {"ok": True, "side": "off", "signal": True, "whys": list(self.WHYS)}
       self._open()
       if ch == "0":
         if self.side != "0":
@@ -742,8 +742,9 @@ class PicoBlinker:
         self.side = ch if self.fd is not None else "0"
         self.until = time.monotonic() + self.KEEP_S
         self._signal(side if self.side != "0" else "off", why)
-    # "signal": this starviewd tells desire_helper why it signals (the tablet's automatic blinker needs that)
-    return {"ok": True, "side": side if ch != "0" else "off", "signal": True}
+    # "signal": this starviewd tells desire_helper why it signals (the tablet's automatic blinker needs that); "whys":
+    # which reasons it passes on (patch 80: "exit" - a signal only, for the route's exit from our lane)
+    return {"ok": True, "side": side if ch != "0" else "off", "signal": True, "whys": list(self.WHYS)}
 
   def _run(self):
     while True:
@@ -2205,7 +2206,7 @@ class Hub:
         self.tablet_mode = bool(req.get("on", True))
         self._flag_t = 0.0
         return {"ok": True, "tablet_mode": self.tablet_mode}
-      if act == "blink":  # {"side": "left" | "right" | "off", "why"?: "turn" | "lane"} - repeated every 250 ms while held
+      if act == "blink":  # {"side": "left" | "right" | "off", "why"?: "turn" | "lane" | "exit"} - every 250 ms while held
         side = str(req.get("side", "off"))
         if self._replaying():   # a replayed drive's blinker requests never reach the relay box (or desire_helper)
           return {"ok": True, "signal": True, "replay": True, "side": side}

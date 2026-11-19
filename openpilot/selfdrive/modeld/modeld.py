@@ -597,11 +597,12 @@ def main(demo=False):
     starview_why = starview.for_blinker(sm['carState'])
     # Turn Signal Guidance (upstream) decides on any blinker under 20 mph; the tablet's map, when it has a say, whether
     # there is a street to turn into on that side (a lane change the tablet holds is never a turn)
-    tablet_turn = "no" if starview_why == "lane" else starview_turn.for_blinker(sm['carState'])
+    # (patch 80: nor is the route's exit the tablet signals for, before the ramp opens beside us)
+    tablet_turn = "no" if starview_why in ("lane", "exit") else starview_turn.for_blinker(sm['carState'])
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
                                      supported=turn_supported, model_stop=bool(prev_action.shouldStop),
                                      tablet=tablet_turn)
-    if starview_why == "lane":     # not the route's turn: keep the lane change helper's desire (TurnIntent keeps its stop latch)
+    if starview_why in ("lane", "exit"):  # not the route's turn: keep the lane change helper's desire (TurnIntent keeps its stop latch)
       desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
@@ -741,6 +742,7 @@ def main(demo=False):
                 auto_evidence=auto_ready, engaged=auto_trigger_engaged(sm, runtime_lane_policy,
                   openpilot_longitudinal=bool(CP.openpilotLongitudinalControl), now_mono_ns=mono_now_ns),
                 navigation_turn=route_turn or starview_why == "turn", starview_lane=starview_lane, starview_evidence=starview_evidence,
+                starview_hold=starview_why == "exit",
                 nudge_torque=nudge_setting.torque())
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction

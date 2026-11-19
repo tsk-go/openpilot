@@ -533,6 +533,17 @@ Paths are under `openpilot/` unless noted.
     Google short links, coordinates) for StarView's share target. `navigation/google_places.py` autocomplete sends
     `origin` and keeps `distanceMeters` / maki / category for the tablet's search list. Tests:
     `starview/tests/test_nav_google.py`. The app side: StarView 2.89.0.
+47. The route's exit taken from our own lane (patch 80, Nov 18): many exits have no exit lane - the ramp opens off the
+    edge lane for ~150 ft before the gore (the owner's exit: under 3 s at 34 mph). StarView (2.90.7) signals ~5 s
+    before the opening and lets openpilot move only inside it (RTK + map + the camera's road edge opening). For the
+    signal before the opening the tablet holds the blinker with why "exit" (`starview/blinker_signal.py` WHYS,
+    PicoBlinker.WHYS; the blink action's answer lists them in "whys" so the app knows this comma has it):
+    `desire_helper.update(starview_hold=)` lets no automatic lane change start on it (with Galaxy's automatic lane
+    changes on, a held blinker would otherwise start one after its delay - onto the shoulder), and modeld treats it
+    like "lane": never a turn (Turn Signal Guidance), the lane change helper's desire. At the opening the tablet says
+    "lane" on the same hold (the usual confirm: adjacent lane seen, blind spot clear, 0.5 s settle). The driver's own
+    nudge still starts a change at any time. Tests: `test_starview_signal.test_exit_signal_is_a_signal_only`,
+    `test_blinker.test_why_is_published_while_held_and_cleared_on_release`.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
 12. Chestnut big model compiles every start (patches 14, 16): `starpilot/models/program_cache.py`, `load_profile.py`,

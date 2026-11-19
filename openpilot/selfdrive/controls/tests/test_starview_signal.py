@@ -98,6 +98,30 @@ def test_route_turn_signal_is_never_a_lane_change():
   assert run(h, left, 3, navigation_turn=True) == LCS.off
 
 
+def test_exit_signal_is_a_signal_only():
+  # fork patch 80: the route's exit taken from our own lane - the tablet signals before the ramp opens beside us. Even
+  # with automatic lane changes on and a lane seen there (a wide shoulder), nothing starts until the tablet says "lane"
+  # at the opening; the driver's own nudge still does
+  auto = LaneChangePolicy(auto_lane_change=True, auto_delay_s=0.5)
+  right = car(rightBlinker=True)
+  h = DesireHelper(auto)
+  run(h, right)
+  assert run(h, right, 100, auto_evidence=True, starview_hold=True) == LCS.preLaneChange
+  assert run(h, right, SETTLE_FRAMES - 1, **CONFIRMED) == LCS.preLaneChange
+  assert run(h, right, 2, **CONFIRMED) == LCS.laneChangeStarting
+  assert h.desire == log.Desire.laneChangeRight
+  # the same held blinker without the hold: the automatic lane change starts by itself (as before)
+  h = DesireHelper(auto)
+  run(h, right)
+  assert run(h, right, round(0.5 / DT_MDL) + 2, auto_evidence=True) == LCS.laneChangeStarting
+  # a nudge during the hold: the driver decides
+  h = DesireHelper(auto)
+  run(h, right)
+  run(h, right, 10, auto_evidence=True, starview_hold=True)
+  assert run(h, car(rightBlinker=True, steeringPressed=True, steeringTorque=-1.0), auto_evidence=True,
+             starview_hold=True) == LCS.laneChangeStarting
+
+
 def test_signal_file(tmp_path):
   now = [100.0]
   sig = StarViewSignal(str(tmp_path / "starview_signal"), clock=lambda: now[0])
@@ -113,6 +137,9 @@ def test_signal_file(tmp_path):
   tmp.write_text("turn right 101.400")
   tmp.replace(tmp_path / "starview_signal")                                # starviewd's os.replace: new inode
   assert sig.for_blinker(car(rightBlinker=True)) == "turn"
+  tmp.write_text("exit right 101.400")
+  tmp.replace(tmp_path / "starview_signal")
+  assert sig.for_blinker(car(rightBlinker=True)) == "exit"
   for junk in ("", "lane", "honk left 101.4", "lane up 101.4", "lane left soon"):
     tmp.write_text(junk)
     tmp.replace(tmp_path / "starview_signal")

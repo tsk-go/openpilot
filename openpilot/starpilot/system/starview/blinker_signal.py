@@ -6,6 +6,9 @@ every 250 ms, removed on release. why:
   lane  a lane change the driver confirmed on the tablet (tap, steering nudge, or the automatic countdown): starts it
         without a further nudge, once per blinker hold, only with an adjacent lane seen (same check as automatic lane
         changes) and the blind spot clear
+  exit  the route's exit taken from our own lane, before the ramp opens beside us (fork patch 80): a signal only - no
+        automatic lane change and never a turn, while the tablet waits for the opening (then it says "lane"); the
+        driver's own nudge still starts the change
 Older than MAX_AGE = starviewd or the tablet is gone: ignored.
 """
 import os
@@ -13,7 +16,7 @@ import time
 
 PATH = "/dev/shm/starview_signal"
 MAX_AGE = 1.0
-WHYS = ("turn", "lane")
+WHYS = ("turn", "lane", "exit")
 
 
 class StarViewSignal:

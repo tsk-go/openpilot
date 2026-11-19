@@ -42,12 +42,14 @@ class DesireHelper:
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
   def update(self, carstate, lateral_active, lane_change_prob, *, auto_evidence=False, engaged=False, navigation_turn=False,
-             starview_lane=False, starview_evidence=False, nudge_torque=None):
+             starview_lane=False, starview_evidence=False, starview_hold=False, nudge_torque=None):
     """starview_lane: StarView's tablet holds this blinker for a lane change the driver confirmed there (tap, nudge or
     its countdown; starpilot/system/starview/blinker_signal.py). It stands in for the nudge once per blinker hold, when
     starview_evidence (the adjacent lane, as for an automatic lane change) and a clear blind spot have held for
     STARVIEW_SETTLE_S, within STARVIEW_CONFIRM_MAX_S. Confirmed while openpilot wasn't steering, or with the blind spot
     occupied: void (the driver nudges, or confirms again).
+    starview_hold (fork patch 80): the tablet holds this blinker as a signal only - the route's exit from our own lane,
+    before the ramp opens beside us: no automatic lane change starts on it (a nudge still does).
     nudge_torque: StarView's nudge strength in the car's torque units; None = the stock steeringPressed rule."""
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
@@ -101,12 +103,12 @@ class DesireHelper:
         blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
                               (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
         if not (self.policy.auto_lane_change and engaged and auto_evidence and not blindspot_detected and
-                not self.auto_signal_blocked):
+                not self.auto_signal_blocked and not starview_hold):
           self.pre_lane_change_timer = 0.0
         else:
           self.pre_lane_change_timer += DT_MDL
         auto_ready = (self.policy.auto_lane_change and engaged and auto_evidence and not self.auto_signal_blocked and
-                      self.pre_lane_change_timer >= self.policy.auto_delay_s)
+                      not starview_hold and self.pre_lane_change_timer >= self.policy.auto_delay_s)
         if blindspot_detected:
           self.auto_status = "blindspotBlocked"
         elif self.policy.auto_lane_change and engaged:

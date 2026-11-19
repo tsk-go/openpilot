@@ -89,6 +89,11 @@ def test_why_is_published_while_held_and_cleared_on_release(tmp_path):
   assert float(sig.read_text().split()[2]) > float(t0)
   b.set("right", "turn")
   assert sig.read_text().split()[:2] == ["turn", "right"]
+  assert "exit" in PicoBlinker("/nonexistent").set("off")["whys"]        # the tablet asks with nothing held
+  r = b.set("right", "exit")               # patch 80: the route's exit from our lane, a signal only until the opening
+  assert sig.read_text().split()[:2] == ["exit", "right"] and "exit" in r["whys"]
+  b.set("right", "lane")                   # ... then the tablet says go, on the same hold
+  assert sig.read_text().split()[:2] == ["lane", "right"]
   b.set("off")
   assert not sig.exists()
   _read(master)
