@@ -566,9 +566,10 @@ class SelfdriveD:
 
     from openpilot.starpilot.car.hyundai.aol import source_deadline_supported
     input_proof = getattr(self, 'aol_step_input_proof', None)
+    from opendbc.car.mazda.stock_aol import qualified as qualified_mazda
     reconcile_input = bool(input_proof is not None and not REPLAY and self.aol_replay and self.axis_transport_required and
                            (source_deadline_supported(self.CP) or self.ford_source_deadline_supported() or
-                            getattr(self, 'hybrid_input_reconcile', False)) and
+                            qualified_mazda(self.CP, marked_only=True) or getattr(self, 'hybrid_input_reconcile', False)) and
                            input_proof[0] == self.aol_session_id and
                            (input_proof[8] or input_proof[9]))
     self.aol_event_input_reconcile = reconcile_input
@@ -1551,6 +1552,13 @@ class SelfdriveD:
       if physical_cancel_lateral_allowed(self.CP, CS, intent, native, settings=self.aol_settings,
           previous=decision, source_ns=source_ns, now_ns=now_ns, axis_session_id=self.aol_session_id):
         user_disable = any(event.userDisable and event.name != EventName.buttonCancel for event in self.events.to_msg())
+    if user_disable and fresh_successor and self.CP.brand == 'honda':
+      from openpilot.starpilot.car.honda.aol import physical_cancel_lateral_allowed
+      native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
+      if physical_cancel_lateral_allowed(self.CP, CS, intent, native, settings=self.aol_settings,
+          previous=decision, source_ns=source_ns, now_ns=now_ns, axis_session_id=self.aol_session_id,
+          cancel_samples=getattr(self, 'car_state_envelopes', ())):
+        user_disable = any(event.userDisable and event.name != EventName.buttonCancel for event in self.events.to_msg())
     if user_disable and fresh_successor and self.ford_source_deadline_supported():
       from openpilot.starpilot.car.ford.aol import physical_cancel_lateral_allowed
       native = current_native(self.sm, self.CP, now_ns=now_ns, axis_session_id=self.aol_session_id)
@@ -1892,7 +1900,8 @@ class SelfdriveD:
                              honda_cancel_lateral_allowed(self.CP, CS, intent, native,
                                settings=self.aol_settings, previous=getattr(self, 'aol_axis_decision', None),
                                source_ns=getattr(self, 'aol_car_state_log_ns', 0), now_ns=now_ns,
-                               axis_session_id=getattr(self, 'aol_session_id', '')) or
+                               axis_session_id=getattr(self, 'aol_session_id', ''),
+                               cancel_samples=getattr(self, 'car_state_envelopes', ())) or
                              mazda_cancel_lateral_allowed(self.CP, CS, intent, native,
                                settings=self.aol_settings, previous=getattr(self, 'aol_axis_decision', None),
                                source_ns=getattr(self, 'aol_car_state_log_ns', 0), now_ns=now_ns,
@@ -2055,7 +2064,8 @@ class SelfdriveD:
     # Ioniq6 also checks the physical brake before its separately published host sample.
     # Retain only its already granted LAT; all proof, health and LONG withdrawal gates remain.
     # The exact vehicle policies and all proof/health checks above remain required.
-    return bool(ordinary_ford or gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
+    return bool(ordinary_ford or honda_aol_qualified(self.CP, marked_only=True) or
+                gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
                 early_native_long_withdrawal_supported(self.CP) or
                 toyota_longitudinal or
                 not native.pandaInventory[owners[0]].controlsAllowed and

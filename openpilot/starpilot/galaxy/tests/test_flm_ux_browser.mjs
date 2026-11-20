@@ -209,23 +209,22 @@ async function command(path, body = {}, method = 'POST', requestMs = 8000) {
 }
 const execute = (script, ...args) => command(`/session/${session}/execute/sync`, { script, args })
 const click = async selector => {
-  await execute(`const e=document.querySelector(arguments[0]);if(!e)throw new Error('Missing click target');
+  const { element, ...hitTest } = await execute(`const e=document.querySelector(arguments[0]);if(!e)throw new Error('Missing click target');
     e.scrollIntoView({block:'center',behavior:'instant'});
     const header=document.querySelector('.gx-appbar').getBoundingClientRect(),nav=document.querySelector('.gx-tuner__tabs').getBoundingClientRect(),footer=document.querySelector('.blur-nav'),fr=footer.getBoundingClientRect();
     const top=(e.closest('.gx-tuner__tabs')?header.bottom:Math.max(header.bottom,nav.top<innerHeight?nav.bottom:0))+8;
     const bottom=getComputedStyle(footer).position==='fixed'&&getComputedStyle(footer).display!=='none'&&fr.height>0?Math.min(innerHeight,fr.top):innerHeight;
-    const r=e.getBoundingClientRect();window.scrollBy({top:r.top+r.height/2-(top+bottom)/2,behavior:'instant'});`,selector)
-  const hitTest=await execute(`const e=document.querySelector(arguments[0]),r=e.getBoundingClientRect(),h=document.querySelector('.gx-appbar').getBoundingClientRect(),n=document.querySelector('.gx-tuner__tabs').getBoundingClientRect(),f=document.querySelector('.blur-nav'),fr=f.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
-    const bottom=getComputedStyle(f).position==='fixed'&&getComputedStyle(f).display!=='none'&&fr.height>0?Math.min(fr.top,innerHeight):innerHeight;return {clear:r.top>=Math.max(h.bottom,e.closest('.gx-tuner__tabs')?0:n.top<innerHeight?n.bottom:0)&&r.bottom<=bottom&&r.left>=0&&r.right<=innerWidth&&(hit===e||e.contains(hit)),target:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},headerBottom:h.bottom,tabsBottom:n.bottom,footerDisplay:getComputedStyle(f).display,footerPosition:getComputedStyle(f).position,availableBottom:bottom,hit:hit?.tagName}`,selector)
+    let r=e.getBoundingClientRect();window.scrollBy({top:r.top+r.height/2-(top+bottom)/2,behavior:'instant'});
+    r=e.getBoundingClientRect();const h=document.querySelector('.gx-appbar').getBoundingClientRect(),n=document.querySelector('.gx-tuner__tabs').getBoundingClientRect(),f=document.querySelector('.blur-nav'),finalFooter=f.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+    const availableBottom=getComputedStyle(f).position==='fixed'&&getComputedStyle(f).display!=='none'&&finalFooter.height>0?Math.min(finalFooter.top,innerHeight):innerHeight;
+    return {element:e,clear:r.top>=Math.max(h.bottom,e.closest('.gx-tuner__tabs')?0:n.top<innerHeight?n.bottom:0)&&r.bottom<=availableBottom&&r.left>=0&&r.right<=innerWidth&&(hit===e||e.contains(hit)),target:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},headerBottom:h.bottom,tabsBottom:n.bottom,footerDisplay:getComputedStyle(f).display,footerPosition:getComputedStyle(f).position,availableBottom,hit:hit?.tagName}`,selector)
   assert(hitTest.clear,selector+': user-scrollable target must be fully visible and unobstructed before a native click: '+JSON.stringify(hitTest))
-  const node=await command(`/session/${session}/element`,{using:'css selector',value:selector})
-  await command(`/session/${session}/element/${node['element-6066-11e4-a52e-4f735466cecf']}/click`)
+  await command(`/session/${session}/element/${element['element-6066-11e4-a52e-4f735466cecf']}/click`)
 }
 async function clickVisible(selector) {
-  const visible = await execute('const e=document.querySelector(arguments[0]);const r=e.getBoundingClientRect();const h=document.querySelector(".gx-appbar").getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {clear:r.top>=h.bottom&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth&&(hit===e||e.contains(hit)),top:r.top,header:h.bottom}', selector)
+  const { element, ...visible } = await execute('const e=document.querySelector(arguments[0]);const r=e.getBoundingClientRect();const h=document.querySelector(".gx-appbar").getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {element:e,clear:r.top>=h.bottom&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth&&(hit===e||e.contains(hit)),top:r.top,header:h.bottom}', selector)
   assert(visible.clear, selector + ': must be visible below the real header and pass hit testing without forced scrolling')
-  const node = await command(`/session/${session}/element`, { using: 'css selector', value: selector })
-  await command(`/session/${session}/element/${node['element-6066-11e4-a52e-4f735466cecf']}/click`)
+  await command(`/session/${session}/element/${element['element-6066-11e4-a52e-4f735466cecf']}/click`)
 }
 async function change(name, options = {}) {
   await until(() => execute('return !window.flm.request'))
@@ -267,7 +266,8 @@ async function layout(label) {
 }
 async function show(selector) { await execute('document.querySelector(arguments[0]).scrollIntoView({block:"center",behavior:"instant"})', selector) }
 async function capture(name) {
-  const base64 = await command(`/session/${session}/screenshot`, {}, 'GET')
+  const { data: base64 } = await command(`/session/${session}/goog/cdp/execute`, { cmd: 'Page.captureScreenshot',
+    params: { format: 'png', captureBeyondViewport: false, optimizeForSpeed: true } })
   screenshots.push({ name, png_base64: base64 })
 }
 let failure = null
@@ -700,6 +700,7 @@ try {
   console.log(`Real Chromium FLM UI: ${checks.length} responsive/theme/state checks, 5 findings/7 destinations, parked save/reset, driving lockout, errors and retained evidence passed`)
 } catch (error) {
   failure = error.stack
+  console.error(failure)
   if (session) { try { await capture('failure') } catch {} }
   throw error
 } finally {
@@ -730,5 +731,5 @@ try {
   result.flmUxBrowser.cleanup = { driver_exit_code: driver.exitCode, driver_signal: driver.signalCode, driver_reaped: !running(driver), server_closed: !server.listening }
   await writeFile(output, JSON.stringify(result))
   console.log('FLM browser cleanup:', JSON.stringify(result.flmUxBrowser.cleanup))
-  await rm(profile, { recursive: true, force: true })
+  await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
 }
