@@ -37,13 +37,14 @@
 
 # Syncing upstream
 
-"Sync" means: merge https://github.com/StarPilotHQ/StarPilot branch `testing` into this repo's `Dom` with a merge commit
+"Sync" means: merge https://github.com/StarPilotHQ/StarPilot branch `testing` into this repo's `testing` with a merge commit
 (`git fetch https://github.com/StarPilotHQ/StarPilot.git testing && git merge --no-edit -m "Merge upstream StarPilot
 testing" FETCH_HEAD`), then a normal push. Nov 17: upstream renamed `Dom` to `testing` (and `StarPilot` to `stable`);
 its `Dom` ends at `2c9a556f5` "Branch-Migration: Dom -> testing", whose `scripts/branch_migration.py` (run by
 launch_chffrplus.sh at every start) moves a comma from `Dom` to `testing` - but only when the installed commit is that
-exact migration commit, so on our merges it does nothing ("not migration release") and the comma stays on our `Dom`.
-This repo's branch keeps its name `Dom`. firestar's repo moved from firestar5683/StarPilot to StarPilotHQ/StarPilot (the old
+exact migration commit, so on our merges it does nothing ("not migration release") and the comma stays on our branch.
+Nov 19: the owner renamed this repo's `Dom` to `testing` too (GitHub, same commit `bb205c53b`; now the default branch)
+and pointed the comma at it (`UpdaterTargetBranch` = `testing`). The lines below that say `Dom` mean this branch. firestar's repo moved from firestar5683/StarPilot to StarPilotHQ/StarPilot (the old
 address still redirects). Oct 29: firestar folded `SecretGoodStarPilot` into `Dom` and deleted it, so this repo's
 `Dom` branch was started from `SecretGoodStarPilot_v2` (all our patches through 57) and syncs from `Dom` now;
 `SecretGoodStarPilot_v2` and `SecretGoodStarPilot_v2-pre-oct26` are kept as they were and no longer synced.
@@ -137,7 +138,7 @@ After every sync, port to StarView whatever Galaxy gained - new settings, pages,
 owner first (owner, Nov 16: "Whatever was added to Galaxy should be added also automatically to the app, I don't need to
 ask for it every single time"). Galaxy's setting rows already reach the tablet by themselves (StarView draws Galaxy's
 catalog) and its tool pages open inside StarView (Tools); what needs porting is what StarView does natively instead of
-Galaxy (navigation, the map, search, sharing...). The comma side goes to `Dom` like any patch; the app work goes on a
+Galaxy (navigation, the map, search, sharing...). The comma side goes to `testing` like any patch; the app work goes on a
 starview-data side branch, and the release itself still waits for the owner's OK.
 After the merge, run `pytest openpilot/starpilot/system/starview/tests/test_galaxy_parity.py`. It fails when Galaxy
 changed how its settings rows are presented (galaxy-setting-row.js, a new displayScale, new row fields). StarView draws
