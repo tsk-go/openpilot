@@ -106,6 +106,14 @@ Galaxy's settings pages gained a wiki guide link in their header (`wiki-links.js
 (`GalaxyMirror.guide`, starview-data `scene-street`, waits for the owner's OK). Galaxy parity unchanged. No fork fix is
 fixed upstream yet.
 
+Nov 20: synced `testing` up to upstream `testing` `6709d6743` (66 commits; no source conflicts - only the panda
+images, rebuilt from the merged source: they differ from ours only in the version string and the signature, upstream's
+safety changes this time are tests; mapd untouched). Brings Galaxy's Developer page (Longitudinal options and Device
+resets folded into it, plus "Speed display adjustment" for the comma's own speed number), the time zone set from GPS,
+AGNOS download progress in the updater (stage "agnos" with a percent), phone hotspots joined while driving, and the
+comma screen's Connections and JetLink widgets. Galaxy parity unchanged. No fork fix is fixed upstream yet. Tests here:
+492 of ours pass; two upstream navigation tests need the compiled longitudinal solver (x86 has none).
+
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
 and the sunnypilot network's LFS budget was used up; in firestar's network every LFS file of his history is already
