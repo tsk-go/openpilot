@@ -65,8 +65,7 @@
     "has_ab": true,
     "ondevice_hash": "34ecc151021d8cb9e15e92ff902547d9216cb366bfff5eaa3a3139348200ab7d",
     "fallback_urls": [
-      "https://files-east.firestar.link/x/av9zrb13ihb4/boot-8b7859e452ee2e8c1f0ea4bb2b2512200bfbdef0177414580d7cb75aac976200.img.xz",
-      "https://www.dropbox.com/scl/fi/mfjsu5qgbbporzfnmaw5g/boot-8b7859e452ee2e8c1f0ea4bb2b2512200bfbdef0177414580d7cb75aac976200.img.xz?rlkey=6kjdzfdtdlycznwaevdrxfz1u&st=2s6qd7or&dl=1"
+      "https://files-east.firestar.link/x/av9zrb13ihb4/boot-8b7859e452ee2e8c1f0ea4bb2b2512200bfbdef0177414580d7cb75aac976200.img.xz"
     ]
   },
   {
@@ -80,8 +79,7 @@
     "has_ab": true,
     "ondevice_hash": "b1356c5b871874982830dbf8f21052fe76a802c07650627ae804c98cf1892aa8",
     "fallback_urls": [
-      "https://files-east.firestar.link/x/av9zrb13ihb4/system-a92ee01f653a56bc3cf034ec9f6609894004ee4aa75b12a427b1d4c530011dbf.img.xz",
-      "https://www.dropbox.com/scl/fi/hr37kqnkb6lna2soc1iqt/system-a92ee01f653a56bc3cf034ec9f6609894004ee4aa75b12a427b1d4c530011dbf.img.xz?rlkey=5nl4qw752dcloosspfztperxr&st=7jtrcs4x&dl=1"
+      "https://files-east.firestar.link/x/av9zrb13ihb4/system-a92ee01f653a56bc3cf034ec9f6609894004ee4aa75b12a427b1d4c530011dbf.img.xz"
     ]
   }
 ]
