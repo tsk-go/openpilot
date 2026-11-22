@@ -98,6 +98,23 @@ def test_route_turn_signal_is_never_a_lane_change():
   assert run(h, left, 3, navigation_turn=True) == LCS.off
 
 
+def test_route_turns_wait_for_automatic_turn_initiation():
+  # Nov 22 sync: upstream made automatic turns their own switch (Galaxy's Automatic Turn Initiation, off by default);
+  # the owner chose that the tablet's "turn" (its blinker at the route's turn) follows it too. modeld's main loop isn't
+  # callable here, so its two route-turn inputs are read from the source.
+  import ast
+  from pathlib import Path
+  src = (Path(__file__).resolve().parents[2] / "modeld" / "modeld.py").read_text()
+  tree = ast.parse(src)
+  assigned = {node.targets[0].id: ast.unparse(node.value) for node in ast.walk(tree)
+              if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)}
+  assert "navigation_turn.automatic_turn_enabled" in assigned["tablet_route_turn"]
+  assert "supported=navigation_turn.automatic_turn_enabled" in assigned["route_turn"]
+  update = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "DH.update")
+  turn = next(kw for kw in update.keywords if kw.arg == "navigation_turn")
+  assert ast.unparse(turn.value) == "signal_turn or route_turn or tablet_route_turn"
+
+
 def test_exit_signal_is_a_signal_only():
   # fork patch 80: the route's exit taken from our own lane - the tablet signals before the ramp opens beside us. Even
   # with automatic lane changes on and a lane seen there (a wide shoulder), nothing starts until the tablet says "lane"

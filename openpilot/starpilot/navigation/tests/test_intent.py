@@ -226,7 +226,7 @@ def test_native_navigation_approach_has_braking_capacity_without_changing_cruise
 def _guided(on=True):
   from openpilot.starpilot.navigation.intent import TurnIntent
   owner = TurnIntent()
-  owner.guidance = NS(sample=lambda *a, **k: NS(turn_signal_guidance=on))
+  owner.guidance = NS(sample=lambda *a, **k: on)   # Automatic Turn Initiation (upstream's own switch since Nov 20)
   owner.steering_capable = True
   sm = {'carState': NS(canValid=True, canTimeout=False, gearShifter='drive', vEgo=5., standstill=False,
                        leftBlinker=True, rightBlinker=False, leftBlindspot=False, rightBlindspot=False),
