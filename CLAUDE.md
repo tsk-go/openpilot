@@ -114,7 +114,7 @@ AGNOS download progress in the updater (stage "agnos" with a percent), phone hot
 comma screen's Connections and JetLink widgets. Galaxy parity unchanged. No fork fix is fixed upstream yet. Tests here:
 492 of ours pass; two upstream navigation tests need the compiled longitudinal solver (x86 has none).
 
-Nov 22: synced `testing` up to upstream `testing` `73e593514` (103 commits; three source conflicts, both sides kept:
+Nov 22: synced `testing` up to upstream `testing` `73e593514` (103 commits, then `91683efbf` in a second merge; three source conflicts, both sides kept:
 longitudinal_planner.py - upstream's longitudinal developer tuning (`developer_tuning`: delay, stop speed, max accel)
 with our `Advice`; intent.py - upstream's new opt-in for automatic turns (`5a88d1c7c`: Galaxy's "Automatic Turn
 Initiation", its own saved key `AutomaticTurnInitiation`, off by default, never taken from the old Turn Signal
@@ -127,7 +127,9 @@ image except the version and signature, ours is 216 bytes bigger (the Toyota doo
 AGNOS 20.5.4 and version 7.0.1, AGNOS images from Dropbox first with firestar's hosts as fallback - but Dropbox
 disabled those shared links within the day ("Link Temporarily Disabled": an HTML page instead of the image) and the
 downloader of the code an update replaces only tries the first URL, so commas on older code failed the AGNOS step
-(upstream users on Discord, Nov 22) - patch 83 puts firestar's host first (fork fix 9), longitudinal developer tuning and steering controller choices
+(upstream users on Discord, Nov 22); patch 83 put firestar's host first, then upstream's `91683efbf` "Restore the two
+Firestar AGNOS mirrors" did the same and dropped Dropbox altogether (the second merge took upstream's manifests), so
+patches 82 and 83 were removed before anything was pushed; longitudinal developer tuning and steering controller choices
 in Developer Parameters, an optional vehicle-minimum cruise start, speed-limit confirmations kept through map
 dropouts, FLM analysis while forced offroad, tici NVMe storage in Galaxy. Galaxy parity: rows gained
 `coordinateLocked` / `learningEligible` - the FLM page's manual coordinates again, which StarView doesn't draw, so
@@ -256,15 +258,6 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    van's swing 0.3 s later. Upstream fixed = upstream's low-speed steering itself stops that loop on the Sienna (its
    action floor - comma's #39182 put it at 2.5 m/s - or damping reaching 10 mph, or the Sienna's own tune): test
    with Galaxy's Low Speed Smoothing off in stop-and-go; no wobble -> remove ours, tell the owner patch 81 was dropped.
-
-9. **AGNOS images from a disabled Dropbox link** (patch 83): in `openpilot/common/hardware/comma/agnos.json` and
-   `agnos-c3.json` the boot and system images' `url` is files.firestar.link and Dropbox is the last of the
-   `fallback_urls` (upstream `0db704125` "Prefer Dropbox for AGNOS downloads" put it first); test
-   `test_agnos_images_come_from_firestar_first` in `starview/tests/test_offline.py`. Dropbox answers a busy shared link
-   with "Link Temporarily Disabled" (HTML, 200), and a comma updating from code before upstream's failover (`2cf77aa2d`,
-   Nov 21) tries only the first URL. At every sync that changes the manifests: take upstream's image entries (new
-   hashes, sizes, URLs) and put a non-Dropbox URL first again. Upstream fixed = its manifests no longer have Dropbox
-   first (then drop our reorder and the test, tell the owner patch 83 was dropped).
 
 # Fork history
 
@@ -516,10 +509,6 @@ Paths are under `openpilot/` unless noted.
     Patch 63: commadist.azureedge.net is Azure Front Door and changed address within a minute (150.171.109.118, then
     .72), so per-address rules never kept up; its anycast blocks UPDATE4 (150.171.0.0/16, 13.107.0.0/16) are let
     through whole, like CloudFront's for Mapbox.
-    Patch 82 (Nov 22 sync): upstream fetches the AGNOS boot and system images from Dropbox first (`0db704125`), and
-    www.dropbox.com hands each file to a host of its own (uc<random>.dl.dropboxusercontent.com) no lookup can know
-    ahead; Dropbox's own block `DROPBOX4` (162.125.0.0/16, AS19679) is in UPDATE4 now. Test:
-    `test_agnos_from_dropbox_and_its_download_host_get_through`.
 40. USB hub power follows the car (patch 65): with the car off the hub's own supply is off, so the hub ran on the
     comma's USB-C 5 V - tablet charging, radio dongle, RTK, Pico - from the car battery until the comma's low-voltage
     shutdown, and again after every wake. The comma switches its port's 5 V itself: the PMIC OTG regulator
@@ -640,12 +629,12 @@ Paths are under `openpilot/` unless noted.
     On, changeable while driving. Not a param (the comma's list is compiled in): Off = /data/starview/low_speed_smoothing_off,
     which controlsd looks at once a second from a thread of its own (`low-speed-smoothing`). Export tool for steering
     data: starview-data `docs/tools/steer/sv_steer_export.py`. Not yet driven.
-49. AGNOS images from firestar's host first (patch 83, Nov 22; fork fix 9): Dropbox disabled upstream's shared links
-    for the AGNOS boot and system images the day they went first in the manifest, and an update's AGNOS step runs the
-    old code's downloader, which tries only the first URL. Both manifests now list files.firestar.link first,
-    files-east.firestar.link next and Dropbox last; the images and hashes are upstream's.
 
 **No longer carried**
+- AGNOS downloads from Dropbox (patches 82 and 83, Nov 22, never pushed): upstream `0db704125` put Dropbox first for
+  the AGNOS boot and system images and Dropbox disabled those links the same day ("Link Temporarily Disabled"); 82 let
+  Dropbox's block (162.125.0.0/16) through offline mode, 83 put files.firestar.link first. Upstream `91683efbf`
+  "Restore the two Firestar AGNOS mirrors" went back to firestar's two hosts only, so both were removed.
 - Lane Centering with one line (patch 37, with StarView's one-line tile and blue lines): dropped by the owner at the Oct 26
   sync for upstream's own single-line tracking (firestar `d59a37d3` "Track single lane lines with smooth transitions and
   predicted clearance", `8a5fbf0b`, `35f62c3c`, `8807d791`). /data/starview/lane_one_line is no longer read.
