@@ -287,3 +287,18 @@ def test_agnos_update_servers_get_through(ip, tmp_path):
   assert offline.update_allow() == 0                     # nothing new: nothing added
   offline.off()
   assert offline.update_allow() == 0 and ip.rules == {"-4": [], "-6": []}
+
+
+def test_agnos_from_dropbox_and_its_download_host_get_through(ip, tmp_path):
+  # upstream's manifest names Dropbox first; the file itself comes from a uc<random>.dl.dropboxusercontent.com host
+  (tmp_path / "agnos.json").write_text(json.dumps([{"url": "https://www.dropbox.com/scl/fi/a/boot.img.xz?dl=1",
+                                                    "alternatives": ["https://files.firestar.link/x/a/boot.img.xz"]}]))
+  assert "www.dropbox.com" in offline.update_hosts()
+  ip.addrs["www.dropbox.com"] = ["162.125.3.18"]
+  offline.on()
+  assert "to 162.125.0.0/16 lookup main" in ip.prio(9000)
+  assert "to 162.125.3.18/32 lookup main" not in ip.prio(9000)      # inside Dropbox's block already
+  assert offline.update_allow() == 0
+  offline.off()
+  # nothing of it stays once offline mode is off
+  assert ip.rules == {"-4": [], "-6": []}

@@ -88,7 +88,11 @@ GITHUB_HOSTS = ["github.com", "codeload.github.com", "objects.githubusercontent.
 UPDATE_HOSTS = ["commadist.azureedge.net", "files.firestar.link", "files-east.firestar.link"]
 # commadist.azureedge.net is Microsoft's Azure Front Door: a different address within a minute (150.171.109.118, then
 # .72), so lookups never keep up - its anycast blocks are let through whole, like CloudFront's for Mapbox.
-UPDATE4 = ["150.171.0.0/16", "13.107.0.0/16"]
+# Since the Nov 22 sync AGNOS images come from Dropbox first (upstream "Prefer Dropbox for AGNOS downloads"):
+# www.dropbox.com sends every file on to a host of its own (uc<random>.dl.dropboxusercontent.com) that no lookup
+# can know ahead - both live in Dropbox's own block (AS19679), let through whole too.
+DROPBOX4 = ["162.125.0.0/16"]
+UPDATE4 = ["150.171.0.0/16", "13.107.0.0/16"] + DROPBOX4
 AGNOS_MANIFEST = "/data/openpilot/openpilot/system/hardware/tici/agnos.json"
 # Mapbox (maps, routes with live traffic, search, road tiles - all api.mapbox.com) sits behind Amazon CloudFront: its
 # address changes every minute and by location, so CloudFront's published ranges are allowed.
