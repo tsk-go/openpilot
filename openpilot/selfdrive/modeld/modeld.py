@@ -732,7 +732,7 @@ def main(demo=False):
       signal_turn = navigation_turn.signal_model.observe(
         sm, modelv2_send.modelV2, model_ns=int(modelv2_send.logMonoTime), now_ns=mono_now_ns, now_boot_ns=boot_now_ns,
         valid=bool(modelv2_send.valid), enabled=bool(turn_supported and navigation_turn.steering_capable and
-                                                  runtime_lane_policy.turn_signal_guidance),
+                                                  navigation_turn.automatic_turn_enabled),
         clock_skew_ns=clock_skew_ns, lane_change_state=DH.lane_change_state)
       engaged = bool(sm['carControl'].latActive)
       # a lane change confirmed on StarView's tablet starts with the same adjacent-lane check as an automatic one
@@ -742,15 +742,18 @@ def main(demo=False):
                            auto_evidence(sm, modelv2_send.modelV2, direction, runtime_lane_policy.minimum_lane_width_m,
                                          now_mono_ns=mono_now_ns, now_boot_ns=boot_now_ns,
                                          model_valid=bool(modelv2_send.valid), vehicle_capable=auto_vehicle_capable))
-      route_turn = matching_turn_signal(sm, mono_now_ns, supported=turn_supported) and starview_why not in ("lane", "exit")
+      route_turn = (matching_turn_signal(sm, mono_now_ns, supported=navigation_turn.automatic_turn_enabled) and
+                    starview_why not in ("lane", "exit"))
       # upstream's forecast-confirmed turn neither, for a blinker the tablet holds for a lane change or the route's exit
       # from our lane (patch 80): at an exit's opening, slowing, the forecast sees the ramp curve away and would make the
       # move a "turn" - no lane change, the exit missed
       signal_turn = signal_turn and starview_why not in ("lane", "exit")
+      # the tablet's "turn" (its blinker at the route's turn) follows Galaxy's Automatic Turn Initiation like upstream's
+      tablet_route_turn = starview_why == "turn" and navigation_turn.automatic_turn_enabled
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=auto_trigger_engaged(sm, runtime_lane_policy,
                   openpilot_longitudinal=bool(CP.openpilotLongitudinalControl), now_mono_ns=mono_now_ns),
-                navigation_turn=signal_turn or route_turn or starview_why == "turn", starview_lane=starview_lane,
+                navigation_turn=signal_turn or route_turn or tablet_route_turn, starview_lane=starview_lane,
                 starview_evidence=starview_evidence, starview_hold=starview_why == "exit",
                 nudge_torque=nudge_setting.torque())
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state

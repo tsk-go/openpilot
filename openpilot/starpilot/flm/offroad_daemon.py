@@ -15,6 +15,10 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.flm.training_report import report_path, READ_MAX_BYTES, _report_bounded
 
+REVIEW_FIELDS = ('completed_route', 'vehicle', 'analysis_counts', 'recorded_tracking', 'source_sha256', 'assessment_sha256',
+                'recommendations', 'suggestions', 'suggestion_count', 'source_is_latest', 'latest_recording', 'skipped_routes',
+                'partial_drive', 'partial_segments', 'omitted_segments', 'recommendation_sources', 'recommendation_assessments')
+
 
 class StatusReport:
   def __init__(self, *, path=None, clock_ns=time.monotonic_ns):
@@ -27,6 +31,11 @@ class StatusReport:
     self.diagnostics = None
 
   def set(self, value, *, diagnostic_value=None):
+    review = value.get('pending_review', self.previous)
+    if value.get('status') == 'unavailable' and not value.get('completed_route') and type(review) is dict and review:
+      diagnostic_value = value if diagnostic_value is None else diagnostic_value
+      value = {**{key: review[key] for key in REVIEW_FIELDS if key in review}, **value,
+               'retained_analysis': False, 'retained_decision': review.get('reason', 'waiting_for_completed_drive')}
     changed = (self.current.get('status'), self.current.get('reason')) != (value.get('status'), value.get('reason'))
     self.current = dict(value)
     if self.diagnostics is not None:
@@ -34,7 +43,7 @@ class StatusReport:
         self.diagnostics.observe(value if diagnostic_value is None else diagnostic_value)
       except (OSError, ValueError, TypeError, AttributeError) as error:
         self.diagnostics.error = f'Diagnostic state could not be recorded: {type(error).__name__}'
-    if value.get('completed_route') and value.get('status') != 'fitting':
+    if value.get('completed_route') and value.get('status') not in ('fitting', 'unavailable'):
       self.previous = dict(value)
     if changed:
       self.next_ns = 0
@@ -42,10 +51,7 @@ class StatusReport:
   def analyzing(self, value):
     # Keep the last completed findings and saved values readable during a fit.
     # They are historical display data, never current application or permission.
-    fields = ('completed_route', 'vehicle', 'analysis_counts', 'recorded_tracking', 'source_sha256', 'assessment_sha256',
-              'recommendations', 'suggestions', 'suggestion_count', 'source_is_latest', 'latest_recording', 'skipped_routes',
-              'partial_drive', 'partial_segments', 'omitted_segments', 'recommendation_sources')
-    previous = {key: self.previous[key] for key in fields if key in self.previous}
+    previous = {key: self.previous[key] for key in REVIEW_FIELDS if key in self.previous}
     if previous:
       previous['retained_decision'] = self.previous.get('retained_decision', self.previous.get('reason', 'waiting_for_completed_drive'))
       if self.previous.get('configuration_state') in ('ready_for_next_drive', 'accepted', 'accepted_after_drive', 'retained_after_drive', 'rolled_back'):
@@ -75,7 +81,7 @@ class StatusReport:
       result = dict(latest['result'])
       ordered = []
       for index, row in enumerate(cache.checkpoints()):
-        value = row['result']
+        value = row['result'].get('pending_review', row['result'])
         if 'assessment_sha256' not in value:
           continue
         document = cache.get(value['assessment_sha256'])
@@ -190,6 +196,8 @@ class StatusReport:
         details['More recorded suggestions omitted'] = False
         if 'recommendation_sources' in value:
           details['Recorded suggestion sources'] = value['recommendation_sources']
+        if 'recommendation_assessments' in value:
+          details['Recorded suggestion assessments'] = value['recommendation_assessments']
     proposal = value.get('suggestion')
     if proposal is not None:
       details['Full surface coordinates'] = [[n, proposal['values'][n]] for n in NAMES]
@@ -269,7 +277,7 @@ class StatusReport:
         Path(temporary).unlink(missing_ok=True)
 
 
-def parked_blocker(sm, params, *, stopped=False, now=None):
+def parked_blocker(sm, params, *, stopped=False, now=None, powered_offroad=None):
   """Same fresh parked physical-state checks as the existing bench supervisor.
 
   Offroad analysis needs current status, not the nominal publication cadence.
@@ -295,7 +303,9 @@ def parked_blocker(sm, params, *, stopped=False, now=None):
     return 'waiting_for_vehicle_to_switch_off'
   if not pandas:
     return 'waiting_for_connected_panda_status'
-  if any(p.ignitionLine or p.ignitionCan for p in pandas):
+  if any(p.ignitionLine or p.ignitionCan for p in pandas) and not (
+    powered_offroad is not None and all(str(getattr(p, 'safetyModel', '')) == 'noOutput' for p in pandas) and powered_offroad()
+  ):
     return 'waiting_for_ignition_off'
   if any(p.controlsAllowed for p in pandas):
     return 'waiting_for_panda_controls_to_disarm'
@@ -308,20 +318,22 @@ def parked_status(sm, params, *, stopped=False, now=None):
   return parked_blocker(sm, params, stopped=stopped, now=now) is None
 
 
-def wait_for_parked(sm, params, *, stopped=lambda: False, clock=time.monotonic):
+def wait_for_parked(sm, params, *, stopped=lambda: False, clock=time.monotonic, powered_offroad=None):
   """Refresh a lapped subscriber before resuming analysis; never use stale permission."""
   deadline = clock() + 0.75
   timeout = 0
   while True:
     sm.update(timeout)
-    if parked_status(sm, params, stopped=stopped(), now=clock()):
+    reason = parked_blocker(sm, params, stopped=stopped(), now=clock(), powered_offroad=powered_offroad)
+    if reason is None:
       return True
     if (
       stopped()
       or not params.get_bool('IsOffroad')
       or params.get_bool('IsEngaged')
       or sm['deviceState'].started
-      or any(p.ignitionLine or p.ignitionCan or p.controlsAllowed or p.faults for p in sm['pandaStates'])
+      or reason == 'waiting_for_ignition_off'
+      or any(p.controlsAllowed or p.faults or (powered_offroad is None and (p.ignitionLine or p.ignitionCan)) for p in sm['pandaStates'])
       or clock() >= deadline
     ):
       return False
@@ -356,8 +368,11 @@ def run_parked_analysis(worker, report):
 
 def _run():
   from openpilot.common.hardware.hw import Paths
+  from openpilot.starpilot.drive_state.evidence import PhysicalSource
+  from openpilot.starpilot.drive_state.owner import DriveStateOwner, Mode
   from openpilot.starpilot.flm.offroad_cache import directory_for_params
   from openpilot.starpilot.flm.diagnostic_state import DiagnosticState
+  from openpilot.starpilot.storage import starpilot_storage_root
 
   params = Params()
   stopped = False
@@ -375,11 +390,17 @@ def _run():
     from openpilot.starpilot.flm.offroad_source import record_drive
 
     sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState'])
+    drive_state = DriveStateOwner(params, starpilot_storage_root() / 'drive-state')
+    physical = PhysicalSource(sm)
+
+    def powered_offroad():
+      return drive_state.snapshot().mode is Mode.OFFROAD and physical.update_ready(params.get_bool('IsOffroad'))
 
     def parked():
-      allowed = wait_for_parked(sm, params, stopped=lambda: stopped)
+      allowed = wait_for_parked(sm, params, stopped=lambda: stopped, powered_offroad=powered_offroad)
       if not allowed and not stopped and params.get_bool('IsOffroad'):
-        report.set({'status': 'collecting', 'reason': parked_blocker(sm, params) or 'waiting_for_parked_permission'})
+        reason = parked_blocker(sm, params, powered_offroad=powered_offroad)
+        report.set({'status': 'collecting', 'reason': reason or 'waiting_for_parked_permission'})
       return allowed
 
     def permitted():

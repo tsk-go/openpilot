@@ -588,6 +588,7 @@ class StarShellSession:
         continue
       try:
         if command.action == 1:
+          self._native_favorite_actions()
           if self._wheel_personality is not None:
             self._wheel_personality()
         elif command.action in (5, 7, 8):
@@ -718,6 +719,10 @@ class StarShellSession:
       if group == "switchback_wheel":
         from openpilot.starpilot.feature_capabilities import lateral_supported
         return lateral_supported(cp)
+      if group == "slc":
+        from openpilot.starpilot.car.hyundai.software_cruise_settings import slc_configurable
+        if slc_configurable(cp, ui_state.params):
+          return True
       if group in ("conditional", "conditional_wheel", "long_output", "slc"):
         return bool(cp.openpilotLongitudinalControl and not cp.notCar and not cp.passive and not cp.dashcamOnly)
       if group in ("aol_wheel", "lane", "torque", "aol"):

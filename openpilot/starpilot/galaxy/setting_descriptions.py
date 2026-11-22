@@ -24,7 +24,7 @@ DESCRIPTIONS = {
   'ReduceMotion': 'Reduces interface animations for a steadier display.',
   'IsMetric': 'On displays speed and distance in kilometers; Off uses miles. Saved speed-limit offsets keep their physical values.',
   'IsRhdDetected': 'Sets the initial steering-wheel side used by driver monitoring. Applies next drive; automatic side detection continues.',
-  'lane_change:turn_signal_guidance': 'Uses your turn signal to help the model choose a turning path at intersections.',
+  'lane_change:automatic_turn_initiation': 'Allows the model to anticipate a signaled intersection turn.',
   'AlphaLongitudinalEnabled': ('Let StarPilot control acceleration and braking instead of factory ACC. ' +
                               'Takes effect next drive. May disable factory Automatic Emergency Braking.'),
   'lane_change:enabled': 'Enables lane-change assistance after you signal. With Automatic Lane Changes off, give the wheel a nudge to begin.',
@@ -67,6 +67,9 @@ DESCRIPTIONS = {
   'ForceStops': 'Improves stopping behavior at traffic lights and enables automatic stopping at detected stop signs. Press the accelerator to continue.',
   'ForceStopDistanceOffset': 'Moves the planned stopping point. Positive values stop farther forward; negative values stop earlier.',
   'LeadApproachBuffer': 'Gradually adds following distance when approaching a slower or braking lead vehicle.',
+  'RedneckCruise': 'Adjusts conventional factory cruise with Resume and Set after the next startup.',
+  'LowSpeedCruiseOnSet': ('Uses the vehicle’s minimum engagement speed as the floor when pressing SET with StarPilot cruise. ' +
+                         'SET uses your current speed when you are above that floor.'),
   'ExperimentalSpeedNudge': ('Gently recovers toward set speed when Experimental mode hesitates on a clear road. ' +
                             'Leads, stops, curve limits and driver overrides retain priority.'),
   'FasterLeadTakeoff': ('Improves launches from a stop and responds sooner when a lead starts moving. ' +
@@ -83,7 +86,7 @@ DESCRIPTIONS = {
   'SpeedLimitController': 'Follows accepted limits plus offsets up to SET speed. Missing data uses the previous accepted limit.',
   'SLCOnEngage': ('Starts software cruise SET at the SLC limit plus offset. ' +
                   'A limit accepted this session remains available during data gaps. Previous-drive history does not initialize SET. ' +
-                  'RES restores the previous SET.'),
+                  'RES restores the previous SET. Redneck Cruise lowers the new SET only when a current limit is available.'),
   'SLCOverrideMode': ('Cruise uses this target when you lift off the accelerator. ' +
                       'Holding your speed uses the highest speed you reached, up to SET.'),
   'SLCWheelOverride': 'Press + to raise SET past the adjusted limit and use your new SET speed.',
@@ -146,6 +149,7 @@ DESCRIPTIONS = {
   'KeepScreenOnGpuLoading': 'Keeps the driving screen visible while an eGPU model loads. Manual Screen Off still works.',
   'TurnOffCommaScreen': 'Pauses comma UI rendering to reduce CPU and GPU use. Tap once to wake the screen.',
   'LoudBlindspotAlert': 'Uses the soft-warning sound when a lane change is blocked by a detected blind-spot vehicle.',
+  'LoudBlindspotAlertMuteAtStandstill': 'Mutes Blindspot Alert While Lateral Is Off when stopped or moving below 1 mph.',
   'LoudBlindspotAlertWhenDisengaged': ('Warns when signaling toward a detected blind-spot vehicle with steering assistance off or paused. ' +
                                       'Independent of Loud Blindspot Alert. Hazards do not trigger it.'),
   'SoundPack': 'Chooses the sounds used for driving alerts and chimes.',
@@ -362,6 +366,10 @@ FLM_DESCRIPTIONS.update({
 
 def purpose(row):
   key = row.key
+  if key.startswith("longdev:"):
+    from openpilot.starpilot.longitudinal.developer_tuning import FIELDS, PREFIX
+    field = FIELDS.get(key.removeprefix(PREFIX).removesuffix(":reset"))
+    return field[-1] if field is not None else None
   if key in DESCRIPTIONS:
     return DESCRIPTIONS[key]
   if key.startswith(('wheel:', 'conditional:button:')):
