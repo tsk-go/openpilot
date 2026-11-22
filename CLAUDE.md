@@ -114,6 +114,29 @@ AGNOS download progress in the updater (stage "agnos" with a percent), phone hot
 comma screen's Connections and JetLink widgets. Galaxy parity unchanged. No fork fix is fixed upstream yet. Tests here:
 492 of ours pass; two upstream navigation tests need the compiled longitudinal solver (x86 has none).
 
+Nov 22: synced `testing` up to upstream `testing` `73e593514` (103 commits; three source conflicts, both sides kept:
+longitudinal_planner.py - upstream's longitudinal developer tuning (`developer_tuning`: delay, stop speed, max accel)
+with our `Advice`; intent.py - upstream's new opt-in for automatic turns (`5a88d1c7c`: Galaxy's "Automatic Turn
+Initiation", its own saved key `AutomaticTurnInitiation`, off by default, never taken from the old Turn Signal
+Guidance setting) with our `tablet` say (patch 38); modeld.py's lane-change call - upstream's route turn now only with
+that switch, with our StarView inputs, and by the owner's choice the tablet's "turn" (its blinker at the route's turn)
+waits for the same switch (`tablet_route_turn`; before, route turns needed no switch at all) - so with the switch off
+the comma makes no automatic turn, ours or upstream's; panda images rebuilt from source - upstream changed GM,
+Hyundai, Subaru and VW safety and the bootstubs, which follow upstream; the rebuilt upstream source gives upstream's
+image except the version and signature, ours is 216 bytes bigger (the Toyota door frames); mapd untouched). Brings
+AGNOS 20.5.4 and version 7.0.1, AGNOS images from Dropbox first with firestar's hosts as fallback (the downloader of
+the code being replaced only tries the first URL, so this one update's AGNOS step needs Dropbox reachable: offline
+mode off, or patch 82 already installed and rebooted), longitudinal developer tuning and steering controller choices
+in Developer Parameters, an optional vehicle-minimum cruise start, speed-limit confirmations kept through map
+dropouts, FLM analysis while forced offroad, tici NVMe storage in Galaxy. Galaxy parity: rows gained
+`coordinateLocked` / `learningEligible` - the FLM page's manual coordinates again, which StarView doesn't draw, so
+only the test's field list changed. StarView: its blinker page named Turn Signal Guidance as the turn switch - now
+Automatic Turn Initiation, and "Automatic turn signals" says the comma steers into the turn only with it (starview-data
+`scene-street` `af97ebf`, waits for the owner's OK). No fork fix is fixed upstream yet (upstream's controlsd change is Turn Assist's
+driver-confirmed turns and Subaru; nothing for the Sienna's stop-and-go wobble). Tests here: the x86 params library in
+the scratchpad has to be rebuilt from `common/params_keys.h` when upstream adds a key, and the model tests need
+`jetlink_repo` and `tinygrad_repo` on PYTHONPATH.
+
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
 and the sunnypilot network's LFS budget was used up; in firestar's network every LFS file of his history is already
@@ -300,6 +323,8 @@ Paths are under `openpilot/` unless noted.
     `starview_turn`. Upstream turns any blinker under 20 mph into a turn (Galaxy: Turn Signal Guidance, the on/off). With
     StarView's switch on and our street on its map, the tablet says whether there's a street to turn into on that side
     within 250 ft (OSM: not a one-way coming at us, not service): "none" -> no turn (pulling over). No say -> upstream.
+    Since the Nov 22 sync all of it only with Galaxy's Automatic Turn Initiation on (upstream's own switch, off by
+    default): Turn Signal Guidance, the route's turn and the tablet's "turn" (modeld `tablet_route_turn`).
 26. Advice from StarView's New ideas (patch 39): `starview/advice.py` (starviewd action `advice` {cap, follow, offset,
     why} -> /dev/shm/starview_advice, read at most every 0.25 s, 1.5 s old = none). Only ever gentler: the planner's
     v_cruise lowered to `cap` (never below 10 mph, never raised; `longitudinal_planner.py` after the navigation ceiling),
@@ -481,6 +506,10 @@ Paths are under `openpilot/` unless noted.
     Patch 63: commadist.azureedge.net is Azure Front Door and changed address within a minute (150.171.109.118, then
     .72), so per-address rules never kept up; its anycast blocks UPDATE4 (150.171.0.0/16, 13.107.0.0/16) are let
     through whole, like CloudFront's for Mapbox.
+    Patch 82 (Nov 22 sync): upstream fetches the AGNOS boot and system images from Dropbox first (`0db704125`), and
+    www.dropbox.com hands each file to a host of its own (uc<random>.dl.dropboxusercontent.com) no lookup can know
+    ahead; Dropbox's own block `DROPBOX4` (162.125.0.0/16, AS19679) is in UPDATE4 now. Test:
+    `test_agnos_from_dropbox_and_its_download_host_get_through`.
 40. USB hub power follows the car (patch 65): with the car off the hub's own supply is off, so the hub ran on the
     comma's USB-C 5 V - tablet charging, radio dongle, RTK, Pico - from the car battery until the comma's low-voltage
     shutdown, and again after every wake. The comma switches its port's 5 V itself: the PMIC OTG regulator
