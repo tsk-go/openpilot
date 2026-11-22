@@ -124,9 +124,10 @@ waits for the same switch (`tablet_route_turn`; before, route turns needed no sw
 the comma makes no automatic turn, ours or upstream's; panda images rebuilt from source - upstream changed GM,
 Hyundai, Subaru and VW safety and the bootstubs, which follow upstream; the rebuilt upstream source gives upstream's
 image except the version and signature, ours is 216 bytes bigger (the Toyota door frames); mapd untouched). Brings
-AGNOS 20.5.4 and version 7.0.1, AGNOS images from Dropbox first with firestar's hosts as fallback (the downloader of
-the code being replaced only tries the first URL, so this one update's AGNOS step needs Dropbox reachable: offline
-mode off, or patch 82 already installed and rebooted), longitudinal developer tuning and steering controller choices
+AGNOS 20.5.4 and version 7.0.1, AGNOS images from Dropbox first with firestar's hosts as fallback - but Dropbox
+disabled those shared links within the day ("Link Temporarily Disabled": an HTML page instead of the image) and the
+downloader of the code an update replaces only tries the first URL, so commas on older code failed the AGNOS step
+(upstream users on Discord, Nov 22) - patch 83 puts firestar's host first (fork fix 9), longitudinal developer tuning and steering controller choices
 in Developer Parameters, an optional vehicle-minimum cruise start, speed-limit confirmations kept through map
 dropouts, FLM analysis while forced offroad, tici NVMe storage in Galaxy. Galaxy parity: rows gained
 `coordinateLocked` / `learningEligible` - the FLM page's manual coordinates again, which StarView doesn't draw, so
@@ -255,6 +256,15 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    van's swing 0.3 s later. Upstream fixed = upstream's low-speed steering itself stops that loop on the Sienna (its
    action floor - comma's #39182 put it at 2.5 m/s - or damping reaching 10 mph, or the Sienna's own tune): test
    with Galaxy's Low Speed Smoothing off in stop-and-go; no wobble -> remove ours, tell the owner patch 81 was dropped.
+
+9. **AGNOS images from a disabled Dropbox link** (patch 83): in `openpilot/common/hardware/comma/agnos.json` and
+   `agnos-c3.json` the boot and system images' `url` is files.firestar.link and Dropbox is the last of the
+   `fallback_urls` (upstream `0db704125` "Prefer Dropbox for AGNOS downloads" put it first); test
+   `test_agnos_images_come_from_firestar_first` in `starview/tests/test_offline.py`. Dropbox answers a busy shared link
+   with "Link Temporarily Disabled" (HTML, 200), and a comma updating from code before upstream's failover (`2cf77aa2d`,
+   Nov 21) tries only the first URL. At every sync that changes the manifests: take upstream's image entries (new
+   hashes, sizes, URLs) and put a non-Dropbox URL first again. Upstream fixed = its manifests no longer have Dropbox
+   first (then drop our reorder and the test, tell the owner patch 83 was dropped).
 
 # Fork history
 
@@ -630,6 +640,10 @@ Paths are under `openpilot/` unless noted.
     On, changeable while driving. Not a param (the comma's list is compiled in): Off = /data/starview/low_speed_smoothing_off,
     which controlsd looks at once a second from a thread of its own (`low-speed-smoothing`). Export tool for steering
     data: starview-data `docs/tools/steer/sv_steer_export.py`. Not yet driven.
+49. AGNOS images from firestar's host first (patch 83, Nov 22; fork fix 9): Dropbox disabled upstream's shared links
+    for the AGNOS boot and system images the day they went first in the manifest, and an update's AGNOS step runs the
+    old code's downloader, which tries only the first URL. Both manifests now list files.firestar.link first,
+    files-east.firestar.link next and Dropbox last; the images and hashes are upstream's.
 
 **No longer carried**
 - Lane Centering with one line (patch 37, with StarView's one-line tile and blue lines): dropped by the owner at the Oct 26
