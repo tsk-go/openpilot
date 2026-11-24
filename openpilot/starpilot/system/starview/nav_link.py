@@ -7,6 +7,7 @@
          --control "nav_cancel"                                      ends the route
          --control "nav_route" {index}                               drive another of the offered routes
          --control "nav_options" {avoidTolls: true, carpool: 2, ...} route options (upstream's three + StarView's)
+                                     and Galaxy's turnSlowdownPercent (0-100, parked only)
          --control "nav_list"                                        favourites and recent destinations
          --control "nav_favorite" {name, address?, latitude, longitude, label?}   save a place (label home / work)
          --control "nav_unfavorite" {id} / "nav_label" {id, label}   remove a saved place / make it Home or Work
@@ -48,6 +49,7 @@ import time
 import uuid
 
 from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ROUTE_AVOIDANCES, ValidationError, response_json
+from openpilot.starpilot.navigation.slowdown import DEFAULT_SLOWDOWN_PERCENT, valid_slowdown_percent
 from openpilot.starpilot.system.starview import nav_routes
 from openpilot.starpilot.system.starview.nav_routes import ROUTE_MORE_KEYS, route_more
 from openpilot.starpilot.navigation.wire import navigation_state
@@ -130,8 +132,23 @@ def _key(value) -> str:
   return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
 
 
+def _offroad() -> bool:
+  """Galaxy changes the turn slowdown distance only while parked; the comma's own word for it (unknown = car on)."""
+  try:
+    from openpilot.common.params import Params
+    return Params().get_bool("IsOffroad")
+  except Exception:
+    return False
+
+
+def _options(document: dict) -> dict:
+  slowdown = document.get("turnSlowdownPercent")
+  return {**{key: document.get(key) is True for key in ROUTE_AVOIDANCES}, **route_more(document),
+          "turnSlowdownPercent": slowdown if valid_slowdown_percent(slowdown) else DEFAULT_SLOWDOWN_PERCENT}
+
+
 class NavLink:
-  def __init__(self, newest=None, owner: NavigationOwner | None = None):
+  def __init__(self, newest=None, owner: NavigationOwner | None = None, offroad=_offroad):
     self._owner = owner
     self._newest = newest or (lambda: None)
     self._lock = threading.Lock()
@@ -143,6 +160,7 @@ class NavLink:
     self._google_engine = None
     self._google_down_until = 0.   # Google's map tiles failed: Mapbox's until then
     self._google_failure = None
+    self._offroad = offroad
 
   @property
   def owner(self) -> NavigationOwner:
@@ -179,7 +197,7 @@ class NavLink:
     out = {"ok": True, "revision": snap.get("revision"), "status": snap.get("status"), "enabled": snap.get("enabled"),
            "hasKey": snap.get("hasKey"), "destination": snap.get("destination"), "selectedRoute": selected,
            "isMetric": snap.get("isMetric"), "routes": routes,
-           "options": {**{key: document.get(key) is True for key in ROUTE_AVOIDANCES}, **route_more(document)},
+           "options": _options(document),
            "usage": {k: usage[k] for k in ("directions", "staticTiles") if k in usage}}
     # the tablet fetches map tiles straight from Mapbox when it is online (the comma's link is often the slower one);
     # it reports how many (nav_tiles) so the month's count stays whole, and stops at the same free allowance
@@ -578,16 +596,18 @@ class NavLink:
   def options(self, patch: dict) -> dict:
     if not isinstance(patch, dict) or not patch:
       raise ValidationError("No route option given")
-    upstream = {k: v for k, v in patch.items() if k in ROUTE_AVOIDANCES}
+    upstream = {k: v for k, v in patch.items() if k in ROUTE_AVOIDANCES or k == "turnSlowdownPercent"}
     more = {k: v for k, v in patch.items() if k in ROUTE_MORE_KEYS}
     if set(patch) - set(upstream) - set(more):
       raise ValidationError("Unknown route option")
+    if "turnSlowdownPercent" in upstream and not self._offroad():
+      raise ValidationError("Park your car before changing turn slowdown distance")   # Galaxy's rule and words
     if upstream:
       self._change(lambda rev: self.owner.configure(upstream, rev, True))
     if more:
       self._change(lambda rev: nav_routes.configure_more(self.owner, more, rev, True))
     doc = self.owner.read()
-    return {"ok": True, "options": {**{key: doc.get(key) is True for key in ROUTE_AVOIDANCES}, **route_more(doc)}}
+    return {"ok": True, "options": _options(doc)}
 
 
 def _place(feature) -> dict | None:

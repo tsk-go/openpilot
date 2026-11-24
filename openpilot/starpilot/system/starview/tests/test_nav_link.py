@@ -123,6 +123,24 @@ def test_options_change_settings_and_reset_route_choice(owner):
       link.options(bad)
 
 
+
+def test_turn_slowdown_distance_like_galaxy(owner):
+  # Nov 24 sync: Galaxy's navigation page gained "Turn slowdown distance" (0-100 %, default 50; parked only, applies
+  # next drive). The tablet reads it with the route options and sets it through nav_options, with Galaxy's rules
+  parked = [True]
+  link = NavLink(owner=owner, offroad=lambda: parked[0])
+  assert link.state()['options']['turnSlowdownPercent'] == 50
+  assert link.options({'turnSlowdownPercent': 80})['options']['turnSlowdownPercent'] == 80
+  assert owner.read()['turnSlowdownPercent'] == 80 and owner.read()['destination']['name'] == 'Library'
+  for bad in (101, -1, 50.5, '60', True):
+    with pytest.raises(ValidationError):
+      link.options({'turnSlowdownPercent': bad})
+  parked[0] = False
+  with pytest.raises(ValidationError, match='Park your car'):
+    link.options({'turnSlowdownPercent': 20})
+  assert link.options({'avoidTolls': True})['options']['turnSlowdownPercent'] == 80   # the route options still change
+
+
 def test_state_sends_lines_only_when_they_change(owner):
   link = NavLink(owner=owner)
   assert link.state()['routes'] == []
