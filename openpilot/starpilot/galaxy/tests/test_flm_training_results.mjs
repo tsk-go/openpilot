@@ -73,6 +73,20 @@ assert.equal(offroadView(completed).evidenceDrives, null, 'Older reports must no
 assert.equal(tunerStatus(completed, true, true).title, 'Completed drive analyzed', 'Parked status must not mask completed analysis')
 assert.match(tunerStatus(completed, true, true).description, /left your tune unchanged/)
 assert.equal(completed.current.application.applied, false)
+const oscillation = structuredClone(completed)
+const observedPoints = Array.from({ length: 61 }, (_, i) => [1e9 + i * 2e8, .08 * Math.sin(i / 4), .08 * Math.sin((i - 2) / 4)])
+const oscillationResponse = {
+  version: 1, domain: 'lateral_acceleration', samples: 1200, windows: 6, error_rms: .02, route: 'declared-drive', segment: 18,
+  source_start_ns: observedPoints[0][0], source_end_ns: observedPoints.at(-1)[0], points: observedPoints,
+  sampling: 'input_ordered_original_endpoints_no_interpolation', observation: 'followed_repeated_steering_request',
+}
+oscillation.current.details['Recorded steering response'] = oscillationResponse
+assert(validTrainingResults(oscillation))
+assert.equal(offroadView(oscillation).observed.followedRepeatedRequest, true)
+assert.equal(offroadView(oscillation).observed.points.at(-1).at, 12000)
+assert.equal(offroadView(oscillation).saved, false)
+delete oscillationResponse.observation
+assert.equal(offroadView(oscillation).observed.followedRepeatedRequest, false)
 const ignitionWait = { ...report(), preference: { version: 1, valid: true, enabled: true, parked: true,
   vehicle: 'TOYOTA_RAV4_PRIME', controller: 'torque' } }
 ignitionWait.current.reason = 'waiting_for_ignition_off'
@@ -227,12 +241,20 @@ console.log('Saved curve and slider adjustments, unsaved recommendations, absent
 const scan = report();scan.current.status = 'fitting';scan.current.reason = 'analyzing_last_completed_drive'
 scan.current.details['Original route segments reviewed'] = [99, 99]
 assert.equal(parkedAnalysisProgress(scan).percent, null)
-for (const [phase, percent] of [['reading', 20], ['verifying', 20], ['checking', null]]) {
+for (const [phase, percent, detail] of [
+  ['reading', 20, '2 of 10 sections read in this recording'],
+  ['verifying', null, 'Checking that the recording is unchanged.'],
+  ['checking', null, 'Checking the suggested changes.'],
+]) {
   scan.current.details['Parked analysis progress'] = [phase, 2, 10]
   assert(validTrainingResults(scan))
   assert.equal(parkedAnalysisProgress(scan).percent, percent)
-  assert.equal(parkedAnalysisProgress(scan).detail, '2 of 10 sections read in this recording')
+  assert.equal(parkedAnalysisProgress(scan).detail, detail)
 }
+scan.current.details['Parked analysis progress'] = ['reading', 3, 3]
+assert.equal(parkedAnalysisProgress(scan).percent, null)
+scan.current.reason = 'verifying_recorded_drive'
+assert.equal(tunerStatus(scan, true).key, 'fitting')
 for (const counts of [[11, 10], [-1, 10], [true, 10], [1, 181], [1.5, 10], [null, null]]) {
   scan.current.details['Parked analysis progress'] = ['reading', ...counts]
   assert.equal(parkedAnalysisProgress(scan).percent, null)

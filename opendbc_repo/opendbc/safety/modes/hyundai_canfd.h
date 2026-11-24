@@ -1228,7 +1228,67 @@ static bool hyundai_canfd_tx_hook_valid(const CANPacket_t *msg) {
   return tx;
 }
 
-static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
+#ifdef ALLOW_DEBUG
+static bool hyundai_kona_idle_handoff = false;
+static bool hyundai_kona_camera_seen = false;
+static bool hyundai_kona_output_seen = false;
+static bool hyundai_kona_host_output = false;
+static uint32_t hyundai_kona_camera_ts = 0U;
+static uint32_t hyundai_kona_output_ts = 0U;
+static uint8_t hyundai_kona_camera_counter = 0U;
+static uint8_t hyundai_kona_output_counter = 0U;
+
+static bool hyundai_kona_host_steering(void) {
+  return controls_allowed || ((aol_get_permission_mask() & 1U) != 0U);
+}
+
+static bool hyundai_kona_lfa_valid(const CANPacket_t *msg) {
+  return msg->fd && !msg->extended && (GET_LEN(msg) == 16U) &&
+         (hyundai_canfd_get_checksum(msg) == (hyundai_common_canfd_compute_checksum(msg) ^ 0x041DU));
+}
+
+static bool hyundai_kona_output_ready(uint32_t now, bool host, uint8_t counter) {
+  const uint32_t age = safety_get_ts_elapsed(now, hyundai_kona_output_ts);
+  const uint8_t delta = (uint8_t)(counter - hyundai_kona_output_counter);
+  return !hyundai_kona_output_seen ||
+         (((hyundai_kona_host_output == host) || (age >= 10000U)) &&
+          ((age > 50000U) || ((delta > 0U) && (delta <= 127U))));
+}
+
+static void hyundai_kona_track_output(uint32_t now, bool host, uint8_t counter) {
+  hyundai_kona_output_seen = true;
+  hyundai_kona_host_output = host;
+  hyundai_kona_output_ts = now;
+  hyundai_kona_output_counter = counter;
+}
+
+static bool hyundai_kona_camera_fwd(const CANPacket_t *msg) {
+  bool blocked = false;
+  if (hyundai_kona_idle_handoff && (msg->bus == 2U) && (msg->addr == 0x12AU)) {
+    const uint32_t now = microsecond_timer_get();
+    const bool valid = hyundai_kona_lfa_valid(msg);
+    if (valid) {
+      const uint8_t delta = (uint8_t)(msg->data[2] - hyundai_kona_camera_counter);
+      if (!hyundai_kona_camera_seen ||
+          (safety_get_ts_elapsed(now, hyundai_kona_camera_ts) > 50000U) ||
+          ((delta > 0U) && (delta <= 127U))) {
+        hyundai_kona_camera_seen = true;
+        hyundai_kona_camera_counter = msg->data[2];
+        hyundai_kona_camera_ts = now;
+      }
+    }
+    blocked = !valid || safety_rx_checks_invalid || !aol_rx_healthy() || hyundai_kona_host_steering() ||
+              (msg->data[2] != hyundai_kona_camera_counter) ||
+              !hyundai_kona_output_ready(now, false, msg->data[2]);
+    if (!blocked) {
+      hyundai_kona_track_output(now, false, msg->data[2]);
+    }
+  }
+  return blocked;
+}
+#endif
+
+static bool hyundai_canfd_tx_hook_checked(const CANPacket_t *msg) {
   bool tx = false;
   const bool ordinary_angle_frame = hyundai_ordinary_angle_stock && ((msg->addr == 0x110U) || (msg->addr == 0x362U));
   bool ordinary_angle_valid = true;
@@ -1288,7 +1348,30 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
   if (hyundai_angle_aol_enabled && independent_command && !tx) {
     hyundai_ordinary_angle_release();
   }
+#ifdef ALLOW_DEBUG
+  if (hyundai_kona_idle_handoff && (msg->addr == 0x12AU) && tx && !relay_malfunction) {
+    hyundai_kona_track_output(microsecond_timer_get(), true, msg->data[2]);
+  }
+#endif
   return tx;
+}
+
+static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
+#ifdef ALLOW_DEBUG
+  bool allowed = true;
+  if (hyundai_kona_idle_handoff && (msg->addr == 0x12AU)) {
+    const uint32_t now = microsecond_timer_get();
+    allowed = !safety_rx_checks_invalid && aol_rx_healthy() && hyundai_kona_host_steering() &&
+              hyundai_kona_lfa_valid(msg) && hyundai_kona_camera_seen &&
+              (safety_get_ts_elapsed(now, hyundai_kona_camera_ts) <= 50000U) &&
+              (msg->data[2] == hyundai_kona_camera_counter) && hyundai_kona_output_ready(now, true, msg->data[2]);
+  }
+#endif
+  return
+#ifdef ALLOW_DEBUG
+    allowed &&
+#endif
+    hyundai_canfd_tx_hook_checked(msg);
 }
 
 static void hyundai_canfd_reset_ioniq6_state(void) {
@@ -2238,29 +2321,50 @@ static safety_config hyundai_canfd_init_validated(uint16_t supplied_param) {
   return ret;
 }
 
-static safety_config hyundai_canfd_init(uint16_t param) {
+static safety_config hyundai_canfd_init(uint16_t raw_param) {
   hyundai_daw_init(true, false);
   hyundai_canfd_reset_ioniq6_state();
   hyundai_ordinary_angle_reset();
 #ifdef ALLOW_DEBUG
+  hyundai_kona_idle_handoff = (raw_param == 0x1C0CU) && (alternative_experience == 32);
+  hyundai_kona_camera_seen = false;
+  hyundai_kona_output_seen = false;
+  const bool kona_profile_valid = (raw_param != 0x1C0CU) || hyundai_kona_idle_handoff;
+  const uint16_t param = hyundai_kona_idle_handoff ? 0x0C0CU : raw_param;
   const bool valid = !GET_FLAG(param, 32768U) || (param == 0x8015U) || (param == 0x8095U) ||
                      (param == 0x8815U) || (param == 0x8895U) ||
                      hyundai_canfd_gv60_long_param(param);
 #else
+  const bool kona_profile_valid = raw_param != 0x1C0CU;
+  const uint16_t param = raw_param;
   const bool valid = !GET_FLAG(param, 32768U);
 #endif
-  safety_config ret = {0};
+  safety_config ret = {.disable_forwarding = !kona_profile_valid};
   const bool marker_valid = GET_FLAG(param, 16384U) || !GET_FLAG(param, 2048U) ||
                             hyundai_canfd_stock_torque_aol_param(param) ||
 #ifdef ALLOW_DEBUG
                             (hyundai_canfd_torque_long_aol_param(param) && ((unsigned int)alternative_experience == 32U)) ||
 #endif
                             (param == 0x8815U) || (param == 0x8895U);
-  if (valid && marker_valid) {
+  if (kona_profile_valid && valid && marker_valid) {
     ret = hyundai_canfd_init_validated(param);
     const bool daw_profile = (param == 0x0011U) || (param == 0x0091U) || (param == 0x0811U) || (param == 0x0891U) ||
                              (param == 0x8015U) || (param == 0x8095U) || (param == 0x8815U) || (param == 0x8895U);
     ret = hyundai_daw_configure(ret, true, daw_profile);
+#ifdef ALLOW_DEBUG
+    if (hyundai_kona_idle_handoff) {
+      static CanMsg kona_tx[64];
+      if (hyundai_canfd_angle_aol_capacity(&ret)) {
+        for (int i = 0; i < ret.tx_msgs_len; i++) {
+          kona_tx[i] = ret.tx_msgs[i];
+          if (kona_tx[i].addr == 0x12A) {
+            kona_tx[i].disable_static_blocking = true;
+          }
+        }
+        ret.tx_msgs = kona_tx;
+      }
+    }
+#endif
   }
   return ret;
 }
@@ -2271,6 +2375,9 @@ const safety_hooks hyundai_canfd_hooks = {
   .optional_rx = hyundai_canfd_optional_rx_hook,
   .tx = hyundai_canfd_tx_hook,
   .fwd = hyundai_canfd_fwd_hook,
+#ifdef ALLOW_DEBUG
+  .fwd_packet = hyundai_kona_camera_fwd,
+#endif
   .get_counter = hyundai_canfd_get_counter,
   .get_checksum = hyundai_canfd_get_checksum,
   .compute_checksum = hyundai_common_canfd_compute_checksum,

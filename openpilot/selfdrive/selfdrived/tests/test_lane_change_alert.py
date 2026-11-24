@@ -7,6 +7,7 @@ import unittest
 
 from opendbc.car.structs import car
 from openpilot.cereal import log
+from openpilot.starpilot.aol.runtime import AxisDecision
 from openpilot.starpilot.controllers.mode_actions import SwitchbackCooldown
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager
 from openpilot.selfdrive.selfdrived.events import Alert, ET, EVENTS, Events, Priority
@@ -34,6 +35,7 @@ class TestLaneChangeAlert(unittest.TestCase):
     model = SimpleNamespace(frameId=frame_id, timestampEof=10_000_000_000,
                             meta=SimpleNamespace(laneChangeDirection="left"))
     drive = SelfdriveD.__new__(SelfdriveD)
+    drive.aol_axis_decision = AxisDecision()
     drive.events = Events()
     drive.events.add(EventName.preLaneChangeLeft)
     self.enterContext(patch.object(drive, "state_machine", SimpleNamespace(current_alert_types=[ET.WARNING], soft_disable_timer=0), create=True))
@@ -51,7 +53,7 @@ class TestLaneChangeAlert(unittest.TestCase):
     drive.lane_status_session = ""
     drive.lane_status_sequence = -1
     with patch("openpilot.selfdrive.selfdrived.selfdrived.time.monotonic_ns", return_value=1_050_000_000):
-      drive.update_alerts(object())
+      drive.update_alerts(car.CarState.new_message(gearShifter="drive"))
     return alerts.current_alert
 
   def test_missing_or_mismatched_status_is_neutral(self):

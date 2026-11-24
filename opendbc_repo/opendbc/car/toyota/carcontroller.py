@@ -11,8 +11,8 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.toyota import toyotacan
 from opendbc.car.toyota import (dom_defaults, prius_longitudinal, rav4h_filter, pedal, eps8_sdsu, legacy_sdsu,
                                 advert_filter, legacy_stop_timer, legacy_advert_filter)
-from opendbc.car.toyota import pedal_composite, camera_2aa_filter, prius_sdsu, prius_advert_filter
-from opendbc.car.toyota.starview_doors import StarViewDoorLocks  # fork: upstream's DoorLocks + StarView's lock / unlock
+from opendbc.car.toyota import pedal_composite, camera_2aa_filter, prius_sdsu, prius_advert_filter, radar_filter
+from opendbc.car.toyota.door_locks import DoorLocks
 from opendbc.car.toyota.values import CAR, CarControllerParams, ToyotaFlags, TOYOTA_AUTO_HOLD_CARS, uses_toyota_auto_hold_aeb
 from opendbc.can import CANPacker
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
@@ -58,7 +58,10 @@ def supports_toyota_auto_hold(CP):
 
 def get_long_tune(CP, params):
   prius = prius_longitudinal.enabled(CP)
-  if prius or CP.flags & ToyotaFlags.TSS2 or dom_defaults.camry_hybrid(CP) or dom_defaults.rav4h_sdsu(CP):
+  # The generic integral gain amplifies small acceleration requests on the four-byte Sienna filter.
+  sienna_filter = (CP.carFingerprint == CAR.TOYOTA_SIENNA and not CP.flags & ToyotaFlags.GAS_INTERCEPTOR and
+                   legacy_advert_filter.enabled(CP))
+  if prius or sienna_filter or CP.flags & ToyotaFlags.TSS2 or dom_defaults.camry_hybrid(CP) or dom_defaults.rav4h_sdsu(CP):
     kiBP = [2., 5.]
     kiV = [0.5, 0.25]
   else:
@@ -73,7 +76,9 @@ def get_long_tune(CP, params):
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
-    self.door_locks = StarViewDoorLocks(CP)  # fork: a DoorLocks with StarView's lock / unlock and lock state
+    self.door_locks = DoorLocks()
+    from opendbc.car.toyota.starview_doors import StarViewDoorLocks  # fork: upstream's DoorLocks + StarView's
+    self.door_locks = StarViewDoorLocks(CP)  # fork: lock / unlock from the tablet and the lock state (starview_doors.py)
     self.reverse_cruise_input = None
     self.prius_filter_input = None
     self.original_prius_sdsu = prius_sdsu.configured(CP) or prius_longitudinal.eps73_status_configured(CP)
@@ -93,6 +98,7 @@ class CarController(CarControllerBase):
     self.legacy_stop_timer = legacy_stop_timer.enabled(CP)
     self.legacy_advert_filter = legacy_advert_filter.configured(CP)
     self.camera_twoaa_filter = camera_2aa_filter.configured(CP)
+    self.camry_se_idle_contract = radar_filter.camry_se_idle_contract(CP)
     self.permit_braking = True
     self.steer_rate_counter = 0
     self.distance_button = 0
@@ -464,10 +470,21 @@ class CarController(CarControllerBase):
             not (self.brake_hold_active and not uses_toyota_auto_hold_aeb(self.CP))):
           pcm_accel_cmd = 0.
         main_accel_cmd = 0. if self.CP.flags & ToyotaFlags.SECOC.value else pcm_accel_cmd
-        can_sends.append(toyotacan.create_accel_command(self.packer, main_accel_cmd, pcm_cancel_cmd, self.permit_braking, self.standstill_req, lead,
-                                                        CS.acc_type, fcw_alert, self.distance_button,
-                                                        reverse_cruise=bool(self.CP.pcmCruise and self.reverse_cruise_input is not None and
-                                                                            self.reverse_cruise_input.update())))
+        if (self.camry_se_idle_contract and CS.out.canValid and not CS.out.canTimeout and
+            not CS.out.accFaulted and not CS.out.stockAeb and CS.pcm_acc_status == 0 and not CS.out.cruiseState.enabled and
+            not CC.enabled and not CC.longActive and not pcm_cancel_cmd and not fcw_alert):
+          # Match the filter's observed neutral frame until the PCM accepts SET.
+          self.prev_accel = pcm_accel_cmd = 0.
+          can_sends.append(self.packer.make_can_msg("ACC_CONTROL", 0, {
+            "ACC_TYPE": 1,
+            "ALLOW_LONG_PRESS": 3,
+            "PERMIT_BRAKING": 1,
+          }))
+        else:
+          can_sends.append(toyotacan.create_accel_command(self.packer, main_accel_cmd, pcm_cancel_cmd, self.permit_braking, self.standstill_req, lead,
+                                                          CS.acc_type, fcw_alert, self.distance_button,
+                                                          reverse_cruise=bool(self.CP.pcmCruise and self.reverse_cruise_input is not None and
+                                                                              self.reverse_cruise_input.update())))
         if self.CP.flags & ToyotaFlags.SECOC.value:
           acc_cmd_2 = toyotacan.create_accel_command_2(self.packer, pcm_accel_cmd)
           acc_cmd_2 = add_mac(self.secoc_key,

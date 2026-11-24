@@ -127,16 +127,26 @@ def test_lane_and_exit_are_never_a_turn():
     assert run(h, car(leftBlinker=True), 3, why=why, navigation_turn=True) == LCS.preLaneChange
 
 
-def test_tablet_turn_waits_for_automatic_turn_initiation():
+def test_tablet_turn_is_a_route_turn_with_automatic_turn_initiation():
   # Nov 22 sync: upstream made automatic turns their own switch (Galaxy's Automatic Turn Initiation, off by default);
-  # the owner chose that the tablet's "turn" (its blinker at the route's turn) follows it too
+  # the owner chose that the tablet's "turn" (its blinker at the route's turn) follows it too. Nov 24 sync: upstream's
+  # route turns wait for the lane at speed (a lane change toward the turn may start) - the tablet's "turn" is one
   for automatic in (False, True):
-    h = DesireHelper()
-    h.starview = StarViewLanes("toyota", NS(automatic_turn_enabled=automatic))
-    h.starview.why = "turn"
-    for _ in range(3):
-      h.update(car(leftBlinker=True), True, 1.0, engaged=True)
-    assert h.lane_change_state == (LCS.off if automatic else LCS.preLaneChange)
+    lanes = StarViewLanes("toyota", NS(automatic_turn_enabled=automatic))
+    lanes.why = "turn"
+    assert lanes.begin(DesireHelper(), car(leftBlinker=True), True, True, False, False) == (False, automatic)
+    assert lanes.begin(DesireHelper(), car(leftBlinker=True), True, True, True, True) == (True, True)
+
+
+def test_a_route_turn_waits_for_the_lane_and_a_forecast_turn_alone_does_not():
+  h = DesireHelper()
+  assert run(h, car(leftBlinker=True), 3, navigation_turn=True, route_turn=True) == LCS.preLaneChange
+  assert run(h, car(leftBlinker=True, steeringPressed=True, steeringTorque=1.0), navigation_turn=True,
+             route_turn=True) == LCS.laneChangeStarting
+  for why in ("lane", "exit"):
+    lanes = StarViewLanes("toyota", NS(automatic_turn_enabled=True))
+    lanes.why = why
+    assert lanes.begin(DesireHelper(), car(leftBlinker=True), True, True, True, True) == (False, False)
 
 
 def test_exit_signal_is_a_signal_only():
@@ -336,6 +346,6 @@ def test_modeld_calls_the_hooks_in_order():
 
 def test_desire_helper_calls_the_hooks():
   calls = _calls("selfdrive/controls/lib/desire_helper.py", "update")
-  assert calls[0].startswith("self.starview.begin(self, carstate, lateral_active, engaged, navigation_turn")
+  assert calls[0] == "self.starview.begin(self, carstate, lateral_active, engaged, navigation_turn, route_turn)"
   assert any(call.startswith("self.starview.pre_lane_change(self, carstate, blindspot_detected, torque_applied, auto_ready")
              for call in calls)

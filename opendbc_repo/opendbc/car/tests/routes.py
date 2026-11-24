@@ -22,6 +22,7 @@ from opendbc.car.mg.values import CAR as MG
 
 # Configurations with source tests but no matching recorded route.
 unrecorded_route_gaps = {
+  SUBARU.SUBARU_CROSSTREK_2018: "subaru/tests/test_supported_firmware.py",
   GM.CHEVROLET_VOLT_CC: "gm/tests/test_volt_cc_gas.py",
   GM.CHEVROLET_MALIBU_HYBRID_CC: "gm/tests/test_ordinary_cc.py",
   TOYOTA.TOYOTA_PRIUS_RETROFIT: "toyota/tests/test_retrofit.py",
@@ -29,6 +30,7 @@ unrecorded_route_gaps = {
   VOLVO.VOLVO_XC40_RECHARGE: "volvo/tests/test_cma.py",
   VOLVO.VOLVO_S60_RECHARGE: "volvo/tests/test_cma.py",
   VOLVO.POLESTAR_2: "volvo/tests/test_cma.py",
+  VOLVO.VOLVO_V60: "volvo/tests/test_eucd.py",
 }
 
 # FIXME: add routes for these cars

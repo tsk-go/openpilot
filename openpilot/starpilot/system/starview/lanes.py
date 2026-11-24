@@ -17,8 +17,8 @@ What the tablet says (starviewd's files in /dev/shm):
               with the blind spot occupied: void (the driver nudges, or confirms again).
       "exit"  (patch 80) the route's exit taken from our own lane, before the ramp opens beside us: a signal only, no
               automatic lane change starts on it (a nudge still does). At the opening the tablet says "lane".
-      "turn"  its blinker at the route's turn: a route turn, like upstream's, only with Galaxy's Automatic Turn
-              Initiation on.
+      "turn"  its blinker at the route's turn: a route turn, like upstream's (at speed it waits for the lane, and a lane
+              change toward the turn may start), only with Galaxy's Automatic Turn Initiation on.
     "lane" and "exit" are never a turn (neither Turn Signal Guidance's nor the route's) and keep the lane change
     helper's desire.
   - whether its street map has a street to turn into on the blinker's side within 250 ft (blinker_turn.py, patch 38):
@@ -65,8 +65,11 @@ class LaneInputs:
     """Galaxy's Automatic Turn Initiation (StarViewLanes reads it from TurnIntent)."""
     return False
 
-  def begin(self, dh, carstate, lateral_active, engaged, navigation_turn):
-    """First thing in DesireHelper.update. Returns its navigation_turn as the tablet changes it."""
+  def begin(self, dh, carstate, lateral_active, engaged, navigation_turn, route_turn=False):
+    """First thing in DesireHelper.update. Returns its (navigation_turn, route_turn) as the tablet changes them: a blinker
+    the tablet holds for a lane change or our lane's exit is neither a turn (upstream's forecast) nor the route's turn;
+    the tablet's "turn" is a route turn (since upstream's Nov 24 route turns: it may change lanes toward the turn at
+    speed, waiting for the lane like the comma's own route), only with Automatic Turn Initiation on."""
     if self.started_on_lane and dh.lane_change_state == LaneChangeState.laneChangeStarting:
       self.confirm_used = True    # the last frame started a lane change: one per confirmation, however it started
     self.started_on_lane = False
@@ -77,8 +80,8 @@ class LaneInputs:
     if self.lane and (not lateral_active or not engaged):
       self.confirm_used = True
     if self.why in NOT_A_TURN:
-      return False
-    return navigation_turn or (self.why == "turn" and self.automatic_turns())
+      return False, False
+    return navigation_turn, route_turn or (self.why == "turn" and self.automatic_turns())
 
   def pre_lane_change(self, dh, carstate, blindspot_detected, torque_applied, auto_ready):
     """In DesireHelper.update's preLaneChange step, just before it decides. Returns (torque_applied, auto_ready)."""

@@ -68,6 +68,7 @@ class HKGVehicleTorquePolicy(HKGShapedTorquePolicy):
       raise ValueError("Unsupported HKG vehicle torque profile")
     self.FACTOR_MULT = PROFILES[self.profile][1]
     self.canfd = bool(cp.flags & HyundaiFlags.CANFD)
+    self.ioniq_5_hda2 = self.profile == 'ioniq_5' and bool(cp.flags & HyundaiFlags.CANFD_LKA_STEER_MSG)
     self.carnival_hev = cp.carFingerprint == CAR.KIA_CARNIVAL_HEV_4TH_GEN
     self.requested_curvature = 0.0
     self.future_lateral_accel = 0.0
@@ -85,7 +86,13 @@ class HKGVehicleTorquePolicy(HKGShapedTorquePolicy):
 
   def feedforward_context(self, value, setpoint, jerk, measurement, speed):
     if self.profile == 'ioniq_5':
-      return value * shaping.get_ioniq_5_ff_scale(setpoint, jerk, speed) * shaping.get_ioniq_5_center_taper_scale(setpoint, speed)
+      ff_scale = shaping.get_ioniq_5_ff_scale(setpoint, jerk, speed)
+      if (self.ioniq_5_hda2 and 17.0 < speed < 23.0 and 1.25 < abs(setpoint) < 2.65
+          and jerk != 0.0 and not (self.steering_pressed or self.previous_pressed)):
+        ramp_speed = float(np.interp(speed, [17.0, 18.5, 21.0, 23.0], [0.0, 1.0, 1.0, 0.0]))
+        tight_arc = float(np.interp(abs(setpoint), [1.25, 1.6, 2.25, 2.65], [0.0, 1.0, 1.0, 0.0]))
+        ff_scale += 0.25 * ramp_speed * tight_arc * (shaping.get_ioniq_5_ff_scale(setpoint, 0.0, speed) - ff_scale)
+      return value * ff_scale * shaping.get_ioniq_5_center_taper_scale(setpoint, speed)
     if self.profile == 'ioniq_ev_old':
       return value * shaping.get_ioniq_ev_old_ff_scale(setpoint, jerk, speed) * shaping.get_ioniq_ev_old_center_taper_scale(setpoint, speed)
     if self.profile == 'sonata':
@@ -105,7 +112,12 @@ class HKGVehicleTorquePolicy(HKGShapedTorquePolicy):
   def friction_context(self, setpoint, jerk, measurement, speed):
     base = shaping.get_hkg_canfd_base_friction_threshold(speed) if self.canfd else shaping.get_standard_friction_threshold(speed)
     if self.profile == 'ioniq_5':
-      return shaping.get_ioniq_5_friction_threshold(speed, setpoint, jerk), 1 + (
+      threshold = shaping.get_ioniq_5_friction_threshold(speed, setpoint, jerk)
+      if self.ioniq_5_hda2 and speed > 27.0 and not (self.steering_pressed or self.previous_pressed):
+        highway = float(np.interp(speed, [27.0, 29.0], [0.0, 1.0]))
+        arc = float(np.interp(abs(setpoint), [0.45, 0.65, 1.25, 1.6], [0.0, 1.0, 1.0, 0.0]))
+        threshold += 0.18 * highway * arc
+      return threshold, 1 + (
         shaping.get_ioniq_5_friction_scale(speed, setpoint, jerk) - 1
       ) * shaping.get_ioniq_5_center_taper_scale(setpoint, speed)
     if self.profile == 'kia_niro_ev' and not self.steering_pressed:
@@ -150,6 +162,8 @@ class HKGVehicleTorquePolicy(HKGShapedTorquePolicy):
     return 0.0
 
   def output_context(self, value, setpoint, jerk, measurement, speed):
+    if self.profile == 'sonata' and 2.0 < speed < 12.0 and not (self.steering_pressed or self.previous_pressed):
+      return value * shaping.get_sonata_low_speed_center_output_scale(setpoint, self.future_lateral_accel, speed)
     if self.profile == 'ioniq_5':
       limit = shaping.get_ioniq_5_low_speed_output_limit(
         setpoint, jerk, speed, self.requested_curvature if not self.steering_pressed and not self.previous_pressed else 0.0, value)

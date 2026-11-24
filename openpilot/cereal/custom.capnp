@@ -222,6 +222,7 @@ struct StarPilotCarState @0xf35cc4560bbf6ec2 {
   feedbackPublication @37 :FeedbackPublication;
   steeringLimitInfo @39 :StarPilotCarControl.SteeringLimitInfo;
   toyotaCruise @38 :ToyotaCruise;
+  gmRegenGear @40 :Bool;
 
   struct ToyotaCruise {
     version @0 :UInt16;
@@ -479,6 +480,21 @@ struct SlcAction @0x9ccdc8676701b412 {
     sourceCarStateMonoTime @10 :UInt64;
     carParamsFingerprint @11 :Text;
     targetSpeedMps @12 :Float32;
+    stepUnits @13 :Int8; # Tesla scroll: +-1 display unit, or +-5 to the next multiple of five
+    sourceTeslaGesture @14 :TeslaGesture; # optional Tesla wheel-gesture provenance; never an action
+  }
+
+  struct TeslaGesture {
+    version @0 :UInt16;
+    workerSession @1 :Text;
+    sequence @2 :UInt64;
+    sourceCanBootTime @3 :UInt64;
+    sourceCanFrameIndex @4 :UInt16;
+    name @5 :Text;
+    fast @6 :Bool;
+    assignmentsHash @7 :Text;
+    vehicleHash @8 :Text;
+    driveStartMonoTime @9 :UInt64;
   }
 
   struct ConditionalManualAction {
@@ -511,6 +527,7 @@ struct SlcAction @0x9ccdc8676701b412 {
     forceCoastToggle @10;
     pulseGlideToggle @11;
     disengageRequest @12;
+    cruiseStep @13;
   }
 }
 

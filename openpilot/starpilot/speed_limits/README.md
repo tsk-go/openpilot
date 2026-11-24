@@ -2,12 +2,46 @@
 
 SLC supplies a speed-limit cap beneath the driver's cruise SET. The planner uses
 the lower of SET and the accepted limit plus its configured offset, converted into
-physical-speed coordinates once. Accepting a limit never rewrites SET. Native PCM
+physical-speed coordinates once. Accepting a limit never rewrites SET (one exception:
+the [Tesla set-speed rule](#tesla-set-speed-rule)). Native PCM
 cruise owns its setpoint; non-PCM software cruise and the dedicated Subaru software
 cruise mode retain their existing owners. Automatic SLC requires system longitudinal
 control. Lead, curve, stop and actuator safety constraints retain their existing owners.
 SLC works with either the StarPilot or upstream longitudinal planner. The StarPilot planner
 eases braking after an overshoot past the cap; the upstream planner keeps its native response.
+
+## Tesla set-speed rule
+
+One car is different. On a Tesla Model 3 or Model Y where **Comma can set speed on Tesla dashboard**
+is on (`openpilot/starpilot/car/tesla/set_speed.py`, followed within a second of a change), StarPilot
+owns a software SET that is mirrored to the car, and SLC writes that SET instead of capping beneath it:
+
+- Engaging starts SET at the current limit plus offset. Each newly accepted limit is written to SET.
+  The runtime issues one `slcCruiseCommand`; card applies it only while the planner state, the source
+  and SET are still what the planner saw (`physical_actions.command_applicable`), and answers with a
+  `commandApplied` or `commandRejected` cruise event. An unanswered or refused command is issued
+  again while SET has not moved.
+- No planner cap is published (`hasCeiling` stays false). The sign's green outline means SET equals
+  the accepted limit plus offset.
+- A SET change by the driver holds until the accepted limit changes (`overrides.py`) and shows as
+  OVERRIDE. A higher limit that is still below the driver's SET leaves it alone. A source gap leaves
+  SET where it is.
+- **After an accelerator override** is applied by card, which owns SET here
+  (`tesla_set_speed_card.pedal_hold`). With **Hold the speed you reached**, lifting off above both SET
+  and the accepted limit plus offset makes the highest speed reached the new SET, as the driver's own
+  change, so it holds until the limit changes like a scroll. The other two choices return to SET.
+- The adopt action puts SET back to the current limit plus offset. Accepting a pending limit writes it.
+- A written SET is felt at once, so automatic adoption waits 3 seconds and a different limit from
+  another source must hold for 2 seconds first (`acceptance.AUTOMATIC_ADOPTION_NS`, `SOURCE_SWITCH_NS`).
+  An explicit adopt skips both waits.
+- **Adopt limits early** writes SET early. An early Maps preview is offered the chosen number of
+  seconds ahead, so it is adopted when offered, without the 3 second wait, and written like any
+  accepted limit. Card binds that command to Maps and the upcoming boundary instead of the road's
+  current limit. If the preview is withdrawn before the car reaches it, acceptance returns to the
+  road's limit and that is written back.
+
+With the switch off, and on every other car, none of this applies: SLC caps beneath SET as the
+rest of this document describes.
 
 ## New limits and adoption
 
@@ -31,7 +65,14 @@ limit does not start another decision. The most recent decline survives source
 gaps and other readings until a different limit is adopted or another limit is
 declined. The sign continues to show the road reading.
 
-A qualified limit from a different provider enters the same confirmation or automatic
+Every enabled source works the same way: the newest number from any source is
+offered, and it stays offered until a source sends a different number. A source
+going stale or dropping out never hands the offer to another source's unchanged
+reading; the previous accepted limit simply stays. A number is new when it differs
+from the last number that source showed. A Dashboard "no sign" in between counts;
+map coverage, GPS and camera gaps do not. The saved source order, Highest and
+Lowest only break ties between numbers that arrive together.
+A new number from a different provider enters the same confirmation or automatic
 adoption flow immediately, without an extra source-switch delay.
 
 A proposed adjusted limit matching both displayed SET values is recorded without
@@ -110,7 +151,7 @@ Other sources keep their current-limit behavior.
 An ordered source list without Maps ignores map readings and previews. Removing
 Maps retires an in-progress preview and returns to the selected sources' normal
 adoption and previous-limit fallback rules.
-The upcoming Map proposal must win the configured source-selection policy.
+An upcoming Map proposal is offered only while Maps holds the current offer.
 There is no new onroad widget, caption, or countdown. The existing New Limit
 confirmation presents the proposed limit and its own offset; the ordinary sign
 and source readings continue to describe the current road.
@@ -138,8 +179,7 @@ A fresh road match that contradicts the preview retires the encounter, even if
 Maps knows the road but has no posted speed for it.
 A newly selected current Maps limit gets its own decision before the next exit
 can be offered, including the first Maps reading of a drive.
-The same source-selection policy used to offer a preview can retire it when another
-qualified source wins. That approach cannot re-offer the same destination and
+A new number from another source takes the offer and retires the preview. That approach cannot re-offer the same destination and
 limit solely because the winning source disappears or a tile refresh changes the ID.
 If the preferred live source matches the accepted preview speed, the cap continues.
 Otherwise the previous acceptance is restored and the selected source follows normal
@@ -263,8 +303,8 @@ and the numeric cap before applying the lower speed.
 `SlcState.hasCeiling` and `effectiveCap` report the active physical-speed constraint;
 `isLimitingMaxSet` identifies when it is below the driver's ceiling. Observations,
 accepted limits and the effective constraint remain separate. The existing custom
-wire layout and historical command fields remain reserved for compatibility; live
-SLC no longer publishes or consumes `slcCruiseCommand`. Official vehicle schemas
+wire layout and historical command fields remain reserved for compatibility; outside the
+Tesla set-speed rule, live SLC no longer publishes or consumes `slcCruiseCommand`. Official vehicle schemas
 are unchanged. Shared curve, conditional-mode and controller messages remain intact.
 
 ## Numeric comparison investigation

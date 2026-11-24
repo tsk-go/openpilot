@@ -61,8 +61,8 @@ class StatusReport:
     counts = value.get('analysis_counts', {})
     if type(counts) is not dict:
       counts = {}
-    phase = ('preparing' if value['reason'] == 'loading_parked_analysis' else
-             'reading' if value['reason'] == 'analyzing_last_completed_drive' else 'checking')
+    phase = {'loading_parked_analysis': 'preparing', 'analyzing_last_completed_drive': 'reading',
+             'verifying_recorded_drive': 'verifying'}.get(value['reason'], 'checking')
     progress = value.get('analysis_progress', {'phase': phase,
       'completed': counts.get('original_segments_reviewed'), 'total': counts.get('original_segments_available')})
     self.set({**(previous or value), 'status': 'fitting', 'reason': value['reason'], 'retained_analysis': bool(previous),
@@ -318,37 +318,101 @@ def parked_status(sm, params, *, stopped=False, now=None):
   return parked_blocker(sm, params, stopped=stopped, now=now) is None
 
 
-def wait_for_parked(sm, params, *, stopped=lambda: False, clock=time.monotonic, powered_offroad=None):
+def wait_for_parked(sm, params, *, stopped=lambda: False, clock=time.monotonic, powered_offroad=None,
+                    recover_device_state=False, on_refusal=None):
   """Refresh a lapped subscriber before resuming analysis; never use stale permission."""
-  deadline = clock() + 0.75
+  started = None
+  wait = 0.75
   timeout = 0
   while True:
     sm.update(timeout)
-    reason = parked_blocker(sm, params, stopped=stopped(), now=clock(), powered_offroad=powered_offroad)
+    now = clock()
+    reason = parked_blocker(sm, params, stopped=stopped(), now=now, powered_offroad=powered_offroad)
     if reason is None:
       return True
-    if (
-      stopped()
-      or not params.get_bool('IsOffroad')
-      or params.get_bool('IsEngaged')
-      or sm['deviceState'].started
-      or reason == 'waiting_for_ignition_off'
-      or any(p.controlsAllowed or p.faults or (powered_offroad is None and (p.ignitionLine or p.ignitionCan)) for p in sm['pandaStates'])
-      or clock() >= deadline
+    if started is None:
+      started = now
+    # A late or temporarily invalid device report can overlap another stale feed.
+    # Once recovery starts, keep its original deadline and recheck every parked gate.
+    if recover_device_state and reason in ('waiting_for_fresh_deviceState', 'waiting_for_valid_deviceState'):
+      wait = 2.0
+    abort = None
+    if stopped():
+      abort = 'waiting_for_shutdown_to_finish'
+    elif not params.get_bool('IsOffroad'):
+      abort = 'waiting_for_vehicle_offroad'
+    elif params.get_bool('IsEngaged'):
+      abort = 'waiting_for_controls_to_disengage'
+    elif sm['deviceState'].started:
+      abort = 'waiting_for_vehicle_to_switch_off'
+    elif reason == 'waiting_for_ignition_off' or (
+      powered_offroad is None and any(p.ignitionLine or p.ignitionCan for p in sm['pandaStates'])
     ):
+      abort = 'waiting_for_ignition_off'
+    elif any(p.controlsAllowed for p in sm['pandaStates']):
+      abort = 'waiting_for_panda_controls_to_disarm'
+    elif any(p.faults for p in sm['pandaStates']):
+      abort = 'waiting_for_panda_fault_to_clear'
+    if abort is not None or now - started >= wait:
+      if on_refusal is not None:
+        on_refusal(abort or reason, round((now - started) * 1000), abort is None)
       return False
-    # A lost/invalid/freshness check grants nothing. Wait for an actual new
-    # message and re-run the identical predicate before any analysis continues.
     timeout = 20
 
 
-def run_parked_analysis(worker, report):
+def _hardwared_process(sm, now):
+  if (getattr(sm, 'seen', {}).get('managerState') and sm.valid['managerState'] and sm.alive['managerState']
+      and 0 <= now - sm.recv_time['managerState'] <= 2.0
+      and 0 < sm.logMonoTime['managerState'] and 0 <= now - sm.logMonoTime['managerState'] / 1e9 <= 2.0):
+    return next((process for process in sm['managerState'].processes if process.name == 'hardwared'), None)
+  return None
+
+
+def _device_status_snapshot(sm, hardwared_pid, progress, *, now=None):
+  """Keep relative ages and process state only, once per interrupted attempt."""
+  now = time.monotonic() if now is None else now
+  counts = {}
+  for service, key in (('deviceState', 'device_state'), ('pandaStates', 'panda_states'),
+                       ('peripheralState', 'peripheral_state'), ('managerState', 'manager_state')):
+    receipt = sm.recv_time.get(service, 0.0)
+    if sm.seen.get(service) and 0 < receipt <= now:
+      counts[key + '_receive_age_ms'] = round((now - receipt) * 1000)
+  if sm.seen.get('deviceState'):
+    counts['device_state_valid'] = int(sm.valid['deviceState'])
+    counts['device_state_alive'] = int(sm.alive['deviceState'])
+    stamp = sm.logMonoTime['deviceState'] / 1e9  # hardwared uses CLOCK_MONOTONIC.
+    received = sm.recv_time['deviceState']
+    if 0 < stamp <= now:
+      counts['device_state_message_age_ms'] = round((now - stamp) * 1000)
+    if 0 < stamp <= received <= now:
+      counts['device_state_age_at_receipt_ms'] = round((received - stamp) * 1000)
+  process = _hardwared_process(sm, now)
+  if process is not None:
+    counts['hardwared_running'] = int(process.running)
+    if process.running and process.pid > 0 and hardwared_pid is not None:
+      counts['hardwared_pid_changed'] = int(process.pid != hardwared_pid)
+  if progress is not None:
+    completed, total = progress.get('completed'), progress.get('total')
+    if type(completed) is int and type(total) is int and 0 <= completed <= total <= 180 and total > 0:
+      counts.update(original_segments_reviewed=completed, original_segments_available=total)
+  return counts
+
+
+def run_parked_analysis(worker, report, *, permission_loss=lambda: None):
   """Advance promptly only after an unreadable input was durably skipped."""
   from openpilot.starpilot.flm.offroad_route import RouteInputError
 
   try:
     report.set(worker.run_once())
   except (ValueError, OSError, RuntimeError) as error:
+    if (blocker := permission_loss()) is not None:
+      reason, counts = blocker
+      failure = {'status': 'unavailable', 'reason': reason}
+      if counts:
+        report.set(failure, diagnostic_value={**failure, 'analysis_counts': counts})
+      else:
+        report.set(failure)
+      return False
     if isinstance(error, RouteInputError):
       cloudlog.warning(
         'FLM skipped unreadable drive %s: %s; continuing with other drives',
@@ -371,7 +435,7 @@ def _run():
   from openpilot.starpilot.drive_state.evidence import PhysicalSource
   from openpilot.starpilot.drive_state.owner import DriveStateOwner, Mode
   from openpilot.starpilot.flm.offroad_cache import directory_for_params
-  from openpilot.starpilot.flm.diagnostic_state import DiagnosticState
+  from openpilot.starpilot.flm.diagnostic_state import ACTIVE, DiagnosticState
   from openpilot.starpilot.storage import starpilot_storage_root
 
   params = Params()
@@ -389,7 +453,7 @@ def _run():
     report.diagnostics = DiagnosticState(params)
     from openpilot.starpilot.flm.offroad_source import record_drive
 
-    sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState'])
+    sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'managerState'])
     drive_state = DriveStateOwner(params, starpilot_storage_root() / 'drive-state')
     physical = PhysicalSource(sm)
 
@@ -397,16 +461,38 @@ def _run():
       return drive_state.snapshot().mode is Mode.OFFROAD and physical.update_ready(params.get_bool('IsOffroad'))
 
     def parked():
-      allowed = wait_for_parked(sm, params, stopped=lambda: stopped, powered_offroad=powered_offroad)
-      if not allowed and not stopped and params.get_bool('IsOffroad'):
-        reason = parked_blocker(sm, params, powered_offroad=powered_offroad)
-        report.set({'status': 'collecting', 'reason': reason or 'waiting_for_parked_permission'})
-      return allowed
+      return wait_for_parked(sm, params, stopped=lambda: stopped, powered_offroad=powered_offroad)
+
+    def blocker():
+      return parked_blocker(sm, params, stopped=stopped, powered_offroad=powered_offroad) or 'waiting_for_parked_permission'
+
+    interrupted = None
+    hardwared_pid = None
+
+    def record_refusal(reason, wait_ms, timed_out):
+      nonlocal interrupted
+      if interrupted is not None:
+        return
+      counts = _device_status_snapshot(sm, hardwared_pid, report.current.get('analysis_progress'))
+      counts.update(parked_wait_ms=wait_ms, parked_wait_timed_out=int(timed_out))
+      if reason in ('waiting_for_fresh_deviceState', 'waiting_for_valid_deviceState'):
+        counts['parked_interrupted_wall_ns'] = time.time_ns()
+      interrupted = reason, counts
 
     def permitted():
-      okay = parked()
+      allowed = wait_for_parked(sm, params, stopped=lambda: stopped, powered_offroad=powered_offroad,
+                                recover_device_state=True, on_refusal=record_refusal)
       report.publish()
-      return okay
+      return allowed
+
+    def last_blocker():
+      return interrupted
+
+    def on_progress(progress):
+      reason = {'verifying': 'verifying_recorded_drive', 'checking': 'checking_recorded_steering_recommendations'}.get(
+        progress['phase'], 'analyzing_last_completed_drive')
+      report.analyzing({'status': 'fitting', 'reason': reason, 'analysis_progress': progress})
+      report.publish()
 
     cache = directory_for_params(params)
     worker = None
@@ -434,7 +520,12 @@ def _run():
             report.publish(),
           ),
         )
-      elif parked() and time.monotonic() >= next_analysis:
+      elif not parked():
+        if not stopped and params.get_bool('IsOffroad'):
+          reason = blocker()
+          if report.current.get('reason') != reason:
+            report.set({'status': 'collecting', 'reason': reason})
+      elif time.monotonic() >= next_analysis:
         if worker is None:
           report.analyzing({'status': 'fitting', 'reason': 'loading_parked_analysis'})
           report.publish()
@@ -446,9 +537,7 @@ def _run():
             cache,
             permitted=permitted,
             on_analysis=lambda: report.analyzing({'status': 'fitting', 'reason': 'analyzing_last_completed_drive'}),
-            on_progress=lambda progress: report.analyzing({'status': 'fitting', 'reason':
-              'checking_recorded_steering_recommendations' if progress['phase'] == 'checking' else 'analyzing_last_completed_drive',
-              'analysis_progress': progress}),
+            on_progress=on_progress,
             on_assessment=lambda a: report.analyzing(
               {
                 'status': 'fitting',
@@ -463,7 +552,10 @@ def _run():
           )
           report.restore(worker.cache)
         next_analysis = time.monotonic() + 10.0
-        if run_parked_analysis(worker, report):
+        interrupted = None
+        hardwared = _hardwared_process(sm, time.monotonic())
+        hardwared_pid = hardwared.pid if hardwared is not None and hardwared.running and hardwared.pid > 0 else None
+        if run_parked_analysis(worker, report, permission_loss=last_blocker):
           next_analysis = time.monotonic()
       report.publish()
       if not stopped:
@@ -474,9 +566,7 @@ def _run():
     raise
   finally:
     diagnostics = getattr(report, 'diagnostics', None)
-    if diagnostics is not None and diagnostics.state['current'] is not None and diagnostics.state['current']['stage'] in (
-      'starting_analysis', 'reading_recording', 'checking_recommendations'
-    ):
+    if diagnostics is not None and diagnostics.state['current'] is not None and diagnostics.state['current']['stage'] in ACTIVE:
       diagnostics.observe({'status': 'unavailable', 'reason': 'analysis_interrupted_by_shutdown'})
     try:
       if sm is not None:
