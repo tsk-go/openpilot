@@ -35,6 +35,30 @@
   Upstream has no `.claude` folder but its `.gitignore` ignores `.claude/`, so the two files are tracked with
   `git add -f` (like `panda/board/obj`): changes to them need `git add -f` too.
 
+# Staying close to upstream (hooks only)
+
+Owner, Nov 24: keep this fork as close to upstream as possible, so syncs meet few conflicts; fork fixes stay until
+upstream fixes them (the owner may ask firestar). So our code lives in files of our own, and upstream's files carry only
+hooks - an import and one-line calls, each marked `# fork`:
+- StarView under `openpilot/starpilot/system/starview/`: `lanes.py` (lane changes and turns: desire_helper, modeld,
+  intent), `car_doors.py` (card), `nav_routes.py` (route_engine, owner, runtime, google_places), `advice.py` (planner,
+  Lane Centering), `techstream/pandad_gate.py` (process_config), `offline.py` (`through_door` in the model and sound
+  downloads); fork fixes in `starview/fixes/` (full_update, parked_restart, offline_uploads); the Toyota car side in
+  `opendbc_repo/opendbc/car/toyota/starview_doors.py`; panda safety in `opendbc_repo/opendbc/safety/modes/toyota_starview.h`.
+- Our tests in our own files: `starview/tests/`, `opendbc/car/toyota/tests/test_starview_doors.py`,
+  `opendbc/safety/tests/test_toyota_starview.py`, `mapd_repo/fork_road_test.go` - on upstream's fixtures where they
+  help. Upstream's test files change only where they must fake one of our names (test_uploader_preferences'
+  namespace, the modeld startup tests). Each hook has a test that it is in place.
+- Still inline (temporary or tied to upstream's loop): fork fixes 1 and 2 in modeld.py (the big model's load and
+  warmup), the live-traffic refresh's state in navigation/runtime.py, mapbox_budget.py's shared counting, mapd's Go
+  fix (fork fix 7), tablet mode in ui.py, Low Speed Smoothing's Galaxy row.
+- Every new patch follows the same rule: the logic in our file, a hook line in upstream's, a test for the hook.
+- On a sync conflict at a hook: keep upstream's lines as they are and put our hook line back beside them (still stop and
+  ask the owner first, as below).
+Nov 24 the fork's changes to upstream's files went from 41 files / 1641 lines to about 35 files / 400 lines (most of
+what is left: mapd's Go fix, fork fixes 1 and 2, the traffic refresh); behaviour unchanged (the whole test set gave the
+same results before and after, and the panda images built from the new source are byte for byte the old ones).
+
 # Syncing upstream
 
 "Sync" means: merge https://github.com/StarPilotHQ/StarPilot branch `testing` into this repo's `testing` with a merge commit
@@ -162,9 +186,10 @@ that lands upstream's images there silently removes the door lock.
   git checkout -- board/obj/bootstub.* board/obj/body_h7.bin.signed tests/libpanda/libpanda.so   # bootstubs stay
   ```
   Then commit `panda/board/obj/*.bin.signed`, `gitversion.h`, `version`. Don't change the bootstubs.
-- Before committing, check the safety change is still in the merged source (`uds_door_start` in
-  `opendbc_repo/opendbc/safety/modes/toyota.h`), and that `pytest opendbc/safety/tests/test_toyota.py -k uds_door`
-  (from `opendbc_repo`) passes.
+- Before committing, check the safety change is still in the merged source (`TOYOTA_STARVIEW_DOOR_START` /
+  `TOYOTA_STARVIEW_DOOR_RETURN` used in `toyota_tx_hook`'s 0x750 block in `opendbc_repo/opendbc/safety/modes/toyota.h`;
+  the frame lists are in `toyota_starview.h`, macros so the image is the one built when they sat in toyota.h), and that
+  `pytest opendbc/safety/tests/test_toyota_starview.py` (from `opendbc_repo`) passes.
 - The build is reproducible: rebuilding unchanged source gives the committed image except the version string and the
   signature. A diff bigger than that means the source isn't what was built.
 - The comma four uses `panda_h7.bin.signed`.
@@ -195,44 +220,46 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `openpilot/selfdrive/modeld/modeld.py` `big_warmup` (ChestnutLoading stays on until the big model runs steady).
    Upstream fixed = modeld itself waits for the big model's first real passes before clearing ChestnutLoading, or those
    first passes are no longer slow (no `chestnut.warmup` with slow passes / missed frames in the logs).
-3. **A full update shows "failed" after its own reboot** (patch 29): in `openpilot/system/updated/updated.py`
-   `FULL_UPDATE_REBOOT` and the first lines of `recover_fast_state`, plus `system/updated/tests/test_full_update_reboot.py`.
+3. **A full update shows "failed" after its own reboot** (patch 29): `openpilot/starpilot/system/starview/fixes/full_update.py`;
+   in `openpilot/system/updated/updated.py` its import and the `full_update.finished(state)` line at the top of
+   `recover_fast_state`; `starview/tests/test_full_update_reboot.py` (also checks upstream's normal_update still ends
+   with the words the fix matches).
    normal_update's last stage is "rebooting" and the reboot installs it, but recover_fast_state turns every unfinished
    stage into "Update process restarted before completion". Upstream fixed = normal_update ends with stage "complete"
    (like fast_update does) or recover_fast_state accepts a full update's reboot.
    Nov 1 (Dom sync, conflict): upstream rewrote `recover_fast_state` (it keeps the saved state's fields and also ends an
    interrupted metadata check) but still marks the full update's own "rebooting" stage as failed, so the merge took
    upstream's function with our one check at its top (the install reboot -> stage complete). Still needed.
-4. **The comma four restarts all night once it shut down while parked** (patch 50): in
-   `openpilot/system/hardware/power_monitoring.py` `PARKED_OFF_MARKER`, `PARKED_RESTART_SHUTDOWN_S`, `mark_parked_off`,
-   `clear_parked_off` and the `quick` lines of `should_shutdown`; in `hardwared.py` the two calls; the
-   `test_parked_restart_shuts_down_quickly` test. After a parked shutdown the panda's deep sleep wakes on the car's CAN,
+4. **The comma four restarts all night once it shut down while parked** (patch 50):
+   `openpilot/starpilot/system/starview/fixes/parked_restart.py`; in `openpilot/system/hardware/power_monitoring.py` the
+   import, `self.parked` and the `self.parked.shutdown_now(...)` line at the end of `should_shutdown`; in `hardwared.py`
+   `power_monitor.parked.clear()` / `.mark()`; `starview/tests/test_parked_restart.py`. After a parked shutdown the panda's deep sleep wakes on the car's CAN,
    resets and bootkicks (board init sets BOOT_BOOTKICK), and every such start stayed on for MIN_ON_TIME_S (an hour) on a
    battery already below the cutoff - 14 restarts in one night (Oct 27). Upstream fixed = a parked wake no longer stays
    up an hour (the panda stops bootkicking without ignition, or the minimum on time doesn't apply after a parked
    shutdown). Oct 29 (Dom sync): upstream `2567a32f` re-applies the panda's power-save CAN interrupt state after a CAN
    re-init (a CAN wake may have come from that); kept ours until a parked night shows no restarts without it.
-5. **The uploader spins while offline mode blocks every upload** (patch 64): in `openpilot/system/loggerd/uploader.py`
-   `OFFLINE_FLAG`, `offline_mode_on()` and its check beside `network_type == NetworkType.none` in `main`, plus
-   `test_offline_mode_sleeps_instead_of_scanning` (and `offline_mode_on` in that test's namespace) in
-   `system/loggerd/tests/test_uploader_preferences.py`. With StarView's offline mode on nothing can upload, so no route
+5. **The uploader spins while offline mode blocks every upload** (patch 64):
+   `openpilot/starpilot/system/starview/fixes/offline_uploads.py`; in `openpilot/system/loggerd/uploader.py` its import
+   and the `offline_mode_on()` check beside `network_type == NetworkType.none` in `main`; `offline_mode_on` in the
+   namespace of `system/loggerd/tests/test_uploader_preferences.py`; `starview/tests/test_offline_uploads.py`. With StarView's offline mode on nothing can upload, so no route
    ever settles and every step rescans every drive folder (~960 routes, `owns_recording` per file): 63 % of a core over
    a 15-min drive (Nov 3). Upstream fixed = the uploader stops rescanning settled-but-failing routes, or has its own
    "uploads off" switch we can set from offline mode.
 6. **Map speed limits never arrive with the phone GPS handoff** (patch 74): in `openpilot/cereal/custom.capnp`
-   `MapdOut.GpsSource` `phone @4`, in `openpilot/starpilot/speed_limits/map_source.py` the 'phone' entry of
-   `GPS_MAX_AGE_NS` (10 s, mapd's own `phoneFixMaxAge`), and `test_phone_gps_handoff_is_read_and_kept_by_its_own_age`
-   in `speed_limits/tests/test_map_source.py`. mapd (Go) writes its `GpsSourcePhone` (4) when it runs on the phone GPS
+   `MapdOut.GpsSource` `phone @4`, in `openpilot/starpilot/speed_limits/map_source.py` the
+   `GPS_MAX_AGE_NS.setdefault('phone', ...)` line (10 s, mapd's own `phoneFixMaxAge`), and
+   `starview/tests/test_phone_gps_limits.py`. mapd (Go) writes its `GpsSourcePhone` (4) when it runs on the phone GPS
    handoff (StarView's RTK receiver, fork history 16: Galaxy's GPS source "Prefer phone GPS", or "backup" without the
    comma's own fix); the Python schema had no 4, so `str(road.gpsSource)` raised and `copy_frame` dropped every frame -
    mapd matched the road and its limit, the speed-limit side stayed `unknown` (Nov 11). Upstream fixed = upstream's
    schema has the phone source and map_source accepts it. (mapd_repo's own schema copy is left as it is: Go writes the
    number either way.) Check at every sync: if upstream's `MapdOut.GpsSource` has its own entry for 4 and its
-   `GPS_MAX_AGE_NS` its own 'phone' entry, remove ours (keep upstream's lines, drop our test if upstream tests it),
+   `GPS_MAX_AGE_NS` its own 'phone' entry, remove ours (keep upstream's lines, drop our tests if upstream tests it),
    move fork history 43 to "No longer carried" and tell the owner patch 74 was dropped.
 7. **The map speed limit drops beside service roads and at every stop on the RTK fix** (patch 79): in `mapd_repo/way.go`
    `clearlyNearestWay` and its call in `GetCurrentWay`; in `mapd_repo/state.go` `unknownBearing`, `holdStoppedRoad` and
-   its check in `ProcessGps`; the two tests at the end of `mapd_repo/road_ambiguity_test.go`; and the provider built
+   its check in `ProcessGps`; the two tests in `mapd_repo/fork_road_test.go`; and the provider built
    from that source (`openpilot/starpilot/maps/provider/mapd` + `manifest.json`). (a) A boulevard's main road and its
    service road both fall inside the 2x match envelope and mapd called it ambiguous - `unknown`, no map limit, for
    minutes on a 0.2 m RTK fix; now with a horizontal accuracy up to 10 m the nearest road wins when every other one
@@ -248,8 +275,8 @@ normal commit (no revert of history, no force-push) and tell the owner which one
    `PYTHONPATH=$PWD python3 openpilot/starpilot/maps/package_shadow.py` from the repo root. The binary's sha differs
    from upstream's build (other toolchain); only the manifest's fields are checked.
 8. **The Sienna's steering wheel wobbles in stop-and-go** (patch 81): `openpilot/starpilot/lateral/low_speed_smoothing.py`,
-   in `openpilot/selfdrive/controls/controlsd.py` `self.low_speed_smoothing` (made in `__init__`, applied right after
-   the model's `desiredCurvature` is taken), in `openpilot/starpilot/ui/feature_settings_owner.py` the TORQUE page's
+   in `openpilot/selfdrive/controls/controlsd.py` the import, `self.low_speed_smoothing` (made in `__init__`) and the
+   `low_speed_smoothing.controls_curvature(...)` line right after the model's `desiredCurvature` is taken, in `openpilot/starpilot/ui/feature_settings_owner.py` the TORQUE page's
    `low_speed_smoothing.rows` and the `starview:low_speed_smoothing` apply line, and the tests
    `starpilot/lateral/tests/test_low_speed_smoothing.py`, `test_low_speed_smoothing_controls.py`,
    `starpilot/galaxy/tests/test_low_speed_smoothing_page.py`. Recorded Nov 16 (owner's bookmarks, Belt Parkway): 8
@@ -268,9 +295,9 @@ Paths are under `openpilot/` unless noted.
 **StarView (the tablet UI; stays, upstream won't replace it)**
 1. StarView bridge: `starpilot/system/starview/` (starviewd, pairing, log archive, external storage, TechStream). Its
    `compat.py` keeps the tablet's wire format working on 7.0.
-2. Automatic blinker: `starview/blinker_signal.py`; `selfdrive/controls/lib/desire_helper.py` (`starview_lane`,
-   `starview_evidence`: a lane change confirmed on the tablet starts without a nudge) and the wiring in
-   `selfdrive/modeld/modeld.py`.
+2. Automatic blinker: `starview/blinker_signal.py`; `starview/lanes.py` (a lane change confirmed on the tablet starts
+   without a nudge; since Nov 24 all of StarView's lane-change and turn logic), hooked into
+   `selfdrive/controls/lib/desire_helper.py` (4 lines) and `selfdrive/modeld/modeld.py`; tests `starview/tests/test_lanes.py`.
 3. Tablet mode + terminal pairing: `starview/tablet_mode.py` hooked into `selfdrive/ui/ui.py`; `starview/pair.py`.
 4. One local Galaxy session: `starview/galaxy_local.py` reuses its cookie (Galaxy keeps 64 sessions).
 5. Drive replay: `starview/replay.py` + starviewd hooks.
@@ -278,11 +305,13 @@ Paths are under `openpilot/` unless noted.
 7. In-app navigation, Waze removed (patches 9-12): `starview/nav_link.py`; `starpilot/navigation/` owner, runtime,
    route_engine, mapbox_budget (alternatives, traffic refresh, lanes, spoken directions, place search, saved places);
    `navigation/relay.py` sends Mapbox requests through the tablet when the comma has no internet (since Nov 16 it wraps
-   upstream's pooled session; Google's requests never go through the tablet, its relay passes Mapbox only).
+   upstream's pooled session; Google's requests never go through the tablet, its relay passes Mapbox only). Since Nov 24
+   our additions to upstream's route_engine / owner / runtime / google_places are in `starview/nav_routes.py`, called
+   from one-line hooks; runtime.py keeps the live-traffic refresh's state in its update loop.
 8. GPU icon state + quiet mode while the big model loads (patch 13): starviewd `ChestnutState`, `gpu_quiet_tick`.
 9. Satellite reports for the tablet's GPS card (patch 15): `starview/compat.py` passes only `ubloxGnss.satReport`.
-10. Lane-change nudge strength from the tablet (patch 18): `starview/nudge.py`, `desire_helper.py` `nudge_torque`,
-    modeld `NudgeSetting` (Toyota only; no file = stock rule).
+10. Lane-change nudge strength from the tablet (patch 18): `starview/nudge.py`, applied by `starview/lanes.py`
+    (`LaneInputs.pre_lane_change`; Toyota only; no file = stock rule).
 11. Update from the tablet on 7.0 (patches 19, 23): starviewd `software_status` / `software_fast` (7.0's software owner;
     action "update" like Galaxy's Update button: fast when allowed, else the full update).
 15. RTK receiver on the hub (patch 25): `starview/rtk.py` reads a u-blox (ZED-F9R) for the tablet's GPS card (params "k")
@@ -322,17 +351,18 @@ Paths are under `openpilot/` unless noted.
     /data/starview/rtk.json "mount"; realign / factory turn learning back on and forget them. status() "mountKept".
 25. StarView's street map in Turn Signal Guidance (patch 38, redone at the Oct 23 sync on upstream's guidance):
     `starview/blinker_turn.py` (starviewd action `turn_intent` {side: left/right/none/null} -> /dev/shm/starview_turn,
-    1.5 s old = no say), `navigation/intent.py` `TurnIntent.select(tablet=)` / `signal_desire(tablet=)`, modeld
-    `starview_turn`. Upstream turns any blinker under 20 mph into a turn (Galaxy: Turn Signal Guidance, the on/off). With
+    1.5 s old = no say); `starview/lanes.py` sets `TurnIntent.starview_no_turn`, read in `navigation/intent.py`'s
+    `signal_desire` (2 lines). Upstream turns any blinker under 20 mph into a turn (Galaxy: Turn Signal Guidance, the on/off). With
     StarView's switch on and our street on its map, the tablet says whether there's a street to turn into on that side
     within 250 ft (OSM: not a one-way coming at us, not service): "none" -> no turn (pulling over). No say -> upstream.
     Since the Nov 22 sync all of it only with Galaxy's Automatic Turn Initiation on (upstream's own switch, off by
-    default): Turn Signal Guidance, the route's turn and the tablet's "turn" (modeld `tablet_route_turn`).
+    default): Turn Signal Guidance, the route's turn and the tablet's "turn" (`lanes.py` `LaneInputs.begin`).
 26. Advice from StarView's New ideas (patch 39): `starview/advice.py` (starviewd action `advice` {cap, follow, offset,
     why} -> /dev/shm/starview_advice, read at most every 0.25 s, 1.5 s old = none). Only ever gentler: the planner's
-    v_cruise lowered to `cap` (never below 10 mph, never raised; `longitudinal_planner.py` after the navigation ceiling),
-    up to 0.6 s added to the follow time (`mpc_follow`), Lane Centering's offset shifted by up to 0.3 m
-    (`lane_runtime.LaneCenteringHost.sample`). Everything that decides (speed bumps, potholes, cut-ins, lights...) runs
+    v_cruise lowered to `cap` (never below 10 mph, never raised; `Advice.cruise`, one line in `longitudinal_planner.py`
+    after the navigation ceiling), up to 0.6 s added to the follow time (`Advice.mpc_follow`, one line before
+    `mpc.update`), Lane Centering's offset shifted by up to 0.3 m (`Advice.lane_settings`, in
+    `lane_runtime.LaneCenteringHost.sample`). Everything that decides (speed bumps, potholes, cut-ins, lights...) runs
     on the tablet (StarView 2.67).
 27. Big UI's cards on the tablet (patch 43): starviewd action `slc_action` {kind accept/reject/adopt, session, decision,
     presentation, speed} sends the same datagram as the car screen's speed-limit taps (`starport/projection_slc_action.py`
@@ -359,22 +389,24 @@ Paths are under `openpilot/` unless noted.
 
 29. Door lock / unlock while running (patch 46): the 4th-gen Sienna's Main Body module (0x750, sub-address 0x40)
     refuses StarPilot's KWP door command (`7F 30 11`) and takes Toyota's UDS active test instead (GTS+ "Door Lock" DID
-    2810, "Door Unlock" 2811). `opendbc/car/toyota/door_locks.py` `DoorLocks.manual` runs it over openpilot's own link:
+    2810, "Door Unlock" 2811). `opendbc/car/toyota/starview_doors.py` `StarViewDoorLocks.manual` (upstream's DoorLocks
+    plus ours; the Toyota CarController makes one) runs it over openpilot's own link:
     10 03 -> 0.1 s -> 2F 28xx 03 01 80 -> 1 s -> 2F 28xx 00 80 -> 0.1 s -> 10 01, only in Park, stopped, no gas,
-    handing back at once if that changes. Panda safety (`opendbc/safety/modes/toyota.h`, the 0x750 block) allows
+    handing back at once if that changes. Panda safety (`opendbc/safety/modes/toyota_starview.h`, used in toyota.h's
+    0x750 block) allows
     those exact frames: the start frames behind the existing stationary gate, the hand-back frames always (relay OK).
-    Trigger: `/dev/shm/starview_door_request` ("lock" / "unlock"), read by `selfdrive/car/card.py`
-    `poll_door_request` every 50th frame; answer in `/dev/shm/starview_door_result`; starviewd action `door` for the
+    Trigger: `/dev/shm/starview_door_request` ("lock" / "unlock"), read by `starview/car_doors.py` (`CarDoors`, one call
+    in `selfdrive/car/card.py` right after `CI.update`) every 50th frame; answer in `/dev/shm/starview_door_result`; starviewd action `door` for the
     tablet. Pausing pandad for the same test (TechStream's way) faulted the Sienna's cruise onroad, so never do that.
-    Rebuilt panda firmware ships with it (see "Panda firmware"). Touches upstream card.py and door_locks.py: re-check
-    after each sync. Confirmed on the car Oct 27 (both lock and unlock, every step answered positively).
+    Rebuilt panda firmware ships with it (see "Panda firmware"). Touches upstream card.py and carcontroller.py (hook
+    lines only since Nov 24): re-check after each sync. Confirmed on the car Oct 27 (both lock and unlock, every step answered positively).
     Patch 47: the answer-back - the horn (2F 2802) chirps once for lock, twice for unlock, inside the same session;
     the request can say "horn" (default), "none" or "buzzer" (the wireless buzzer 2F 284A is allowed too, but on the
     Sienna it ignores "return control" and sounds until the session ends). Panda safety allows those exact on frames
     behind the stationary gate and their off frames always. The answer goes back as soon as the doors move; card checks
     for a request 4x a second (20x while one runs).
     Patch 48: the answer is the car's own confirmation - while a request runs, card hands the Main Body module's
-    replies on 0x758 to `DoorLocks.response`; its "done" (6F 28 1x 03) gives "lock: confirmed", a 7F gives "refused by
+    replies on 0x758 to `StarViewDoorLocks.response`; its "done" (6F 28 1x 03) gives "lock: confirmed", a 7F gives "refused by
     the car (code xx)", none within 0.3 s gives "sent, no answer from the car". starviewd's `door` is ok only when
     confirmed.
     Patch 49: StarLock's own horn pattern - `door` takes optional `beeps` [n 1-5, ms on 30-1000, ms between 50-1000] (a
@@ -386,7 +418,7 @@ Paths are under `openpilot/` unless noted.
     tablet (pairing.py, peer "ble"), then starviewd's `door` action. The phone also tries Wi-Fi (starviewd /hello,
     /auth, `door` over /data) at the same time; whichever reaches the comma first does it. Off with
     /data/starview/no_ble_door. The app's source is in the StarView repo (module `starlock`).
-32. StarLock auto-lock / auto-unlock (patch 51): `starview/autolock.py`. card publishes the driver's door (Toyota
+32. StarLock auto-lock / auto-unlock (patch 51): `starview/autolock.py`. card (`starview/car_doors.py`) publishes the driver's door (Toyota
     `CarState.driver_door_open` from BODY_CONTROL_STATE DOOR_OPEN_FL), any door and Park to /dev/shm/starview_driver_door
     only on a change, with a count of driver's-door closes. A close in Park with the phone connected arms it for 60 s;
     the comma's own reading of the phone (`sudo -n btmgmt con` / `conn-info`, 2x a second while armed) below the lock
@@ -407,12 +439,12 @@ Paths are under `openpilot/` unless noted.
     on the TX characteristic, queued from any thread and sent from the Bluetooth loop via g_idle_add), and StarLock
     sends its current answer-back and horn patterns (`autolock` set) whenever they change and on every connect.
 33. StarLock's real lock state and hold-to-close windows (patch 53).
-    Lock state: on the 4th-gen Sienna (`DoorLocks.read_locks`, set by the Toyota CarController for
-    TOYOTA_SIENNA_4TH_GEN) `door_locks.py` reads the Main Body module every 2 s - UDS 22 101A (driver), 1019
+    Lock state: on the 4th-gen Sienna (`StarViewDoorLocks.read_locks`, on for TOYOTA_SIENNA_4TH_GEN)
+    `starview_doors.py` reads the Main Body module every 2 s - UDS 22 101A (driver), 1019
     (passenger), 101B / 101C (sliding doors), 101E (back door), one request per frame, default session, 00 = locked /
     01 = unlocked (found on the car Oct 28) - never while a lock / unlock runs, and 0.5 s after one ends; a lock /
     unlock asked right after a read waits 50 ms for its reply. card hands it
-    the 0x758 replies only while `DoorLocks.listening` (a request running, or 0.3 s after a burst) and writes
+    the 0x758 replies only while `StarViewDoorLocks.listening` (a request running, or 0.3 s after a burst) and writes
     /dev/shm/starview_locks on a change (and once at start, all unknown, so a drive never shows the last one's). Panda safety allows those five exact read frames like the return frames
     (rebuilt firmware). starviewd `lock_state` / action `locks`; BLE op `locks`, and `locks_watch` pushes
     {"op":"locks","d":{dr,pa,s1,s2,bk: L/U/?},"live"} to StarLock on every change (one stat() a second).
@@ -434,7 +466,7 @@ Paths are under `openpilot/` unless noted.
     openpilot) puts it back. starviewd action `offline` {on} (installs the service), `offline_door` {close} /
     {autoClose}, and a 30 s `offline_tick` (closes a door held too long; car off, puts back a missing or old boot
     service - AGNOS updates remove it). The door: the model manager (`_work`) and sound downloads (`_run`) run inside
-    `offline.download_door`, and their default opener is `offline.urlopen` - with offline mode on, Hugging Face
+    `offline.download_door` (`offline.through_door`, one decorator line each), and their default opener is `offline.urlopen` - with offline mode on, Hugging Face
     (huggingface.co redirects every file to rotating plain-Amazon us.aws.cdn.hf.co) is let through at its current
     addresses before every request, after every redirect and every 20 s while a download runs; after the last one it
     closes, or with "close after downloads" off (/data/starview/offline_door.json) stays open until "Close now" or 1 h.
@@ -596,12 +628,12 @@ Paths are under `openpilot/` unless noted.
     before the opening and lets openpilot move only inside it (RTK + map + the camera's road edge opening). For the
     signal before the opening the tablet holds the blinker with why "exit" (`starview/blinker_signal.py` WHYS,
     PicoBlinker.WHYS; the blink action's answer lists them in "whys" so the app knows this comma has it):
-    `desire_helper.update(starview_hold=)` lets no automatic lane change start on it (with Galaxy's automatic lane
+    `lanes.py` (`LaneInputs.pre_lane_change`) lets no automatic lane change start on it (with Galaxy's automatic lane
     changes on, a held blinker would otherwise start one after its delay - onto the shoulder), and modeld treats it
     like "lane": never a turn (Turn Signal Guidance), the lane change helper's desire. At the opening the tablet says
     "lane" on the same hold (the usual confirm: adjacent lane seen, blind spot clear, 0.5 s settle). The driver's own
     nudge still starts a change at any time. Since the Nov 18 (2) sync modeld also keeps upstream's forecast turn
-    (`signal_turn`) and the route's turn away from a "lane" / "exit" hold. Tests: `test_starview_signal.test_exit_signal_is_a_signal_only`,
+    (`signal_turn`) and the route's turn away from a "lane" / "exit" hold. Tests: `test_lanes.test_exit_signal_is_a_signal_only`,
     `test_blinker.test_why_is_published_while_held_and_cleared_on_release`.
 
 **Fixes to upstream behaviour (drop when upstream fixes them; see the section above)**
