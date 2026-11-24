@@ -44,9 +44,7 @@ from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePo
 from openpilot.starpilot.lateral.auto_lane_change import (
   ClockEpochGuard, auto_evidence, auto_trigger_engaged, paired_clocks_ns, session_policy, steering_capable,
 )
-from openpilot.starpilot.system.starview.blinker_signal import StarViewSignal
-from openpilot.starpilot.system.starview.blinker_turn import BlinkerTurn
-from openpilot.starpilot.system.starview.nudge import NudgeSetting
+from openpilot.starpilot.system.starview.lanes import StarViewLanes  # fork: StarView's tablet in lane changes and turns
 from openpilot.starpilot.lateral.lane_change_status_wire import (
   Direction as StatusDirection, LaneChangeStatus, Phase as StatusPhase, encode_optional as encode_lane_status,
 )
@@ -546,9 +544,7 @@ def main(demo=False):
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy)
   navigation_turn = TurnIntent(params, CP)
-  starview = StarViewSignal()
-  starview_turn = BlinkerTurn()   # patch 38: the tablet's street map says whether your blinker is for a turn
-  nudge_setting = NudgeSetting(CP.brand)   # the tablet's nudge strength for lane changes (Toyota)
+  starview = DH.starview = StarViewLanes(CP.brand, navigation_turn)  # fork: the tablet's lane changes and turns
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
 
@@ -593,17 +589,10 @@ def main(demo=False):
     sm.update(0)
     turn_models = (model.lateral, model.longitudinal) if isinstance(model, LaboratoryPair) else (model,)
     turn_supported = all(state.npy.get('desire') is not None and state.npy['desire'].shape[-1] == 8 for state in turn_models)
-    # StarView's automatic blinker: "lane" = a lane change confirmed on the tablet, not the route's turn
-    starview_why = starview.for_blinker(sm['carState'])
-    # Turn Signal Guidance (upstream) decides on any blinker under 20 mph; the tablet's map, when it has a say, whether
-    # there is a street to turn into on that side (a lane change the tablet holds is never a turn)
-    # (patch 80: nor is the route's exit the tablet signals for, before the ramp opens beside us)
-    tablet_turn = "no" if starview_why in ("lane", "exit") else starview_turn.for_blinker(sm['carState'])
+    starview.before_turn(sm)  # fork
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
-                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop),
-                                     tablet=tablet_turn)
-    if starview_why in ("lane", "exit"):  # not the route's turn: keep the lane change helper's desire (TurnIntent keeps its stop latch)
-      desire = DH.desire
+                                     supported=turn_supported, model_stop=bool(prev_action.shouldStop))
+    desire = starview.after_turn(desire, DH)  # fork
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
@@ -735,27 +724,12 @@ def main(demo=False):
                                                   navigation_turn.automatic_turn_enabled),
         clock_skew_ns=clock_skew_ns, lane_change_state=DH.lane_change_state)
       engaged = bool(sm['carControl'].latActive)
-      # a lane change confirmed on StarView's tablet starts with the same adjacent-lane check as an automatic one
-      starview_lane = starview_why == "lane"
-      starview_evidence = (starview_lane and direction != 0 and
-                           lane_clock_guard.ready(sm, mono_now_ns, boot_now_ns, clock_skew_ns) and
-                           auto_evidence(sm, modelv2_send.modelV2, direction, runtime_lane_policy.minimum_lane_width_m,
-                                         now_mono_ns=mono_now_ns, now_boot_ns=boot_now_ns,
-                                         model_valid=bool(modelv2_send.valid), vehicle_capable=auto_vehicle_capable))
-      route_turn = (matching_turn_signal(sm, mono_now_ns, supported=navigation_turn.automatic_turn_enabled) and
-                    starview_why not in ("lane", "exit"))
-      # upstream's forecast-confirmed turn neither, for a blinker the tablet holds for a lane change or the route's exit
-      # from our lane (patch 80): at an exit's opening, slowing, the forecast sees the ramp curve away and would make the
-      # move a "turn" - no lane change, the exit missed
-      signal_turn = signal_turn and starview_why not in ("lane", "exit")
-      # the tablet's "turn" (its blinker at the route's turn) follows Galaxy's Automatic Turn Initiation like upstream's
-      tablet_route_turn = starview_why == "turn" and navigation_turn.automatic_turn_enabled
+      starview.before_lane_change(sm, modelv2_send, direction, runtime_lane_policy, lane_clock_guard,  # fork
+                                  auto_vehicle_capable, mono_now_ns, boot_now_ns, clock_skew_ns)
       DH.update(car_state, sm['carControl'].latActive, lane_change_prob,
                 auto_evidence=auto_ready, engaged=auto_trigger_engaged(sm, runtime_lane_policy,
                   openpilot_longitudinal=bool(CP.openpilotLongitudinalControl), now_mono_ns=mono_now_ns),
-                navigation_turn=signal_turn or route_turn or tablet_route_turn, starview_lane=starview_lane,
-                starview_evidence=starview_evidence, starview_hold=starview_why == "exit",
-                nudge_torque=nudge_setting.torque())
+                navigation_turn=signal_turn or matching_turn_signal(sm, mono_now_ns, supported=navigation_turn.automatic_turn_enabled))
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 

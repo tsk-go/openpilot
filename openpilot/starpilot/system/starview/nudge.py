@@ -3,8 +3,9 @@
 Stock, desire_helper starts a signalled lane change on carState.steeringPressed toward that side: on Toyota the
 EPS driver torque past STEER_THRESHOLD (100), one frame. With Always On Lateral openpilot holds the wheel, so the
 nudge pushes against it. The tablet's "Blinker & lane changes" page sets a strength as a percentage of the car's
-own threshold (30-150 %); starviewd keeps it in PATH. desire_helper then counts a nudge as driver torque toward
-that side at or above that many units, held NUDGE_HOLD_S so a bump in the road doesn't start a lane change.
+own threshold (30-150 %); starviewd keeps it in PATH. desire_helper (through lanes.py) then counts a nudge as driver
+torque toward that side at or above that many units, held lanes.NUDGE_HOLD_S so a bump in the road doesn't start a
+lane change.
 
 No file (or 100 %) or a car other than Toyota: the stock steeringPressed rule, unchanged.
 """

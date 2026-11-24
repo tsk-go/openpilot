@@ -114,10 +114,7 @@ class TurnIntent:
     self.key = None
     self.stop_hold = False
 
-  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool, tablet: str | None = None):
-    """tablet (fork patch 38, StarView): None = no say (Turn Signal Guidance as upstream); "turn" = the tablet's street
-    map has a street to turn into on the blinker's side; "no" = it has none (a lane change or pulling over, not a turn).
-    Like upstream's own turns, only with Galaxy's Automatic Turn Initiation on."""
+  def select(self, sm, now_ns: int, current_desire, *, supported: bool, model_stop: bool):
     try:
       cs = sm['carState']
       signaling = bool(cs.leftBlinker or cs.rightBlinker)
@@ -135,7 +132,7 @@ class TurnIntent:
     if key != self.key:
       self.key, self.stop_hold = key, False
     if nav is None:
-      return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop, tablet=tablet)
+      return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
     cs = sm['carState']
     try:
       stamp, plan = sm.logMonoTime['longitudinalPlan'], sm['longitudinalPlan']
@@ -153,9 +150,9 @@ class TurnIntent:
     selected = turn_desire(sm, now_ns, current_desire, supported=supported)
     if selected != log.Desire.none:
       return selected
-    return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop, tablet=tablet)
+    return self.signal_desire(sm, now_ns, current_desire, supported=supported, model_stop=model_stop)
 
-  def signal_desire(self, sm, now_ns, current_desire, *, supported, model_stop, tablet=None):
+  def signal_desire(self, sm, now_ns, current_desire, *, supported, model_stop):
     if self.guidance is None:
       return current_desire
     try:
@@ -188,7 +185,7 @@ class TurnIntent:
         self.signal_stop_hold = self.signal_stop_completed = False
       if self.signal_stop_hold or cs.standstill or cs.vEgo <= 0.1 or cs.leftBlinker == cs.rightBlinker:
         return current_desire
-      if tablet == "no":     # fork patch 38: the tablet's map has no street to turn into on that side
+      if getattr(self, 'starview_no_turn', False):  # fork: StarView's map has no street to turn into there (lanes.py)
         return current_desire
       if cs.leftBlinker and not cs.leftBlindspot:
         return log.Desire.turnLeft
