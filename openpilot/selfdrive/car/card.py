@@ -1,6 +1,5 @@
 from openpilot.starpilot.gps.publisher import CarGpsPublisher
 #!/usr/bin/env python3
-import json
 import os
 import time
 import threading
@@ -101,12 +100,9 @@ from openpilot.starpilot.controllers.wheel_actions import LIFETIME_NS as WHEEL_A
 from openpilot.starpilot.controllers.cruise_action import CruiseActionConsumer, eligible as cruise_action_eligible
 from openpilot.starpilot.schema_cache import get_cache, prewarm_cache_contracts, put_cache
 
+from openpilot.starpilot.system.starview import car_doors  # fork
+
 REPLAY = "REPLAY" in os.environ
-# StarView: the tablet's lock / unlock button (starviewd writes the request, card answers in the result) - RAM only
-DOOR_REQUEST = "/dev/shm/starview_door_request"
-DOOR_RESULT = "/dev/shm/starview_door_result"
-DRIVER_DOOR = "/dev/shm/starview_driver_door"   # StarLock auto-lock (starview/autolock.py): written only on a change
-LOCKS = "/dev/shm/starview_locks"   # StarLock: the doors' real lock state (door_locks.py), written only on a change
 
 EventName = log.OnroadEvent.EventName
 DISTANCE_GESTURE_KEYS = {Press.SHORT: ('DistanceButtonControl', 0),
@@ -493,69 +489,6 @@ class Car:
                 feature_enabled(self.params, self.CP, 'slc', os.environ))
     return bool(admitted), settings
 
-  def poll_door_request(self) -> None:
-    """StarView: a lock / unlock from the tablet or phone (starviewd writes DOOR_REQUEST). Checked 4x a second - one stat()
-    when nothing is asked - and handed to the Toyota controller, which sends it once over the normal link (no pandad
-    pause, so cruise never sees a gap). What happened goes to DOOR_RESULT for the tablet."""
-    self._door_poll = getattr(self, '_door_poll', 0) + 1
-    door_locks = getattr(self.CI.CC, 'door_locks', None) if self.CI.CC is not None else None
-    if door_locks is None:
-      return
-    # 4x a second while idle; 20x while a request runs, so the answer is back as soon as the doors move
-    busy = door_locks.sequence is not None or door_locks.manual is not None or bool(door_locks.manual_result)
-    if self._door_poll % (5 if busy else 25):
-      return
-    # written once at start too (nothing known yet), so the last drive's state is never shown as this drive's
-    if door_locks.read_locks and door_locks.locks_version != getattr(self, '_locks_written', -1):
-      self._locks_written = door_locks.locks_version
-      try:
-        with open(LOCKS + '.tmp', 'w') as f:
-          f.write(json.dumps({'v': door_locks.locks_version, 'doors': door_locks.locks, 'time': time.time()}))  # noqa: TID251
-        os.replace(LOCKS + '.tmp', LOCKS)
-      except OSError:
-        pass
-    if door_locks.manual_result:
-      try:
-        with open(DOOR_RESULT + '.tmp', 'w') as f:
-          f.write(json.dumps({'result': door_locks.manual_result, 'time': time.time()}))  # noqa: TID251  shown on the tablet
-        os.replace(DOOR_RESULT + '.tmp', DOOR_RESULT)
-      except OSError:
-        pass
-      door_locks.manual_result = ''
-    try:
-      age = time.time() - os.stat(DOOR_REQUEST).st_mtime  # noqa: TID251  file mtime is wall clock
-    except OSError:
-      return
-    try:
-      with open(DOOR_REQUEST) as f:
-        cmd = f.read().strip()
-      os.unlink(DOOR_REQUEST)
-    except OSError:
-      return
-    if cmd.split(' ')[0] in ('lock', 'unlock') and len(cmd) <= 32 and 0 <= age < 5:   # "lock" / "unlock horn 2x8x17" ...
-      door_locks.manual = cmd
-
-  def publish_driver_door(self, CS) -> None:
-    """StarLock auto-lock: the driver's door, any door and Park, written to DRIVER_DOOR only when one of them changes
-    (a few times per stop). starviewd's autolock arms on the driver's door closing in Park."""
-    drv = getattr(self.CI.CS, 'driver_door_open', None)
-    if drv is None:
-      return
-    now = (bool(drv), bool(CS.doorOpen), CS.gearShifter == structs.CarState.GearShifter.park)
-    if now == getattr(self, '_driver_door_prev', None):
-      return
-    prev, self._driver_door_prev = getattr(self, '_driver_door_prev', None), now
-    self._driver_door_n = getattr(self, '_driver_door_n', 0) + 1
-    if prev is not None and prev[0] and not now[0]:   # the driver's door just closed (counted, so none is missed)
-      self._driver_door_closes = getattr(self, '_driver_door_closes', 0) + 1
-    try:
-      with open(DRIVER_DOOR + '.tmp', 'w') as f:
-        f.write(json.dumps({'n': self._driver_door_n, 'driver': 'open' if now[0] else 'shut', 'any_open': now[1],
-                            'park': now[2], 'closes': getattr(self, '_driver_door_closes', 0)}))
-      os.replace(DRIVER_DOOR + '.tmp', DRIVER_DOOR)
-    except OSError:
-      pass
-
   def read_slc_match_on_engage(self) -> bool:
     return read_saved(self.params, 'SLCOnEngage', 1) == (b'1', True)
 
@@ -598,15 +531,7 @@ class Car:
 
     observe_controller_can(self.CI, can_list)
     CS = self.CI.update(can_list)
-    # StarView door request running (about a second, rarely), or 0.3 s after the lock-state reads (every 2 s, Sienna):
-    # hand the body module's replies to it - the car's own confirmation and its real lock state. Nothing is scanned
-    # otherwise.
-    door_locks = getattr(self.CI.CC, 'door_locks', None) if self.CI.CC is not None else None
-    if door_locks is not None and getattr(door_locks, 'listening', False):
-      for _, frames in can_list:
-        for address, dat, src in frames:
-          if address == 0x758 and src == 0:
-            door_locks.response(dat)
+    car_doors.update(self, CS, can_list)  # fork: StarView's lock / unlock, lock state, driver's door (starview/car_doors.py)
     self.RI.v_ego = CS.vEgo   # the Honda Bosch-A decoder bounds a reversing coast with it
     from openpilot.starpilot.car.gm.aol import f1_conventional_lateral_owner
     cancel_boot_ns = (time.clock_gettime_ns(time.CLOCK_BOOTTIME)
@@ -646,8 +571,6 @@ class Car:
     self._aol_can_observation = (CS, can_received_ns,
                                  max((stamp for stamp, _ in can_list), default=0), cancel_boot_ns)
     self.refresh_slc_configuration(now_ns)
-    self.poll_door_request()
-    self.publish_driver_door(CS)
     evidence = getattr(self.CI.CS, 'dashboard_limit', None) if self.slc_replay else None
     observation = evidence.observation if evidence is not None else None
     floor_ns = getattr(self, 'slc_source_floor_ns', 0)

@@ -12,7 +12,7 @@ from opendbc.car.toyota import toyotacan
 from opendbc.car.toyota import (dom_defaults, prius_longitudinal, rav4h_filter, pedal, eps8_sdsu, legacy_sdsu,
                                 advert_filter, legacy_stop_timer, legacy_advert_filter)
 from opendbc.car.toyota import pedal_composite, camera_2aa_filter, prius_sdsu, prius_advert_filter
-from opendbc.car.toyota.door_locks import DoorLocks
+from opendbc.car.toyota.starview_doors import StarViewDoorLocks  # fork: upstream's DoorLocks + StarView's lock / unlock
 from opendbc.car.toyota.values import CAR, CarControllerParams, ToyotaFlags, TOYOTA_AUTO_HOLD_CARS, uses_toyota_auto_hold_aeb
 from opendbc.can import CANPacker
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
@@ -73,9 +73,7 @@ def get_long_tune(CP, params):
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
-    self.door_locks = DoorLocks()
-    # StarLock's real lock state: the read-only requests are only for the car they were found on
-    self.door_locks.read_locks = CP.carFingerprint == CAR.TOYOTA_SIENNA_4TH_GEN
+    self.door_locks = StarViewDoorLocks(CP)  # fork: a DoorLocks with StarView's lock / unlock and lock state
     self.reverse_cruise_input = None
     self.prius_filter_input = None
     self.original_prius_sdsu = prius_sdsu.configured(CP) or prius_longitudinal.eps73_status_configured(CP)
