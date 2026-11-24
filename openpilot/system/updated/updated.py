@@ -29,6 +29,7 @@ from openpilot.starpilot.software.fast_update import (
   validate_legacy_return,
 )
 from openpilot.starpilot.software.history import MAX_COMMITS, METADATA_ROOT, commit_history
+from openpilot.starpilot.system.starview.fixes import full_update  # fork fix 3
 from openpilot.starpilot.software.auto_install import InstallSettings, cron_matches, scheduled_restart
 
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
@@ -769,7 +770,7 @@ class Updater:
     admitted()
     self.params.put_bool("UpdateAvailable", True, block=True)
     self.params.put("UpdaterState", "updating...", block=True)
-    progress("rebooting", FULL_UPDATE_REBOOT)
+    progress("rebooting", "Update installed. Restarting device.")
     self.params.put_bool("DoReboot", True, block=True)
     return "reboot-requested"
 
@@ -847,18 +848,12 @@ class Updater:
     return True
 
 
-FULL_UPDATE_REBOOT = "Update installed. Restarting device."
-
-
 def recover_fast_state(params):
   previous = params.get("UpdaterFastState")
   if not isinstance(previous, dict):
     return
   state = dict(previous)
-  # fork fix (CLAUDE.md "Fork fixes"): a full update's last stage is "rebooting" (normal_update), and that reboot is how
-  # it installs, so after it the update finished; only an update cut off before its own end is reported as failed
-  if state.get('stage') == 'rebooting' and state.get('detail') == FULL_UPDATE_REBOOT:
-    state.update(version=1, stage='complete', detail='Update installed.')
+  full_update.finished(state)  # fork fix 3: a full update's own reboot is how it installs
   if state.get('check', {}).get('state') == 'checking':
     state['check'] = {**state['check'], 'state': 'error', 'completedAt': time.monotonic(),
                       'detail': 'Metadata check was interrupted when the updater restarted. Retry the check.'}

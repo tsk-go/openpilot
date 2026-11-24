@@ -32,6 +32,7 @@ service runs this file before openpilot is up.
 """
 import email.utils
 import fcntl
+import functools
 import ipaddress
 import json
 import os
@@ -625,6 +626,18 @@ class download_door:
       except Exception:
         pass
     return False
+
+
+def through_door(reason: str):
+  """download_door as a decorator: the whole call runs with the door open (the model manager's _work, the sound
+  downloads' _run - the hooks in those upstream files)."""
+  def wrap(fn):
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+      with download_door(reason):
+        return fn(*args, **kwargs)
+    return run
+  return wrap
 
 
 def _door_host(url: str) -> str | None:

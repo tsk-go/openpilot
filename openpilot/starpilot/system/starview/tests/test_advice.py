@@ -46,3 +46,49 @@ def test_file_looked_at_at_most_four_times_a_second(tmp_path, monkeypatch):
     reader.speed_cap()
     clock[0] += 0.01
   assert len(calls) <= 5
+
+
+# ---- the hooks in upstream's planner and Lane Centering (one line each there)
+
+def _reader(tmp_path, req):
+  path = str(tmp_path / "advice")
+  clock = [100.0]
+  advice.write(req, path, clock=lambda: clock[0])
+  clock[0] += 0.3
+  return advice.Advice(path, clock=lambda: clock[0])
+
+
+def test_mpc_follow(tmp_path):
+  from types import SimpleNamespace as NS
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW
+  profile = NS(follow_seconds=1.8)
+  none = _reader(tmp_path, {})
+  for follow, last in ((None, None), (1.2, profile), (None, profile)):
+    assert none.mpc_follow(follow, last, 1, True) is follow                 # no advice: the planner's own, as it is
+  more = _reader(tmp_path, {"follow": 0.5})
+  assert more.mpc_follow(1.2, profile, 1, True) == 1.7
+  assert more.mpc_follow(None, profile, 1, True) == 1.8 + 0.5             # the MPC call's own fallback first
+  assert more.mpc_follow(None, None, 1, True) == get_T_FOLLOW(1) + 0.5
+  assert more.mpc_follow(1.2, profile, 1, False) == 1.2                   # not eligible: nothing added
+
+
+def test_cruise_and_lane_settings(tmp_path):
+  from openpilot.starpilot.lateral.lane_runtime import LaneCenteringSettings
+  slow = _reader(tmp_path, {"cap": 9.0, "offset": 0.2})
+  assert slow.cruise(25.0, True) == 9.0 and slow.cruise(8.0, True) == 8.0 and slow.cruise(25.0, False) == 25.0
+  settings = LaneCenteringSettings()
+  shifted = slow.lane_settings(settings)
+  assert shifted.offset_m == min(advice.MAX_OFFSET, settings.offset_m + 0.2)
+  assert _reader(tmp_path, {}).lane_settings(settings) is settings
+
+
+def test_the_hooks_are_in_place():
+  import ast
+  from pathlib import Path
+  root = Path(advice.__file__).resolve().parents[3]
+  planner = (root / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
+  assert "follow = self.starview_advice.mpc_follow(follow, self.last_profile, sm['selfdriveState'].personality," in planner
+  assert planner.index("self.starview_advice.mpc_follow(") < planner.index("self.mpc.update(")
+  assert "v_cruise = self.starview_advice.cruise(v_cruise, profile_eligible)" in planner
+  lanes = ast.parse((root / "starpilot/lateral/lane_runtime.py").read_text())
+  assert any("self.advice.lane_settings(self.settings)" in ast.unparse(n) for n in ast.walk(lanes) if isinstance(n, ast.Return))

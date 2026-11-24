@@ -36,6 +36,7 @@ from openpilot.starpilot.lateral.model_turn_assist import (
   update_twitch_guard,
 )
 from openpilot.starpilot.lateral.turn_unlock import TurnUnlock
+from openpilot.starpilot.lateral import low_speed_smoothing  # fork patch 81: the Sienna's stop-and-go wobble
 from openpilot.starpilot.lateral.turn_initiation_preferences import TurnInitiationPreference
 from openpilot.starpilot.aol.runtime import (
   current_axis,
@@ -175,8 +176,7 @@ class Controls:
       LaneCenteringController(body=interface_dimensions(self.CI, self.CP), body_required=True) if predict_lane_clearance else LaneCenteringController()
     )
     self.highway_correction_gain = HighwayCorrectionGain()
-    from openpilot.starpilot.lateral.low_speed_smoothing import LowSpeedSmoothing  # tsk-go: Sienna stop-and-go wobble
-    self.low_speed_smoothing = LowSpeedSmoothing(self.CP, live=os.getenv("REPLAY") != "1")
+    self.low_speed_smoothing = low_speed_smoothing.LowSpeedSmoothing(self.CP, live=os.getenv("REPLAY") != "1")  # fork patch 81
     self.highway_smoothing_supported = lateral_supported(self.CP)
     self.live_steering_preferences = (
       LiveSteeringPreferences(self.params) if self.highway_smoothing_supported and os.getenv("REPLAY") != "1" else None)
@@ -585,10 +585,7 @@ class Controls:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
-      if getattr(self, "low_speed_smoothing", None) is not None:
-        new_desired_curvature = self.low_speed_smoothing.update(
-          new_desired_curvature, CS.vEgo, active=CC.latActive, blinker=bool(CS.leftBlinker or CS.rightBlinker),
-          lane_change=model_v2.meta.laneChangeState != LaneChangeState.off)
+      new_desired_curvature = low_speed_smoothing.controls_curvature(self, new_desired_curvature, CS, CC, model_v2)  # fork patch 81
     assist = self.turn_assist_enabled()
     lane_policy_now_ns = int(self.sm.logMonoTime['carState']) if os.getenv('REPLAY') == '1' else time.monotonic_ns()
     self.refresh_lane_change_policy(CS, model_v2, lane_policy_now_ns)

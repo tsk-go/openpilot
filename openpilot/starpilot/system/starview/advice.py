@@ -97,3 +97,31 @@ class Advice:
 
   def offset(self) -> float:
     return self._offset if self._fresh() else 0.0
+
+  # ---- the hooks in upstream's files (each one line there)
+
+  def mpc_follow(self, follow, last_profile, personality, active: bool):
+    """longitudinal_planner.py, right before mpc.update: the `follow` it hands the MPC (None = the MPC call's own
+    fallback, last_profile's follow time), with the tablet's extra time added when there is some."""
+    extra = self.extra_follow() if active else 0.0
+    if extra <= 0.0:
+      return follow
+    base = follow if follow is not None else (last_profile.follow_seconds if last_profile is not None else None)
+    if base is None:
+      from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW   # the planner has it loaded
+      base = get_T_FOLLOW(personality)
+    return base + extra
+
+  def cruise(self, v_cruise: float, active: bool) -> float:
+    """longitudinal_planner.py, after the navigation ceiling: the set speed, lowered to the tablet's cap (never raised)."""
+    cap = self.speed_cap() if active else None
+    return min(v_cruise, cap) if cap is not None else v_cruise
+
+  def lane_settings(self, settings):
+    """lane_runtime.py's LaneCenteringHost.sample: its settings with Lane Centering's offset shifted by the tablet's (the
+    sum kept within MAX_OFFSET)."""
+    shift = self.offset()
+    if not shift:
+      return settings
+    from dataclasses import replace
+    return replace(settings, offset_m=min(MAX_OFFSET, max(-MAX_OFFSET, settings.offset_m + shift)))

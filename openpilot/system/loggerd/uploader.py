@@ -23,6 +23,7 @@ from openpilot.common.swaglog import cloudlog
 
 NetworkType = log.DeviceState.NetworkType
 from openpilot.starpilot.connect.provider import active_provider, owns_recording
+from openpilot.starpilot.system.starview.fixes.offline_uploads import offline_mode_on  # fork fix 5
 
 UPLOAD_ATTR_NAME = active_provider().upload_attribute
 UPLOAD_ATTR_VALUE = b'1'
@@ -51,15 +52,6 @@ class FakeResponse:
 
 def get_directory_sort(d: str) -> list[str]:
   return [s.rjust(10, '0') for s in d.rsplit('--', 1)]
-
-OFFLINE_FLAG = "/data/starview/offline"
-
-
-def offline_mode_on() -> bool:
-  """fork fix (CLAUDE.md "Fork fixes"): StarView's offline mode blocks every upload server, so the uploader sleeps like
-  with no network instead of rescanning every drive folder for files that can never go - one stat()."""
-  return os.path.exists(OFFLINE_FLAG)
-
 
 def listdir_by_creation(d: str) -> list[str]:
   if not os.path.isdir(d):
@@ -315,7 +307,7 @@ def main(exit_event: threading.Event | None = None) -> None:
     always_allow_uploads = params.get_bool("AlwaysAllowUploads")
     offroad = params.get_bool("IsOffroad")
     network_type = sm['deviceState'].networkType if not force_wifi else NetworkType.wifi
-    if phone_uplink_active() or network_type == NetworkType.none or offline_mode_on():
+    if phone_uplink_active() or network_type == NetworkType.none or offline_mode_on():  # fork fix 5: offline_mode_on
       if allow_sleep:
         time.sleep(60 if offroad else 5)
       continue

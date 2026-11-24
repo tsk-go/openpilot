@@ -1,7 +1,6 @@
 """Saved lane-centering preferences and fresh host authority, opt-in at startup."""
 
 import math
-from dataclasses import replace
 import os
 
 from openpilot.cereal.services import SERVICE_LIST
@@ -114,11 +113,7 @@ class LaneCenteringHost:
     mode = (ControlMode.COMBINED if longitudinal_active else ControlMode.LATERAL_ONLY) if lateral_active else (
       ControlMode.LONGITUDINAL_ONLY if longitudinal_active else ControlMode.OFF)
     dt = DT_CTRL if previous is None or discontinuity else (now_ns - previous) / 1e9
-    settings = self.settings
-    shift = self.advice.offset()
-    if shift:
-      settings = replace(settings, offset_m=min(0.3, max(-0.3, settings.offset_m + shift)))
-    return LaneCenteringRequest(mode, settings, dt, discontinuity)
+    return LaneCenteringRequest(mode, self.advice.lane_settings(self.settings), dt, discontinuity)  # fork patch 39
 
   def _unhealthy_reason(self, sm) -> str:
     # Reuse the subscriber checks so their ignored-service policy stays intact.

@@ -487,7 +487,7 @@ def hardware_thread(end_event, hw_queue, power_telemetry: PowerTelemetry) -> Non
       if started_ts is None:
         started_ts = time.monotonic()
         started_seen = True
-        power_monitor.clear_parked_off()
+        power_monitor.parked.clear()  # fork fix 4
         if startup_blocked_ts is not None:
           cloudlog.event("Startup after block", block_duration=(time.monotonic() - startup_blocked_ts),
                          startup_conditions=startup_conditions, onroad_conditions=onroad_conditions,
@@ -521,8 +521,8 @@ def hardware_thread(end_event, hw_queue, power_telemetry: PowerTelemetry) -> Non
     shutdown_off_ts = physical_off_ts if forced_power_episode else off_ts
     if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, shutdown_off_ts, started_seen):
       cloudlog.warning(f"shutting device down, offroad since {shutdown_off_ts}")
-      if not onroad_conditions["ignition"]:
-        power_monitor.mark_parked_off()
+      if not onroad_conditions["ignition"]:  # fork fix 4
+        power_monitor.parked.mark()
       params.put_bool("DoShutdown", True, block=True)
 
     timing.mark("publish")

@@ -19,8 +19,9 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from urllib.request import urlopen
+from openpilot.starpilot.system.starview.offline import through_door, urlopen  # noqa: F811  fork: offline mode's download door
 
-from openpilot.starpilot.system.starview import offline
 from openpilot.starpilot.models.catalog import (
   ARTIFACT_ABI, BUNDLED_CURRENT, BY_ID, CATALOG_PATH, COMPILER_REVISION, DEFAULT_SMALL, DEFAULT_SMALL_SHA256,
   DEFAULT_SMALL_SIZE, GENERATION, model_entries,
@@ -354,9 +355,8 @@ def resolve_runtime(chestnut_available: bool, *, root: Path = ROOT, randomize: b
 
 class ModelManager:
   def __init__(self, *, root: Path = ROOT, parked: Callable[[], bool] | None = None,
-               gpu_present: Callable[[], bool] | None = None, opener=None, jetlink=None, refresh_catalog: bool = False):
-    # offline.urlopen: with the comma in offline mode, Hugging Face is let through while a download runs (the door)
-    self.root, self.opener = root, opener or offline.urlopen
+               gpu_present: Callable[[], bool] | None = None, opener=urlopen, jetlink=None, refresh_catalog: bool = False):
+    self.root, self.opener = root, opener
     self.refresh_catalog = refresh_catalog
     self.last_refresh_attempt: float | None = None
     self.jetlink = jetlink
@@ -814,11 +814,8 @@ class ModelManager:
     validate_manifest(data)
     atomic_json(self.root / "catalog.json", data)
 
+  @through_door("models")  # fork: with offline mode on, Hugging Face is let through while this runs (offline.py)
   def _work(self, action: str, payload: dict, lock) -> None:
-    with offline.download_door("models"):   # offline mode: Hugging Face open while this runs (offline.py)
-      self._work_job(action, payload, lock)
-
-  def _work_job(self, action: str, payload: dict, lock) -> None:
     failed = True
     try:
       self._check_cancelled()

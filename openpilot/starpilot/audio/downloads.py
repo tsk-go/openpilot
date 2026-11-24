@@ -13,7 +13,7 @@ import threading
 import uuid
 import zipfile
 
-from openpilot.starpilot.system.starview import offline
+from openpilot.starpilot.system.starview import offline  # fork: offline mode's download door
 from openpilot.starpilot.audio.sound_pack import REMOVED_PACKS, cleanup_removed_packs, LEGACY_NAMES, MAX_WAV_BYTES, PACK_ROOT, pack_directory, read_wav
 
 
@@ -45,8 +45,7 @@ class SoundDownloads:
   def __init__(self, parked, root: Path = PACK_ROOT, catalog_path: Path = CATALOG_PATH, opener=None):
     self.parked = parked
     self.root = Path(root)
-    # offline.urlopen: with the comma in offline mode, Hugging Face is let through while a download runs (the door)
-    self.opener = opener or offline.urlopen
+    self.opener = opener or offline.urlopen  # fork: with offline mode on, Hugging Face is let through during downloads
     self._lock = threading.Lock()
     self._cancel = threading.Event()
     self._closed = False
@@ -164,11 +163,8 @@ class SoundDownloads:
     if self._cancel.is_set() or not self._safe_parked():
       raise _Cancelled()
 
+  @offline.through_door("sounds")  # fork (offline.py)
   def _run(self, pack: dict):
-    with offline.download_door("sounds"):   # offline mode: Hugging Face open while this runs (offline.py)
-      self._run_job(pack)
-
-  def _run_job(self, pack: dict):
     job = self._job
     assert job is not None
     stage = None

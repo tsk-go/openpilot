@@ -1,4 +1,3 @@
-import os
 import time
 import threading
 
@@ -6,6 +5,7 @@ from openpilot.common.params import Params
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.power.offroad_preferences import PowerPolicy, effective, read_saved
+from openpilot.starpilot.system.starview.fixes.parked_restart import ParkedRestart  # fork fix 4
 
 CAR_VOLTAGE_LOW_PASS_K = 0.011 # LPF gain for 45s tau (dt/tau / (dt/tau + 1))
 
@@ -18,12 +18,6 @@ MAX_TIME_OFFROAD_S = 30*3600
 MIN_ON_TIME_S = 3600
 DELAY_SHUTDOWN_TIME_S = 300 # Wait at least DELAY_SHUTDOWN_TIME_S seconds after offroad_time to shutdown.
 VOLTAGE_SHUTDOWN_MIN_OFFROAD_TIME_S = 60
-# fork fix (CLAUDE.md "Fork fixes"): a comma four that shut down while parked is switched straight back on by its panda
-# whenever the car's CAN wakes it (the panda resets out of deep sleep and bootkicks), and then stayed on for
-# MIN_ON_TIME_S - an hour per wake, all night, on a battery already below the cutoff. A shutdown while parked leaves
-# this marker; a start with it present and no drive since shuts down again after PARKED_RESTART_SHUTDOWN_S.
-PARKED_OFF_MARKER = "/data/starview/parked_off"
-PARKED_RESTART_SHUTDOWN_S = 120
 
 class PowerMonitoring:
   def __init__(self):
@@ -37,7 +31,7 @@ class PowerMonitoring:
     self.integration_lock = threading.Lock()
     self._saved_power_policy = PowerPolicy()
     self._power_policy_read_at = float("-inf")
-    self.parked_restart = os.path.exists(PARKED_OFF_MARKER)   # this start is a wake after a parked shutdown
+    self.parked = ParkedRestart()  # fork fix 4: a wake after a parked shutdown shuts down again quickly
 
     car_battery_capacity_uWh = self.params.get("CarBatteryCapacity") or 0
 
@@ -119,22 +113,6 @@ class PowerMonitoring:
       self._power_policy_read_at = now
     return self._saved_power_policy
 
-  def mark_parked_off(self) -> None:
-    """Shutting down with the car off: a wake before the next drive shuts down again quickly."""
-    try:
-      with open(PARKED_OFF_MARKER, "w") as f:
-        f.write("parked shutdown\n")
-    except OSError:
-      pass
-
-  def clear_parked_off(self) -> None:
-    """The car started: back to the normal parked rules."""
-    self.parked_restart = False
-    try:
-      os.unlink(PARKED_OFF_MARKER)
-    except OSError:
-      pass
-
   # See if we need to shutdown
   def should_shutdown(self, ignition: bool, in_car: bool, offroad_timestamp: float | None, started_seen: bool):
     if offroad_timestamp is None:
@@ -151,13 +129,11 @@ class PowerMonitoring:
     should_shutdown |= offroad_time > timeout_s
     should_shutdown |= low_voltage_shutdown
     should_shutdown |= (self.car_battery_capacity_uWh <= 0)
-    # woken while parked after a parked shutdown, and no drive since: it was already time to be off
-    quick = self.parked_restart and not started_seen and offroad_time > PARKED_RESTART_SHUTDOWN_S
-    should_shutdown |= quick
     should_shutdown &= not ignition
     should_shutdown &= (not self.params.get_bool("DisablePowerDown"))
     should_shutdown &= in_car
-    should_shutdown &= quick or offroad_time > DELAY_SHUTDOWN_TIME_S
+    should_shutdown &= offroad_time > DELAY_SHUTDOWN_TIME_S
     should_shutdown |= self.params.get_bool("ForcePowerDown")
-    should_shutdown &= started_seen or (now > MIN_ON_TIME_S) or quick
+    should_shutdown &= started_seen or (now > MIN_ON_TIME_S)
+    should_shutdown |= self.parked.shutdown_now(self.params, ignition, in_car, offroad_time, started_seen)  # fork fix 4
     return should_shutdown

@@ -94,6 +94,17 @@ class LowSpeedSmoothing:
     return curvature * self.last_factor if active else curvature
 
 
+def controls_curvature(controls, curvature: float, CS, CC, model_v2) -> float:
+  """controlsd's hook, right after it takes the model's desiredCurvature. Controls made without __init__ (some
+  upstream tests) have no smoothing: the curvature as it is."""
+  owner = getattr(controls, "low_speed_smoothing", None)
+  if owner is None:
+    return curvature
+  from openpilot.cereal import log   # controlsd has it loaded
+  return owner.update(curvature, CS.vEgo, active=CC.latActive, blinker=bool(CS.leftBlinker or CS.rightBlinker),
+                      lane_change=model_v2.meta.laneChangeState != log.LaneChangeState.off)
+
+
 # --- Galaxy's switch (feature_settings_owner: TORQUE page row, and its apply for KEY) ---
 
 def _capability(owner):

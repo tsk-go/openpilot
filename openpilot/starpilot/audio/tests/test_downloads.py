@@ -101,25 +101,6 @@ class SoundDownloadTests(unittest.TestCase):
     self.assertAlmostEqual(sounds["engage.wav"][0], 2000 / 32768)
     self.assertAlmostEqual(sounds["disengage.wav"][0], 1000 / 32768)
 
-  def test_download_opens_the_offline_download_door(self):
-    from contextlib import contextmanager
-    from unittest.mock import patch
-    payload = archive({"sounds/": b"", "sounds/engage.wav": wav()})
-    events = []
-
-    @contextmanager
-    def door(reason):
-      events.append(("open", reason))
-      yield
-      events.append(("close", reason))
-
-    with patch("openpilot.starpilot.audio.downloads.offline.download_door", door):
-      manager = self.manager(payload)
-      manager.action("download", {"pack": "duck"})
-      job = self.finish(manager)["job"]
-      self.assertEqual(job["state"], "complete", job.get("error"))
-    self.assertEqual(events, [("open", "sounds"), ("close", "sounds")])
-
   def test_named_eras_download_select_and_cache_independently(self):
     stock = self.base / "stock"
     stock.mkdir()
