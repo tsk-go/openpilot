@@ -26,6 +26,8 @@ import requests.adapters
 from openpilot.starpilot.storage import starpilot_storage_root
 from openpilot.starpilot.navigation.position import LastPositionStore
 from openpilot.starpilot.gps.source import GPS_MODES
+from openpilot.starpilot.navigation import relay  # fork: Mapbox through the StarView tablet without internet
+from openpilot.starpilot.system.starview import nav_routes  # fork: StarView's route options and map details
 
 MAX_DOCUMENT = 256 * 1024
 MAX_RESPONSE = 8 * 1024 * 1024
@@ -43,34 +45,9 @@ MAX_FAVORITES = 100
 MAX_RECENTS = 10
 FAVORITE_LABELS = ('home', 'work')
 ROUTE_AVOIDANCES = {'avoidTolls': 'toll', 'avoidHighways': 'motorway', 'avoidFerries': 'ferry'}
-# StarView's further route options, beside upstream's three (missing in older settings = off). Carpool lanes (HOV) are
-# left out of routes unless the car has the people for them; express lanes (HOT) charge a toll below that.
-ROUTE_MORE_AVOIDANCES = {'avoidUnpaved': 'unpaved', 'avoidCashTolls': 'cash_only_tolls', 'avoidTunnels': 'tunnel',
-                         'avoidBorders': 'country_border'}
-CARPOOL_INCLUDES = {0: (), 2: ('hov2',), 3: ('hov2', 'hov3')}
-ROUTE_MORE_KEYS = (*ROUTE_MORE_AVOIDANCES, 'carpool', 'expressLanes')
-
-
-def route_more(settings: dict) -> dict:
-  carpool = settings.get('carpool')
-  return {**{key: settings.get(key) is True for key in ROUTE_MORE_AVOIDANCES},
-          'carpool': carpool if type(carpool) is int and carpool in CARPOOL_INCLUDES else 0,
-          'expressLanes': settings.get('expressLanes') is True}
-
-
-def route_exclusions(settings: dict) -> tuple[str, ...]:
-  """Mapbox `exclude` values for the saved route options; `include` values carry a leading '+'."""
-  more = route_more(settings)
-  values = [value for key, value in ROUTE_AVOIDANCES.items() if settings.get(key) is True]
-  values += [value for key, value in ROUTE_MORE_AVOIDANCES.items() if more[key]]
-  values += ['+' + value for value in CARPOOL_INCLUDES[more['carpool']]]
-  if more['expressLanes'] and settings.get('avoidTolls') is not True:
-    values.append('+hot')
-  return tuple(values)
 # Fixed provider styles matching Galaxy; cache entries are separate for each theme.
-MAP_STYLES = {'light': 'mapbox/light-v11', 'dark': 'mapbox/dark-v11',
-              # StarView's map: Mapbox's navigation styles, with live traffic drawn on every road
-              'trafficLight': 'mapbox/navigation-day-v1', 'trafficDark': 'mapbox/navigation-night-v1'}
+MAP_STYLES = {'light': 'mapbox/light-v11', 'dark': 'mapbox/dark-v11'}
+MAP_STYLES.update(nav_routes.TRAFFIC_STYLES)  # fork: StarView's map, live traffic on every road
 MAP_PROVIDERS = ('mapbox', 'google')
 SHORT_MAP_LINK = re.compile(r'https://(?:maps\.app\.goo\.gl|goo\.gl/maps)/[A-Za-z0-9_-]{1,64}')
 GOOGLE_MAP_HOST = re.compile(r'(?:maps\.app\.goo\.gl|goo\.gl|(?:[a-z0-9-]+\.)*google\.com)')
@@ -185,12 +162,8 @@ class NavigationOwner:
     self.position_store = LastPositionStore(self.root)
     self.google_root = self.root / 'google-tiles'
     self.runtime_source = runtime_source
-    if session is None or session is requests:
-      # upstream's pooled session; its Mapbox requests go straight out, or through the StarView tablet when the comma
-      # has no internet (navigation/relay.py)
-      from openpilot.starpilot.navigation.relay import RelaySession
-      session = RelaySession(session=_pooled_session())
-    self.session = session
+    self.session = _pooled_session() if session is None or session is requests else session
+    self.session = relay.for_owner(session, self.session)  # fork: Mapbox via the tablet when the comma has no internet
     self._tile_slots = threading.BoundedSemaphore(TILE_SLOTS)
     from openpilot.starpilot.navigation.mapbox_budget import MonthlyBudget
     self.search_budget = MonthlyBudget('searchSessions', self.root / 'mapbox-usage')
@@ -356,13 +329,13 @@ class NavigationOwner:
         raise ConflictError('Navigation changed; refresh and try again')
       self._sweep_active(current)
       active = self._read_active(current) if preserve_active else None
-      routing_fields = ('enabled', 'token', 'routeProvider', 'googleKey', *ROUTE_AVOIDANCES, *ROUTE_MORE_KEYS)  # + StarView's options
-      routing_before = tuple(current.get(key) for key in routing_fields)
+      routing_fields = ('enabled', 'token', 'routeProvider', 'googleKey', *ROUTE_AVOIDANCES, *nav_routes.ROUTE_MORE_KEYS)  # fork
+      routing_before = tuple(current.get(key) for key in routing_fields)  # fork: .get (StarView's options may be missing)
       transform(current)
       if not (authorized() if callable(authorized) else authorized is True):
         raise PermissionError('Navigation changes are not available right now')
       current['revision'] = uuid.uuid4().hex
-      if not preserve_active or routing_before != tuple(current.get(key) for key in routing_fields):
+      if not preserve_active or routing_before != tuple(current.get(key) for key in routing_fields):  # fork: .get
         current['routingRevision'] = current['revision']
       if active_destination is not None:
         active = {'version':1, 'destination':active_destination, 'expires':time.monotonic() + ACTIVE_TTL}
@@ -504,43 +477,7 @@ class NavigationOwner:
         os.replace(name, self.transient_root / 'routes.cache')
       finally:
         Path(name).unlink(missing_ok=True)
-      self._record_details(routes)
-
-  def route_details(self) -> list[dict]:
-    """Traffic, incidents, steps and full geometry of the routes last offered (StarView's map), matched to
-    route_options() rows by distance and duration."""
-    try:
-      value = json.loads((self.transient_root / 'routes.detail').read_text())
-      return value['routes'] if time.monotonic() < value['expires'] else []
-    except (OSError, ValueError, KeyError, TypeError):
-      return []
-
-  def _record_details(self, routes):
-    rows = [dict(getattr(route, 'details', None) or {}, durationSeconds=route.total_duration, distanceMeters=route.total_distance)
-            for route in routes]
-    fd, name = tempfile.mkstemp(dir=self.transient_root, prefix='.details-')
-    try:
-      with os.fdopen(fd, 'w') as out:
-        json.dump({'expires': time.monotonic() + ACTIVE_TTL, 'routes': rows}, out, allow_nan=False, separators=(',', ':'))
-      os.replace(name, self.transient_root / 'routes.detail')
-    except (OSError, ValueError, TypeError):
-      pass
-    finally:
-      Path(name).unlink(missing_ok=True)
-
-  def configure_more(self, patch: dict, expected_revision: str, authorized) -> dict:
-    """StarView's further route options (ROUTE_MORE_KEYS); a change asks for new routes like upstream's options."""
-    if not isinstance(patch, dict) or not patch or set(patch) - set(ROUTE_MORE_KEYS):
-      raise ValidationError('Unknown navigation setting')
-    if any(type(patch[key]) is not bool for key in patch if key != 'carpool'):
-      raise ValidationError('Route avoidance settings must be on or off')
-    if 'carpool' in patch and (type(patch['carpool']) is not int or patch['carpool'] not in CARPOOL_INCLUDES):
-      raise ValidationError('Carpool lanes are off, 2+ or 3+ people')
-    def update(value):
-      if any(patch[key] != route_more(value)[key] for key in patch):
-        value['routeChoice'] = 0
-      value.update(patch)
-    return self._change(update, expected_revision, authorized, preserve_active=True)
+      nav_routes.record_details(self, routes)  # fork: StarView's map
 
   def select_route(self, index, expected_revision, authorized):
     if self.read()['revision'] != expected_revision:
@@ -570,8 +507,7 @@ class NavigationOwner:
         raise ValidationError('Map is busy; try again')
       try:
         from openpilot.starpilot.navigation.google_tiles import fetch_tile
-        google_theme = 'light' if theme in ('light', 'trafficLight') else 'dark'  # StarView's traffic styles are Mapbox's
-        tile = fetch_tile(google_key, z, x, y, google_theme, http=self.session, root=self.google_root)
+        tile = fetch_tile(google_key, z, x, y, nav_routes.google_theme(theme), http=self.session, root=self.google_root)  # fork
         current = self.read()
         if current.get('googleKey', '') != google_key or current.get('mapProvider') != 'google':
           raise ValidationError('Map key changed; try again')
@@ -979,15 +915,8 @@ class NavigationOwner:
           isinstance(name, str) and 1 <= len(name.strip()) <= 256):
         description = item.get('full_address') or item.get('place_formatted') or ''
         description = description.strip()[:512] if isinstance(description, str) else ''
-        row = {'id':identity, 'name':name.strip(), 'description':description, 'searchId':search_id, 'temporary':True}
-        # StarView's search list: how far, and what kind of place
-        if type(item.get('distance')) in (int, float) and math.isfinite(item['distance']):
-          row['distanceMeters'] = float(item['distance'])
-        if isinstance(item.get('maki'), str):
-          row['maki'] = item['maki'][:40]
-        if isinstance(item.get('poi_category'), list) and item['poi_category'] and isinstance(item['poi_category'][0], str):
-          row['category'] = item['poi_category'][0][:60]
-        results.append(row)
+        results.append(nav_routes.search_extras({'id':identity, 'name':name.strip(), 'description':description, 'searchId':search_id,  # fork
+                                                 'temporary':True}, item))
     return results
 
   def _retrieve(self, identity, search_id, caller, expected_revision, authorized) -> dict:

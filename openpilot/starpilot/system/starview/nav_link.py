@@ -47,8 +47,9 @@ import threading
 import time
 import uuid
 
-from openpilot.starpilot.navigation.owner import (ConflictError, NavigationOwner, ROUTE_AVOIDANCES, ROUTE_MORE_KEYS,
-                                                  ValidationError, response_json, route_more)
+from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ROUTE_AVOIDANCES, ValidationError, response_json
+from openpilot.starpilot.system.starview import nav_routes
+from openpilot.starpilot.system.starview.nav_routes import ROUTE_MORE_KEYS, route_more
 from openpilot.starpilot.navigation.wire import navigation_state
 
 CALLER = "starview"
@@ -156,7 +157,7 @@ class NavLink:
     snap = owner.snapshot()
     document = owner.read()
     alternatives = snap.get("alternatives") or []
-    details = owner.route_details()
+    details = nav_routes.offered_details(owner)
     routes, lines = [], []
     for row in alternatives:
       index = row.get("index", len(routes))
@@ -465,7 +466,8 @@ class NavLink:
   def preview(self, place: dict, origin=None) -> dict:
     """The routes to a place, with their directions, before it becomes the destination. Asks Mapbox once (counted
     with the routes); nothing on the comma changes until nav_go."""
-    from openpilot.starpilot.navigation.owner import destination, route_exclusions
+    from openpilot.starpilot.navigation.owner import destination
+    from openpilot.starpilot.system.starview.nav_routes import route_exclusions
     if not isinstance(place, dict):
       raise ValidationError("Choose a destination")
     owner = self.owner
@@ -583,7 +585,7 @@ class NavLink:
     if upstream:
       self._change(lambda rev: self.owner.configure(upstream, rev, True))
     if more:
-      self._change(lambda rev: self.owner.configure_more(more, rev, True))
+      self._change(lambda rev: nav_routes.configure_more(self.owner, more, rev, True))
     doc = self.owner.read()
     return {"ok": True, "options": {**{key: doc.get(key) is True for key in ROUTE_AVOIDANCES}, **route_more(doc)}}
 

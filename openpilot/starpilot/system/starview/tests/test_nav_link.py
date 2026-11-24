@@ -7,9 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.starpilot.navigation.mapbox_budget import MonthlyBudget
-from openpilot.starpilot.navigation.owner import NavigationOwner, ValidationError, route_exclusions
-from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine, NavigationRoute, encode_polyline
-from openpilot.starpilot.navigation.runtime import REFRESH_NS, RouteRuntime, fastest_first, keep_road
+from openpilot.starpilot.navigation.owner import NavigationOwner, ValidationError
+from openpilot.starpilot.navigation.route_engine import MapboxRouteEngine, NavigationRoute
+from openpilot.starpilot.navigation.runtime import RouteRuntime
+from openpilot.starpilot.system.starview.nav_routes import REFRESH_NS, encode_polyline, fastest_first, keep_road, route_exclusions
 from openpilot.starpilot.system.starview.nav_link import NavLink
 
 PLACE = {'name': 'Library', 'longitude': .03, 'latitude': 0.}

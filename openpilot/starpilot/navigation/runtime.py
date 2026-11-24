@@ -6,7 +6,8 @@ import math
 import time
 import uuid
 
-from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ValidationError, route_exclusions
+from openpilot.starpilot.navigation.owner import ConflictError, NavigationOwner, ValidationError, ROUTE_AVOIDANCES
+from openpilot.starpilot.system.starview.nav_routes import REFRESH_NS, fastest_first, keep_road, route_exclusions  # fork
 from openpilot.starpilot.navigation.route_engine import SLOW_MPS, MapboxRouteEngine, distance
 from openpilot.starpilot.navigation.google_routes import (
   GoogleRouteEngine, GoogleRoutesFailed, essentials_budget, route_budget, write_route_status,
@@ -28,50 +29,6 @@ OFF_ROUTE_NS = 2_000_000_000    # off the route this long reroutes
 SLOW_OFF_ROUTE_NS = 8_000_000_000  # ...or this long when slower than SLOW_MPS (garages, lots)
 JOINED_M = 25.                  # this close to the line, the car has joined the route
 UNJOINED_REROUTE_M = 300.       # before joining, only this far from where the route starts reroutes (leaving a garage or lot)
-REFRESH_NS = 300_000_000_000    # while guiding, routes are asked again this often for live traffic and arrival time
-
-
-def _cells(points, step=25.):
-  """Grid cells (about 33 m) a route line passes through, filled in every `step` metres."""
-  cells = set()
-  for a, b in zip(points, points[1:], strict=False):
-    count = max(1, int(distance(a, b) / step))
-    for k in range(count + 1):
-      cells.add((round((a[0] + (b[0] - a[0]) * k / count) * 3000), round((a[1] + (b[1] - a[1]) * k / count) * 3000)))
-  return cells
-
-
-def _slot(choice, count: int) -> int:
-  # where the driven route sits: the chosen index, or 0 when that index is gone (the runtime then drives routes[0])
-  return choice if type(choice) is int and 0 <= choice < count else 0
-
-
-def keep_road(current, current_along: float, routes: list, choice) -> list:
-  """Refreshed routes ordered so the one that follows the road being driven takes the driven route's place: a traffic
-  refresh updates times and traffic without moving the driver onto another road. current_along: metres along
-  `current`'s line. The whole rest of the driven route is compared (alternatives often share the first miles); a tie
-  goes to the route whose length is closest to what is left."""
-  ahead = [p for p, along in zip(current.points, current.cumulative, strict=False) if along >= current_along]
-  if len(routes) < 2 or len(ahead) < 2:
-    return routes
-  samples = ahead[::max(1, len(ahead) // 120)] + [ahead[-1]]
-  remaining = current.cumulative[-1] - current_along
-
-  def score(index):
-    route = routes[index]
-    cells = _cells(route.points, step=max(25., route.cumulative[-1] / 20000.))
-    near = sum(any((round(lon * 3000) + i, round(lat * 3000) + j) in cells for i in (-1, 0, 1) for j in (-1, 0, 1)) for lon, lat in samples)
-    return round(near / len(samples), 2), -abs(route.cumulative[-1] - remaining)
-  best = max(range(len(routes)), key=score)
-  ordered = [route for index, route in enumerate(routes) if index != best]
-  ordered.insert(_slot(choice, len(routes)), routes[best])
-  return ordered
-
-
-def fastest_first(routes: list, choice) -> list:
-  """After leaving the route, Mapbox's best new route goes where the driven one is (not an arbitrary alternative)."""
-  slot = _slot(choice, len(routes))
-  return routes if slot == 0 or len(routes) < 2 else [*routes[1:slot + 1], routes[0], *routes[slot + 1:]]
 
 
 def location(sm, now_ns: int, phone_fix=None):
@@ -112,7 +69,7 @@ class RouteRuntime:
     self.arrived_since = 0
     self.ended_revision = None
     self.session = uuid.uuid4().hex
-    self.fetched_at = 0
+    self.fetched_at = 0   # fork: StarView's live-traffic refresh (these four; starview/nav_routes.py)
     self.refreshing = False
     self.rerouting = False
     self.along = 0.
@@ -140,7 +97,8 @@ class RouteRuntime:
         self.parked_revision = None
     selected = settings['destination']
     destination_key = None if selected is None else (selected['id'], selected['longitude'], selected['latitude'])
-    exclusions = route_exclusions(settings)  # upstream's three + StarView's further options
+    exclusions = tuple(value for key, value in ROUTE_AVOIDANCES.items() if settings[key])
+    exclusions = route_exclusions(settings)  # fork: upstream's three + StarView's further options
     credentials = (settings['token'], settings['googleKey'] if settings['routeProvider'] == 'google' else '')
     key = (settings['enabled'], hashlib.sha256('\0'.join(credentials).encode()).digest(), destination_key,
            drive_id, exclusions, settings['routeProvider'], settings['routingRevision'])

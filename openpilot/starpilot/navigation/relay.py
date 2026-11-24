@@ -72,3 +72,9 @@ class RelaySession:
 
 
 SESSION = RelaySession()
+
+
+def for_owner(given, built):
+  """NavigationOwner's hook (owner.py, right after it makes its session): its own pooled session (`built`, made when no
+  session was handed in) goes through RelaySession; a session handed in (tests, other callers) stays as it is."""
+  return RelaySession(session=built) if given is None or given is requests else built

@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import requests
 
+from openpilot.starpilot.system.starview import nav_routes  # fork: StarView's search list
 from openpilot.starpilot.navigation.google_tiles import FAILURE_BUDGET, FAILURE_NETWORK, FAILURE_SERVER, GoogleBudget, _body, classify
 
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
@@ -22,18 +23,6 @@ FREE_SEARCHES = 5_000  # Text Search Pro: the SKU for name, address and location
 # Autocomplete Requests. A session ends in at most one Place Details Essentials (also 10,000 free), so this cap covers both.
 FREE_SUGGESTIONS = 10_000
 BIAS_RADIUS_M = 50_000.0
-# StarView: Google's place types as the Mapbox (maki) icon names StarView's search list draws
-MAKI = {"gas_station": "fuel", "electric_vehicle_charging_station": "charging-station", "cafe": "cafe", "coffee_shop": "cafe",
-        "restaurant": "restaurant", "fast_food_restaurant": "fast-food", "bakery": "bakery", "bar": "bar", "parking": "parking",
-        "supermarket": "grocery", "grocery_store": "grocery", "convenience_store": "shop", "store": "shop", "shopping_mall": "shop",
-        "pharmacy": "pharmacy", "drugstore": "pharmacy", "hospital": "hospital", "doctor": "doctor", "lodging": "lodging",
-        "hotel": "lodging", "school": "school", "university": "college", "bank": "bank", "atm": "bank", "airport": "airport",
-        "park": "park", "car_repair": "car-repair", "car_wash": "car", "car_dealer": "car", "post_office": "post",
-        "library": "library", "museum": "museum", "place_of_worship": "place-of-worship", "synagogue": "religious-jewish",
-        "church": "religious-christian", "mosque": "religious-muslim", "train_station": "rail", "subway_station": "rail-metro",
-        "bus_station": "bus", "gym": "fitness-centre", "police": "police", "fire_station": "fire-station", "zoo": "zoo"}
-GENERIC_TYPES = {"point_of_interest", "establishment", "geocode", "premise", "street_address", "route", "political",
-                 "locality", "sublocality", "neighborhood", "food", "store"}
 TIMEOUT = (3.0, 8.0)
 MAX_RESPONSE = 256 * 1024
 
@@ -117,8 +106,7 @@ def autocomplete(http, key: str, query: str, session: str, budget: GoogleBudget,
                  timeout=TIMEOUT) -> list[dict]:
   """Typing suggestions as [{id, name, description}]; the session token bills them with the Place Details that ends it."""
   body = {"input": query, "sessionToken": session, **_bias(proximity)}
-  if proximity is not None:  # StarView: Google then gives each suggestion's distance (same request, same SKU)
-    body["origin"] = {"latitude": proximity[1], "longitude": proximity[0]}
+  nav_routes.google_origin(body, proximity)  # fork: distances for StarView's search list
   value = _request(lambda: http.post(AUTOCOMPLETE_URL, json=body, headers={"X-Goog-Api-Key": key}, timeout=timeout, stream=True), budget)
   suggestions = value.get("suggestions")
   rows = []
@@ -133,21 +121,8 @@ def autocomplete(http, key: str, query: str, session: str, budget: GoogleBudget,
       continue
     if (isinstance(identity, str) and 1 <= len(identity) <= 256 and isinstance(name, str) and 1 <= len(name.strip()) <= 256 and
         isinstance(description, str)):
-      row = {"id": identity, "name": name.strip(), "description": description.strip()[:512]}
-      # StarView's search list: how far, and what kind of place (as Mapbox's rows carry them)
-      distance = prediction.get("distanceMeters")
-      if type(distance) in (int, float) and math.isfinite(distance) and distance >= 0:
-        row["distanceMeters"] = float(distance)
-      kinds = prediction.get("types")
-      if isinstance(kinds, list):
-        kinds = [k for k in kinds if isinstance(k, str)]
-        maki = next((MAKI[k] for k in kinds if k in MAKI), None)
-        if maki:
-          row["maki"] = maki
-        named = next((k for k in kinds if k not in GENERIC_TYPES), None)
-        if named:
-          row["category"] = named.replace("_", " ").capitalize()[:60]
-      rows.append(row)
+      rows.append(nav_routes.google_row({"id": identity, "name": name.strip(), "description": description.strip()[:512]},  # fork
+                                        prediction))
   return rows[:8]
 
 
