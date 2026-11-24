@@ -26,12 +26,15 @@ ROW_JS = GALAXY / "web" / "js" / "galaxy-setting-row.js"
 # "acceptedFindingValue" (upstream 40a5b52dd: marks a manual FLM coordinate that matches an accepted finding - the FLM
 # page's rows, which StarView doesn't draw); the slider's range line rounds to 7 digits in Galaxy now, which StarView's
 # fmt already did; Nov 22 sync: "coordinateLocked" / "learningEligible" (upstream 06f2da46a: the FLM page's status chip
-# on the same manual coordinates - "Manual override", "Change confirmed" - again rows StarView doesn't draw))
+# on the same manual coordinates - "Manual override", "Change confirmed" - again rows StarView doesn't draw); Nov 24
+# sync: "status" (a read-only status row Galaxy never grays out - Tesla's "CAN add-on cable: Detected") and "links"
+# ([{label, url}] https buttons under the row) - mirrored in GalaxyMirror.kt (status rows count as available; the link
+# buttons under readout rows), StarView 2.90.13 on starview-data scene-street)
 MIRRORED_SCALES = {"lane-strength", "selected-profile"}
 ROW_FIELDS = {"acceptedFindingValue", "action", "available", "choices", "collapsed", "confirm", "coordinate",
               "coordinateLocked", "defaultValue", "displayScale", "heading", "label", "learnedValue", "learningEligible",
-              "maximum", "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "step", "unit",
-              "value"}
+              "links", "maximum", "minimum", "page", "previewSound", "reason", "repairValue", "resetAvailable", "status",
+              "step", "unit", "url", "value"}
 PRESENTATION_SHA256 = "8a5e0c5a823b8e46cbee25c956421669249d195e23b5b2b46a4664e48f5ed3b9"
 
 

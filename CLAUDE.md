@@ -164,6 +164,25 @@ driver-confirmed turns and Subaru; nothing for the Sienna's stop-and-go wobble).
 the scratchpad has to be rebuilt from `common/params_keys.h` when upstream adds a key, and the model tests need
 `jetlink_repo` and `tinygrad_repo` on PYTHONPATH.
 
+Nov 24: first the fork was slimmed (see "Staying close to upstream": our code out of upstream's files, hooks only), then
+synced `testing` up to upstream `testing` `63fe5bb3e1` (141 commits; four source conflicts, all at our hook lines, both
+sides kept: carcontroller.py - upstream's `radar_filter` import; our StarViewDoorLocks is now made right after upstream's
+`DoorLocks()` line (local import), so upstream's import block stays its own; desire_helper.py - upstream's
+`lane_change_speed` / `waiting_for_lane` and new `route_turn` (natehuby76 `fad5a9faa` "keep nav turns from canceling lane
+changes": a route turn at lane-change speed waits for the lane - a lane change toward the turn may start - instead of
+blocking it) with our `starview.begin` hook, which now returns both: a "lane" / "exit" hold is neither turn, and the
+tablet's "turn" is a route turn, still only with Automatic Turn Initiation; modeld.py - upstream's `waiting_for_lane` in
+TurnIntent.select, our after_turn hook after it; longitudinal_planner.py - upstream's slowdown import beside our Advice;
+panda images rebuilt from source - upstream changed Hyundai CAN-FD, Subaru, Tesla (speed sync) and Volvo (EUCD) safety and
+the bootstubs, which follow upstream; ours are upstream's + the same 216 bytes (toyota_starview.h); mapd untouched).
+Brings AGNOS 20.5.5 and 7.0.2, Galaxy's "Turn slowdown distance" (navigation: how early the planner slows for a route
+turn), Tesla Model 3/Y wheel controls and dashboard speed, Volvo V60, Subaru HUD / AVH, "Pause highway smoothing while
+steering is limited", StarPort's "Wired hands-free", a TEMP gauge unit row. Galaxy parity: rows gained `status` and
+`links` - mirrored in StarView (GalaxyMirror.kt: status rows count as available, link buttons under readout rows), and
+the turn slowdown distance is on StarView's Tablet › Settings › Navigation map (TurnSlowdown.kt; the comma side: nav_state
+options / nav_options carry `turnSlowdownPercent`, parked only like Galaxy) - starview-data `scene-street`, waits for the
+owner's OK. No fork fix is fixed upstream yet (upstream's highway smoothing pause is not the Sienna's stop-and-go wobble).
+
 The repo: since Oct 29 tsk-go/openpilot is a fork in firestar's network (the old sunnypilot-network repo is kept as
 tsk-go/openpilot-sunnypilot-old). That matters for Git LFS: a push must not reference LFS files the network lacks,
 and the sunnypilot network's LFS budget was used up; in firestar's network every LFS file of his history is already
@@ -356,7 +375,9 @@ Paths are under `openpilot/` unless noted.
     StarView's switch on and our street on its map, the tablet says whether there's a street to turn into on that side
     within 250 ft (OSM: not a one-way coming at us, not service): "none" -> no turn (pulling over). No say -> upstream.
     Since the Nov 22 sync all of it only with Galaxy's Automatic Turn Initiation on (upstream's own switch, off by
-    default): Turn Signal Guidance, the route's turn and the tablet's "turn" (`lanes.py` `LaneInputs.begin`).
+    default): Turn Signal Guidance, the route's turn and the tablet's "turn" (`lanes.py` `LaneInputs.begin`). Since the
+    Nov 24 sync the tablet's "turn" is a route turn like upstream's (`route_turn`: at lane-change speed it waits for the
+    lane, and a lane change toward the turn may start).
 26. Advice from StarView's New ideas (patch 39): `starview/advice.py` (starviewd action `advice` {cap, follow, offset,
     why} -> /dev/shm/starview_advice, read at most every 0.25 s, 1.5 s old = none). Only ever gentler: the planner's
     v_cruise lowered to `cap` (never below 10 mph, never raised; `Advice.cruise`, one line in `longitudinal_planner.py`
